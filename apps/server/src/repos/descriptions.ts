@@ -112,27 +112,40 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
     // dies leaves a lease that runs out by itself.
     async exclusive(name, fn, options) {
       const holder = uuidv7();
+      const leaseMs = options?.leaseMs ?? LEASE_MS;
+      const renewMs = options?.renewMs ?? LEASE_RENEW_MS;
+      // Elapsed time on this machine's own clock only, so it is no
+      // comparison with the database's clock.
+      let sentAt = performance.now();
       const taken = await sql<{ holder: string }>`
         insert into upgrade_leases (name, holder, expires_at)
-        values (${name}, ${holder}, now() + ${LEASE_MS} * interval '1 millisecond')
+        values (${name}, ${holder}, now() + ${leaseMs} * interval '1 millisecond')
         on conflict (name) do update
           set holder = excluded.holder, expires_at = excluded.expires_at
           where upgrade_leases.expires_at < now()
         returning holder`.execute(db);
       if (taken.rows.length === 0) return null;
+      let lastRenewedAt = sentAt;
       const lost = new AbortController();
       let failures = 0;
       let renewing = false;
       const renew = async () => {
+        // A renewal that hangs (a connection that died without telling us)
+        // never fails, so the lease is also given up on when the last one
+        // that worked was sent so long ago that the lease is about to run out.
+        if (performance.now() - lastRenewedAt >= leaseMs - renewMs) lost.abort();
         if (renewing || lost.signal.aborted) return;
         renewing = true;
+        sentAt = performance.now();
+        const sent = sentAt;
         try {
           const { rows } = await sql<{ holder: string }>`
             update upgrade_leases
-            set expires_at = now() + ${LEASE_MS} * interval '1 millisecond'
+            set expires_at = now() + ${leaseMs} * interval '1 millisecond'
             where name = ${name} and holder = ${holder}
             returning holder`.execute(db);
           if (rows.length === 0) lost.abort();
+          else lastRenewedAt = sent;
           failures = 0;
         } catch {
           failures += 1;
@@ -141,7 +154,7 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
           renewing = false;
         }
       };
-      const timer = setInterval(() => void renew(), options?.renewMs ?? LEASE_RENEW_MS);
+      const timer = setInterval(() => void renew(), renewMs);
       timer.unref();
       try {
         return await fn(lost.signal);

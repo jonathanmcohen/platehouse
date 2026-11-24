@@ -407,16 +407,37 @@ describe("a run", () => {
     }
     const repo = descriptionsRepo(env.db);
     let first = true;
+    let lostSignal: AbortSignal | undefined;
     const store = {
       ...repo,
       exclusive: <T>(name: string, fn: (lost: AbortSignal) => Promise<T>) =>
-        repo.exclusive(name, fn, { renewMs: 20 }),
+        repo.exclusive(
+          name,
+          (s) => {
+            lostSignal = s;
+            return fn(s);
+          },
+          { renewMs: 20 },
+        ),
       // Another server takes the lease while the first model is being read.
       async sourceFiles(modelId: string) {
         if (first) {
           first = false;
           await env.db.deleteFrom("upgradeLeases").execute();
-          await new Promise((resolve) => setTimeout(resolve, 300));
+          const signal = lostSignal;
+          if (signal === undefined) throw new Error("the run was not given a lease signal");
+          await new Promise<void>((resolve, reject) => {
+            if (signal.aborted) return resolve();
+            const timer = setTimeout(() => reject(new Error("the lease was never lost")), 10_000);
+            signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true },
+            );
+          });
         }
         return repo.sourceFiles(modelId);
       },

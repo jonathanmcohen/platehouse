@@ -171,12 +171,13 @@ export interface ReconvertStore {
    * it ends; one a dead server left runs out by itself. The signal fn is
    * given aborts when the lease can no longer be shown to be held (taken
    * over, or two renewals in a row failed), and fn then stops, as it does for
-   * a stop. renewMs is for tests: how often to renew.
+   * a stop. renewMs and leaseMs are for tests: how often to renew, how long
+   * a lease lasts.
    */
   exclusive<T>(
     name: string,
     fn: (lost: AbortSignal) => Promise<T>,
-    options?: { renewMs?: number },
+    options?: { renewMs?: number; leaseMs?: number },
   ): Promise<T | null>;
   /** The last model counted by runs of the step cut off before it finished; null when none. */
   resumeAfter(name: string): Promise<string | null>;
@@ -391,7 +392,7 @@ export function createDescriptionReconvert(deps: {
         for (;;) {
           const page = await deps.store.candidates(after, batch);
           for (const row of page) {
-            if (signal?.aborted) return RECONVERT_PAUSED;
+            if (signal?.aborted || lost.aborted) return RECONVERT_PAUSED;
             const files = await deps.store.sourceFiles(row.modelId);
             let decision: Decision;
             try {
