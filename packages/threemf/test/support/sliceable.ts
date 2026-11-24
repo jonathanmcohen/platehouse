@@ -1,6 +1,6 @@
 // buildSliceable: a generated multi-plate,
-// multi-filament Bambu project of 20 mm cubes that OrcaSlicer 2.5.0 can
-// slice. It is the fixture for the slicer's container tests and the release
+// multi-filament Bambu project of 20 mm cubes that the OrcaSlicer version
+// pinned in apps/slicer/Dockerfile (ORCA_VERSION) can slice. It is the fixture for the slicer's container tests and the release
 // workflow's smoke slice; no designer file is involved.
 //
 // What Orca needs from it, read from its source at commit 40ecc66:
@@ -48,8 +48,12 @@ const COLOURS = [
 export interface SliceableOptions {
   plates: number;
   filaments: number;
-  /** Edge of each cube in mm (default 20). A value above the bed's 256 makes an object the bed cannot hold. */
+  /** Edge of each cube in mm (default 20). */
   cubeSize?: number;
+  /** Footprint (width and depth) of each object in mm, default `cubeSize`. Above the bed's 256 the bed cannot hold it. */
+  footprint?: number;
+  /** Height of each object in mm, default `cubeSize`. */
+  height?: number;
   /** Extra field bytes for the first entry's central record, to build a crafted directory. */
   firstEntryExtra?: Buffer;
 }
@@ -64,17 +68,18 @@ export function plateOrigin(index: number, count: number, bed = BED): { x: numbe
   return { x: col * bed * 1.2, y: row === 0 ? 0 : -row * bed * 1.2 };
 }
 
-function cubeMesh(size: number): string {
-  const s = size;
+function cubeMesh(width: number, height: number): string {
+  const s = width;
+  const h = height;
   const v = [
     [0, 0, 0],
     [s, 0, 0],
     [s, s, 0],
     [0, s, 0],
-    [0, 0, s],
-    [s, 0, s],
-    [s, s, s],
-    [0, s, s],
+    [0, 0, h],
+    [s, 0, h],
+    [s, s, h],
+    [0, s, h],
   ];
   // Counter-clockwise seen from outside, as 3MF requires.
   const t = [
@@ -114,8 +119,16 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
     throw new RangeError(`filaments must be 1 to ${COLOURS.length}, not ${filaments}`);
   }
   const cubeSize = opts.cubeSize ?? CUBE;
-  if (!Number.isFinite(cubeSize) || cubeSize <= 0) {
-    throw new RangeError(`cubeSize must be a positive number, not ${cubeSize}`);
+  const footprint = opts.footprint ?? cubeSize;
+  const height = opts.height ?? cubeSize;
+  for (const [name, value] of [
+    ["cubeSize", cubeSize],
+    ["footprint", footprint],
+    ["height", height],
+  ] as const) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new RangeError(`${name} must be a positive number, not ${value}`);
+    }
   }
   const placed: Placed[] = [];
   for (let p = 0; p < plates; p++) {
@@ -131,7 +144,7 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
     }
   }
 
-  const mesh = cubeMesh(cubeSize);
+  const mesh = cubeMesh(footprint, height);
   const model = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021">',

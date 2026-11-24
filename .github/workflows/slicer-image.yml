@@ -37,9 +37,9 @@
 #   GitHub runs a schedule or a dispatch only for a workflow file on the
 #   default branch, so neither works until this file reaches main.
 #
-# The pins. apps/slicer/Dockerfile pins its Orca version (ORCA_VERSION) by the AppImage's sha256
-# (ORCA_SHA256) and the commit its tag points to (ORCA_SRC_SHA, for the
-# profile JSON). For the version picked here both are resolved again: the
+# The pins. apps/slicer/Dockerfile pins its Orca version (ORCA_VERSION) by
+# the AppImage's sha256 (ORCA_SHA256) and the commit its tag points to
+# (ORCA_SRC_SHA, for the profile JSON). For the version picked here both are resolved again: the
 # sha256 from the release asset's digest in GitHub's API, the commit from git
 # ls-remote (the peeled commit of an annotated tag, else the tag's own), and
 # both are passed as build args with ORCA_VERSION. If either cannot be

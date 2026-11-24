@@ -48,9 +48,10 @@ describe("slicing in the image", () => {
   );
 
   // Orca's own refusal, mapped by reasons.ts: -52 is "objects partly outside
-  // the bed". A 300 mm cube cannot sit on the P1S's 256 mm bed.
+  // the bed". The slab is flat on purpose (300 x 300 x 10 mm, well under the
+  // print height), so the bed check is the only one it fails.
   test("an object larger than the bed is refused with code -52 and reason bed_too_small", async () => {
-    const tooBig = buildSliceable({ plates: 1, filaments: 1, cubeSize: 300 });
+    const tooBig = buildSliceable({ plates: 1, filaments: 1, footprint: 300, height: 10 });
     const res = await fetch(
       `${slicer.base}/v1/slice?printer=${encodeURIComponent(PRINTERS[0]?.printer ?? "")}&plate=1`,
       { method: "POST", headers: { "content-type": "application/octet-stream" }, body: tooBig },

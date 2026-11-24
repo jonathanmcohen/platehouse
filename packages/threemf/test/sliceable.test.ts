@@ -113,23 +113,27 @@ describe("buildSliceable", () => {
     expect(extruders).toEqual(["1", "2", "1", "2"]);
   });
 
-  test("cubeSize makes each object larger than the bed, and the default stays 20 mm", () => {
-    const edge = (model: string) => {
-      const xs = [...model.matchAll(/<vertex x="([\d.]+)"/g)].map((m) => Number(m[1]));
-      return Math.max(...xs);
+  test("footprint and height size each object, and the default stays a 20 mm cube", () => {
+    const extent = (model: string, axis: "x" | "z") => {
+      const re = new RegExp(`<vertex[^>]* ${axis}="([\\d.]+)"`, "g");
+      return Math.max(...[...model.matchAll(re)].map((m) => Number(m[1])));
     };
-    const small = sliceableEntries({ plates: 1, filaments: 1 }).get("3D/3dmodel.model") ?? "";
-    const big =
-      sliceableEntries({ plates: 1, filaments: 1, cubeSize: 300 }).get("3D/3dmodel.model") ?? "";
-    expect(edge(small)).toBe(20);
-    expect(edge(big)).toBe(300);
+    const entry = (o: object) =>
+      sliceableEntries({ plates: 1, filaments: 1, ...o }).get("3D/3dmodel.model") ?? "";
+    const small = entry({});
+    expect([extent(small, "x"), extent(small, "z")]).toEqual([20, 20]);
+    const slab = entry({ footprint: 300, height: 10 });
+    expect([extent(slab, "x"), extent(slab, "z")]).toEqual([300, 10]);
+    const bigger = entry({ cubeSize: 30 });
+    expect([extent(bigger, "x"), extent(bigger, "z")]).toEqual([30, 30]);
   });
 
-  test("a cubeSize that is not a positive number is refused", () => {
+  test("a size that is not a positive number is refused", () => {
     expect(() => buildSliceable({ plates: 1, filaments: 1, cubeSize: 0 })).toThrow(/cubeSize/);
-    expect(() => buildSliceable({ plates: 1, filaments: 1, cubeSize: Number.NaN })).toThrow(
-      /cubeSize/,
+    expect(() => buildSliceable({ plates: 1, filaments: 1, footprint: Number.NaN })).toThrow(
+      /footprint/,
     );
+    expect(() => buildSliceable({ plates: 1, filaments: 1, height: -1 })).toThrow(/height/);
   });
 
   test("options outside 1 to 128 plates or 1 to 16 filaments are refused", () => {
