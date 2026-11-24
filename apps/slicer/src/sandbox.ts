@@ -85,6 +85,9 @@ const READ_ONLY = [
   "/usr/lib/locale",
 ];
 
+/** OpenSSL's config file, which Node reads at start-up (the step rules). */
+const OPENSSL_CONFIG_FILE = "/etc/ssl/openssl.cnf";
+
 /** The programs that run in the sandbox: a render, a slice and a STEP conversion. */
 export type SandboxedProgram = "openscad" | "orca" | "step";
 
@@ -160,7 +163,10 @@ export interface SandboxRules {
  *   are /usr/share/glib-2.0/schemas, /proc/self and /etc/ld.so.cache;
  *   landrun logs each denial with LANDRUN_LOG_LEVEL=debug.
  * - step: reads the app, where step.js and occt-import-js are, and runs
- *   Node from its own folder.
+ *   Node from its own folder. It also reads OpenSSL's config file
+ *   (OPENSSL_CONFIG_FILE): Node opens it at start-up and exits with
+ *   "OpenSSL configuration error ... Permission denied" when it cannot (CI
+ *   run 45323577150). That one file, not the rest of /etc/ssl.
  */
 export function sandboxRules(program: SandboxedProgram, paths: SandboxPaths): SandboxRules {
   const { dir } = paths;
@@ -182,7 +188,7 @@ export function sandboxRules(program: SandboxedProgram, paths: SandboxPaths): Sa
     case "step":
       return {
         rox: [paths.nodeDir, ...SYSTEM_EXEC],
-        ro: [paths.appDir],
+        ro: [paths.appDir, OPENSSL_CONFIG_FILE],
         rw: [dir],
         env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dir, TMPDIR: dir, LANG: "C.UTF-8" },
       };
