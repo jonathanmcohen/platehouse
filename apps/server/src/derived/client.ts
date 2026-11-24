@@ -146,11 +146,11 @@ export const DERIVED_MESSAGES = {
 const LEAD_INS = ["OpenSCAD said:", "The converter said:"] as const;
 
 /**
- * sentence, then a program's message after a space. When the sentence ends
- * with a lead-in (previousRendersScad, previousRendersStep, previewRejected)
- * and the message starts with the same one, as the slicer writes it, the
- * message's copy is left out, so the lead-in is said once. Any other message
- * is kept whole.
+ * Joins a Platehouse sentence and a program's message with a space. When the
+ * sentence ends with a lead-in (previousRendersScad, previousRendersStep,
+ * previewRejected) and the message starts with the same one, as the slicer
+ * writes it, the message's copy is left out, so the lead-in is said once.
+ * Any other message is kept whole.
  */
 export function afterSentence(sentence: string, message: string): string {
   const lead = LEAD_INS.find((l) => sentence.endsWith(l) && message.startsWith(`${l} `));

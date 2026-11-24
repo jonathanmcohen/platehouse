@@ -279,52 +279,6 @@ describe("the clean-up of processes left behind", () => {
   test("there is no start-up notice when it is on", () => {
     expect(reapOffNotice({ reapOrphans: true })).toBeNull();
   });
-
-  test("a health check while no job holds the lock runs it", async () => {
-    let reaps = 0;
-    const base = await start(
-      setup({
-        reap: () => {
-          reaps += 1;
-          return [];
-        },
-      }).config,
-    );
-    const before = reaps;
-    const res = await fetch(`${base}/v1/health`);
-    expect(res.status).toBe(200);
-    expect(reaps).toBe(before + 1);
-  });
-
-  test("a health check while a job holds the lock does not run it", async () => {
-    let reaps = 0;
-    const s = setup(
-      {
-        sliceTimeoutSeconds: 3,
-        reap: () => {
-          reaps += 1;
-          return [];
-        },
-      },
-      { kind: "sleep" },
-    );
-    const base = await start(s.config);
-    const first = postSlice(base, sliceable());
-    await waitFor(() => {
-      try {
-        return readFileSync(s.fake.pids, "utf8").length > 0;
-      } catch {
-        return false;
-      }
-    });
-    const before = reaps;
-    const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
-    expect(health.busy).toBe(true);
-    expect(reaps).toBe(before);
-    // The job's own release runs it once.
-    expect((await first).status).toBe(200);
-    await waitFor(() => reaps === before + 1);
-  });
 });
 
 describe("health and profiles", () => {

@@ -21,7 +21,7 @@
 //
 // The slicer kills a plate itself at SLICE_TIMEOUT_SECONDS, --mstpp + 60 by
 // default, and the app's HTTP timeout is that plus 30 s (Slicer HTTP contract
-// v1). The request is plain node:http, as the slicer's own server is, so a
+// 2). The request is plain node:http, as the slicer's own server is, so a
 // 409 sent before the body is read is answered even while the body is still
 // going out.
 import { type ClientRequest, request as httpRequest, type IncomingMessage } from "node:http";

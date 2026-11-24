@@ -647,9 +647,10 @@ export function leftoverProcesses(procDir: string, selfPid: number): number[] {
 /**
  * Sends SIGKILL to the processes leftoverProcesses lists, and looks again
  * for as long as a pass finds a process it has not signalled before, at most
- * maxPasses (20) passes. Returns the ids it signalled. Run after each job,
- * when nothing of that job may still be running, so a setsid() child cannot
- * outlive it holding /work files open (issue #153 item 3). A kill that fails
+ * maxPasses (20) passes. Returns the ids it signalled. The server runs it
+ * after each job, and nowhere else: when that job releases the lock, nothing
+ * of it may still be running, so a setsid() child cannot outlive it holding
+ * /work files open (issue #153 item 3). A kill that fails
  * (already gone, or not this user's) is skipped.
  *
  * Which processes are spared depends on the whole table (a docker exec

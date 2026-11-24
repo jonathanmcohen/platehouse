@@ -136,16 +136,15 @@ export interface SlicerConfig {
   /** The start-up check's retry delays; tests shorten them. Default SANDBOX_RETRY. */
   sandboxRetry?: SandboxRetry;
   /**
-   * Kill the processes left behind once a job is released, and on a health
-   * check while no job holds the lock (reapLeftovers in sandbox.ts, issue
-   * #153). loadConfig turns it on only where the server runs under tini as
-   * in the image (runsUnderTini), never on a host where PID 1 has children
-   * of its own.
+   * Kill the processes left behind once a job is released (reapLeftovers
+   * in sandbox.ts, issue #153). loadConfig turns it on only where the
+   * server runs under tini as in the image (runsUnderTini), never on a host
+   * where PID 1 has children of its own.
    */
   reapOrphans?: boolean;
   /**
-   * What release() and an idle health check run to clean up processes left
-   * behind; tests pass a spy. Default: reapLeftovers when reapOrphans is on,
+   * What release() runs to clean up processes left behind; tests pass a
+   * spy. Default: reapLeftovers when reapOrphans is on,
    * nothing otherwise.
    */
   reap?: () => number[];
@@ -637,14 +636,14 @@ export function createSlicer(config: SlicerConfig): Slicer {
 
   /**
    * Kills the processes left behind (reap), when the clean-up is on, and
-   * logs what it killed. Only ever run by the job holding the lock, as it
-   * releases it, or while no job holds it.
+   * logs what it killed. Run only by a job's release(), while that job
+   * still holds the lock.
    */
-  const reapLeftBehind = (by: string): void => {
+  const reapLeftBehind = (): void => {
     if (!reap) return;
     const reaped = reap();
     if (reaped.length > 0) {
-      log(`killed ${reaped.length} process(es) left behind by ${by}: ${reaped.join(", ")}`);
+      log(`killed ${reaped.length} process(es) left behind by the job: ${reaped.join(", ")}`);
     }
   };
 
@@ -673,7 +672,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
           // A program that called setsid() left the group killNow kills and
           // was re-parented to tini; nothing of the job may outlive it, or a
           // sleeping process holds /work files open until a restart.
-          reapLeftBehind("the job");
+          reapLeftBehind();
           if (dir) removeJobDir(dir);
           if (holder === job) sweepJobDirs(dir);
         } finally {
@@ -984,10 +983,6 @@ export function createSlicer(config: SlicerConfig): Slicer {
     const route = `${req.method} ${url.pathname}`;
     switch (route) {
       case "GET /v1/health": {
-        // With no job holding the lock, nothing running belongs to a job, so
-        // a process left behind is cleaned up now rather than at the next
-        // job's release.
-        if (!holder) reapLeftBehind("an earlier job");
         // A full /work fails every upload with ENOSPC, so health fails too.
         // The contract lets any route answer 500 with a plain-text body,
         // and the health schema itself is unchanged.
