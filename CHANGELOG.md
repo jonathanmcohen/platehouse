@@ -29,6 +29,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Fixed
 
+- Start-up and adding a printer no longer wait while estimates are queued for the whole library. Queueing runs in the background and in bulk, so `/healthz` answers at once after an OrcaSlicer upgrade ([#461](https://github.com/jonathanmcohen/platehouse/issues/461)).
 - Settings works out each printer's waiting work with one database query, instead of loading every queued slicer job on each load and every 15-second refresh. Saving My printers and the Orca poll's check for lost estimates also ask the database instead of reading the queue ([#459](https://github.com/jonathanmcohen/platehouse/issues/459)).
 - Plate numbers for the library page, the model page and the API are read in two queries for the whole page instead of two per plate ([#456](https://github.com/jonathanmcohen/platehouse/issues/456)).
 - The preview backfill for older files sends its next batch as soon as one finishes, instead of making at most 10 pictures every 5 minutes ([#417](https://github.com/jonathanmcohen/platehouse/issues/417)).

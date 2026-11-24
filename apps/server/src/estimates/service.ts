@@ -74,13 +74,19 @@
 //   each filament, the preset the slicer used and where it came from:
 //   Bambu's own, Generic, or the file's own filament (PR #55).
 import { setTimeout as sleep } from "node:timers/promises";
-import type { Printer, Profiles, SliceOk } from "@platehouse/slicer-contract";
+import type { Printer, Profiles, SliceOk, SlicerTimeouts } from "@platehouse/slicer-contract";
 import { type Kysely, sql } from "kysely";
 import type { JobWithMetadata, PgBoss } from "pg-boss";
-import { isUuid } from "../db/ids.js";
+import { isUuid, uuidv7 } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB } from "../db/types.js";
-import { QUEUE, SLICER_RETRY, type SlicerJob, type SlicerJobHandlers } from "../jobs/queues.js";
+import {
+  MAINTENANCE_TASKS,
+  QUEUE,
+  SLICER_RETRY,
+  type SlicerJob,
+  type SlicerJobHandlers,
+} from "../jobs/queues.js";
 import { BOSS_JOB } from "../repos/activity.js";
 import type { Estimate } from "../repos/estimates.js";
 import { createRepos, type Repos } from "../repos/index.js";
@@ -319,6 +325,8 @@ export interface Estimates {
   enqueuePlate(plateId: string, printerId: string, orcaVersion: string): Promise<Estimate | null>;
   /** Queues a newly ingested file's plates for each of My printers; returns how many were queued. */
   enqueueFile(fileId: string): Promise<number>;
+  /** Queues every live plate with no estimate for printer and orca, in bulk; returns how many. */
+  queueLibraryFor(printer: Printer, orca: string): Promise<number>;
   /**
    * Queues every live plate that has no estimate for one of My printers and
    * the current Orca version; returns how many were queued.
@@ -360,6 +368,9 @@ const DETAIL_CHARS = 2000;
 
 /** Queued slice jobs cancelled in one call. */
 const CANCEL_BATCH = 1000;
+
+/** Estimates and jobs inserted in one statement by the bulk library queueing. */
+const BULK_BATCH = 500;
 
 /** Most jobs read back when looking through the slicer queue. */
 const JOB_PAGE = 100_000;
@@ -500,6 +511,27 @@ export async function libraryPlatesFor(
 ): Promise<string[]> {
   const { rows } = await sql<{ id: string }>`
     select p.id
+    ${libraryPlatesWhere(printer, orca)}
+    order by f.created_at, f.id, p.index
+  `.execute(db);
+  return rows.map((r) => r.id);
+}
+
+/** How many plates libraryPlatesFor lists: the same filter, counted in SQL. */
+export async function countLibraryPlatesFor(
+  db: Kysely<DB>,
+  printer: Printer,
+  orca: string,
+): Promise<number> {
+  const { rows } = await sql<{ n: string }>`
+    select count(*) as n
+    ${libraryPlatesWhere(printer, orca)}
+  `.execute(db);
+  return Number(rows[0]?.n ?? 0);
+}
+
+function libraryPlatesWhere(printer: Printer, orca: string) {
+  return sql`
     from plates p
     join files f on f.id = p.file_id
     join models m on m.id = f.model_id
@@ -515,9 +547,7 @@ export async function libraryPlatesFor(
           and e.printer_model_id = ${printer.modelId}
           and abs(e.nozzle - ${printer.nozzle}::double precision) < ${NOZZLE_TOLERANCE}
       )
-    order by f.created_at, f.id, p.index
-  `.execute(db);
-  return rows.map((r) => r.id);
+  `;
 }
 
 export function createEstimates(deps: EstimatesDeps): Estimates {
@@ -556,6 +586,11 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     return orca;
   }
 
+  /** The options every slice job carries, for send and for the bulk insert alike. */
+  function slicePlan(timeouts: SlicerTimeouts) {
+    return { expireInSeconds: estimateExpireSeconds(timeouts), ...retryOverrides };
+  }
+
   async function sendSlice(
     estimate: Estimate,
     priority: number,
@@ -570,9 +605,8 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     };
     const { timeouts } = await slicerState.current();
     await boss.send(QUEUE.slicer, data, {
-      expireInSeconds: estimateExpireSeconds(timeouts),
+      ...slicePlan(timeouts),
       priority,
-      ...retryOverrides,
       ...(startAfterSeconds === undefined ? {} : { startAfter: startAfterSeconds }),
     });
   }
@@ -676,11 +710,42 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     return (await repos.settings.get()).myPrinters.includes(printerId);
   }
 
-  /** Queues every live plate that has no estimate for printer and orca; returns how many. */
+  /**
+   * Queues every live plate that has no estimate for printer and orca;
+   * returns how many. In bulk: a batch of pending estimates in one insert,
+   * then their jobs in one insert, so a library of thousands is a few
+   * statements rather than several per plate. A crash between the two leaves
+   * pending estimates with no job, which recoverLost (run by every poll)
+   * sends again. A plate that another run made an estimate for meanwhile is
+   * skipped by the insert's conflict, so it is queued once.
+   */
   async function queueLibraryFor(printer: Printer, orca: string): Promise<number> {
+    const plateIds = await libraryPlatesFor(db, printer, orca);
+    if (plateIds.length === 0) return 0;
+    const { timeouts } = await slicerState.current();
+    const plan = slicePlan(timeouts);
     let queued = 0;
-    for (const id of await libraryPlatesFor(db, printer, orca)) {
-      if ((await enqueue(id, printer, orca)).queued) queued += 1;
+    for (let i = 0; i < plateIds.length; i += BULK_BATCH) {
+      const batch = plateIds.slice(i, i + BULK_BATCH);
+      const { rows } = await sql<{ id: string }>`
+        insert into estimates
+          (id, plate_id, source, printer_id, printer_model_id, nozzle, slicer, slicer_version)
+        select t.id, t.plate_id, 'platehouse', ${printer.id}, ${printer.modelId},
+               ${printer.nozzle}::double precision, ${PLATEHOUSE_SLICER}, ${orca}
+        from unnest(${batch.map(() => uuidv7())}::uuid[], ${batch}::uuid[]) as t(id, plate_id)
+        on conflict on constraint estimates_key do nothing
+        returning id
+      `.execute(db);
+      if (rows.length === 0) continue;
+      await boss.insert(
+        QUEUE.slicer,
+        rows.map((row) => ({
+          data: { kind: SLICE_JOB_KIND, estimateId: row.id, printerId: printer.id },
+          priority: SLICE_PRIORITY.library,
+          ...plan,
+        })),
+      );
+      queued += rows.length;
     }
     return queued;
   }
@@ -800,15 +865,22 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       const orca = await currentOrca();
       const queuedFor: Array<{ printerId: string; queued: number }> = [];
       for (const printer of added) {
-        const queued = await queueLibraryFor(printer, orca);
-        log(`added ${printer.id} to My printers; queued ${queued} estimate(s)`);
+        // Counted here and queued by the poll sent below, so the save answers
+        // at once however large the library is (#461).
+        const queued = await countLibraryPlatesFor(db, printer, orca);
+        log(`added ${printer.id} to My printers; ${queued} estimate(s) to queue`);
         queuedFor.push({ printerId: printer.id, queued });
       }
-      // Read once all of it is queued: an added printer's plates wait behind
-      // whatever was queued before them, other printers' and earlier added ones.
+      await boss.send(QUEUE.maintenance, { task: MAINTENANCE_TASKS.pollOrca }, { retryLimit: 0 });
+      // The poll's reestimateAll queues each listed printer's library. Plates
+      // already waiting for other printers go ahead of an added printer's.
       const queue = await queueByPrinter();
       for (const { printerId, queued } of queuedFor) {
-        out.added.push({ printerId, queued, through: queue.get(printerId)?.through ?? queued });
+        out.added.push({
+          printerId,
+          queued,
+          through: Math.max(queued, queue.get(printerId)?.through ?? 0),
+        });
       }
     }
     return out;
@@ -1413,6 +1485,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     setPrinter,
     enqueuePlate,
     enqueueFile,
+    queueLibraryFor,
     reestimateAll,
     retryEstimate: (estimateId) => retryEstimate(estimateId),
     pollOrca,

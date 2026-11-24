@@ -204,6 +204,7 @@ beforeEach(async () => {
   const settings = await env.repos.settings.get();
   if (settings.printerId !== P1S || settings.myPrinters.join("|") !== P1S) {
     await estimates.setPrinter(P1S);
+    await estimates.pollOrca();
     await drain();
   }
 });
@@ -362,6 +363,7 @@ describe("estimates", () => {
 
   test("a filament with no preset for the printer is labelled as the file's own", async () => {
     await estimates.setPrinter(A1);
+    await estimates.pollOrca();
     const { plates } = await upload({ plates: 1 });
     await drain();
     const numbers = await estimates.plateNumbers(plateId(plates, 1));
@@ -385,6 +387,7 @@ describe("estimates", () => {
     const held = stub.hold();
     try {
       await estimates.setPrinter(X1C);
+      await estimates.pollOrca();
       await until(
         async () => (await platehouseRows(id)).some((r) => r.printerId === X1C),
         (v) => v,
@@ -961,6 +964,7 @@ describe("estimates", () => {
         (n) => n > 0,
       );
       await estimates.setPrinter(X1C);
+      await estimates.pollOrca();
       const queued = await boss.findJobs<{ printerId: string }>(QUEUE.slicer, { queued: true });
       expect(queued.filter((j) => j.data.printerId === P1S)).toEqual([]);
     } finally {
@@ -1061,6 +1065,69 @@ describe("My printers", () => {
     });
   }
 
+  test("queueing a library for a printer makes one estimate and one job per plate, and twice queues nothing more", async () => {
+    await upload({ plates: 3 });
+    await drain();
+    const orca = (await env.repos.settings.get()).lastOrcaVersion ?? "";
+    const printer = (await slicer.profiles()).printers.find((p) => p.id === A1);
+    if (printer === undefined) throw new Error("no A1 in the stub's menu");
+    const expected = await unestimated(A1);
+    expect(expected).toBeGreaterThanOrEqual(3);
+    const held = stub.hold();
+    try {
+      expect(await estimates.queueLibraryFor(printer, orca)).toBe(expected);
+      expect(await estimates.queueLibraryFor(printer, orca)).toBe(0);
+      const jobs = (await queuedJobs()).filter((j) => j.data.printerId === A1);
+      expect(jobs).toHaveLength(expected);
+      expect(new Set(jobs.map((j) => j.data.estimateId)).size).toBe(expected);
+      expect(jobs.every((j) => j.priority === SLICE_PRIORITY.library)).toBe(true);
+      // The same expiry the one-job path (sendSlice) gives.
+      const probe = await upload({ plates: 1 });
+      await estimates.enqueueFile(probe.fileId);
+      const single = (await queuedJobs()).find(
+        (j) => j.data.printerId !== A1 && j.priority === SLICE_PRIORITY.waiting,
+      );
+      expect(single).toBeDefined();
+      expect(new Set(jobs.map((j) => j.expireInSeconds))).toEqual(
+        new Set([single?.expireInSeconds]),
+      );
+    } finally {
+      held.release();
+    }
+    await drain();
+  });
+
+  test("a pending estimate whose job was never inserted is queued again by the next poll", async () => {
+    const { plates } = await upload({ plates: 1 });
+    await drain();
+    const orca = (await env.repos.settings.get()).lastOrcaVersion ?? "";
+    const plate = plates[0];
+    if (plate === undefined) throw new Error("no plate");
+    // What a crash between the bulk insert of estimates and of their jobs
+    // leaves: the plate's P1S estimate pending, with no job anywhere.
+    await sql`delete from estimates where plate_id = ${plate.id} and source = 'platehouse'`.execute(
+      env.db,
+    );
+    const orphan = await env.repos.estimates.upsertPending({
+      plateId: plate.id,
+      printerId: P1S,
+      printerModelId: null,
+      nozzle: null,
+      slicer: "orca",
+      slicerVersion: orca,
+    });
+    expect(orphan.status).toBe("pending");
+    const held = stub.hold();
+    try {
+      await estimates.pollOrca();
+      const jobs = (await queuedJobs()).filter((j) => j.data.estimateId === orphan.id);
+      expect(jobs).toHaveLength(1);
+    } finally {
+      held.release();
+    }
+    await drain();
+  });
+
   test("adding a printer queues every existing plate for it, and the default stays", async () => {
     const { plates } = await upload({ plates: 2 });
     await drain();
@@ -1080,6 +1147,9 @@ describe("My printers", () => {
         printerId: P1S,
         myPrinters: [P1S, A1],
       });
+      // Saving only counted them; the poll it sent queues them (run here
+      // too, so the test does not wait on the maintenance worker).
+      await estimates.pollOrca();
       // The queue shows the work: every one of those plates waits for the A1.
       await until(
         () => stub.calls.length,
@@ -1139,12 +1209,13 @@ describe("My printers", () => {
       expect(forA1).toBeLessThanOrEqual(missingA1);
       expect(forX1C).toBeGreaterThanOrEqual(2);
       expect(forX1C).toBeLessThanOrEqual(missingX1C);
-      // A1's work was queued first, so it is through after its own plates;
-      // X1C's plates wait behind all of A1's. (The figure can be one short
-      // in the moment a slice has started but not yet marked itself running.)
+      // The answer comes before the poll queues anything (a maintenance
+      // worker may already have started it): the A1 is through after its own
+      // plates, and the X1C after its own at least, and behind the A1's at most.
       expect(saved.added[0]?.through).toBe(forA1);
-      expect(saved.added[1]?.through).toBeGreaterThanOrEqual(forA1 + forX1C - 1);
+      expect(saved.added[1]?.through).toBeGreaterThanOrEqual(forX1C);
       expect(saved.added[1]?.through).toBeLessThanOrEqual(forA1 + forX1C);
+      await estimates.pollOrca();
 
       // Once the first A1 slice is running in the slicer, the figures are exact.
       await until(
@@ -1177,6 +1248,7 @@ describe("My printers", () => {
   // upload's own queueing must still put them ahead of a long backfill.
   test("a new file's plates the poll queued first still get urgent slices from the upload", async () => {
     await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+    await estimates.pollOrca();
     await drain();
     const held = stub.hold();
     const before = stub.calls.length;
@@ -1248,6 +1320,7 @@ describe("My printers", () => {
       // Library work for the A1: the first slice is held in the slicer, the
       // rest wait in the queue.
       await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+      await estimates.pollOrca();
       await until(
         () => stub.calls.length,
         (n) => n > before,
@@ -1318,6 +1391,7 @@ describe("My printers", () => {
       const saved = await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
       queued = saved.added[0]?.queued ?? 0;
       expect(queued).toBeGreaterThanOrEqual(2);
+      await estimates.pollOrca();
       await until(
         () => stub.calls.length,
         (n) => n > before,
@@ -1357,6 +1431,7 @@ describe("My printers", () => {
 
   test("removing a printer stops its pending work, and its finished numbers stay", async () => {
     await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+    await estimates.pollOrca();
     await drain();
     const done = await upload({ plates: 1 });
     await drain();
@@ -1403,6 +1478,7 @@ describe("My printers", () => {
 
   test("reading another printer's numbers, or reordering, never starts a slice", async () => {
     await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+    await estimates.pollOrca();
     const { plates } = await upload({ plates: 2 });
     await drain();
     const calls = stub.calls.length;
@@ -1441,6 +1517,7 @@ describe("My printers", () => {
     const held = stub.hold();
     try {
       await estimates.savePrinters({ printers: [P1S, X1C], defaultId: P1S });
+      await estimates.pollOrca();
       // The X1C's estimate is on its way: the X1C view says estimating, and
       // does not pass the P1S's numbers off as old X1C numbers.
       expect((await estimates.plateNumbers(id, X1C)).platehouse).toMatchObject({
@@ -1540,6 +1617,7 @@ describe("My printers", () => {
     expect(
       await estimates.savePrinters({ printers: [P1S, gone, X1C], defaultId: P1S }),
     ).toMatchObject({ removed: [], added: [{ printerId: X1C }] });
+    await estimates.pollOrca();
     await drain();
   });
 });

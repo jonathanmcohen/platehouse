@@ -45,7 +45,7 @@ import { FALLBACK_SLICES_PER_MINUTE, MIN_FINISHES_FOR_RATE } from "../../../src/
 import { createEstimates, type Estimates } from "../../../src/estimates/service.js";
 import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
-import { QUEUE, startQueues } from "../../../src/jobs/queues.js";
+import { MAINTENANCE_TASKS, QUEUE, startQueues } from "../../../src/jobs/queues.js";
 import { createTrash, type PurgeStore } from "../../../src/library/trash.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { createUploads } from "../../../src/uploads/tus.js";
@@ -473,9 +473,13 @@ describe("the settings page", () => {
     }
   });
 
-  test("adding a printer queues every plate for it and answers how many", async () => {
+  test("adding a printer answers how many plates it will queue, before queueing them", async () => {
     await uploadPlate();
     await drain();
+    const pollJobs = async () =>
+      (await boss.findJobs(QUEUE.maintenance, { data: { task: MAINTENANCE_TASKS.pollOrca } }))
+        .length;
+    const pollsBefore = await pollJobs();
     const held = stub.hold();
     try {
       const res = await call("PUT", "/app/api/settings/printers", {
@@ -493,6 +497,13 @@ describe("the settings page", () => {
       expect(queued).toBeGreaterThanOrEqual(1);
       // Nothing else was queued, so its plates are through after its own.
       expect(answer.added[0]?.through).toBe(queued);
+      // The save sent a poll to queue them (a maintenance worker may have
+      // taken it already, so the slicer queue is not asserted empty).
+      expect(await pollJobs()).toBeGreaterThan(pollsBefore);
+      // Running the poll queues one slice job per plate.
+      await estimates.pollOrca();
+      const sliceJobs = await boss.findJobs<{ printerId: string }>(QUEUE.slicer, { queued: true });
+      expect(sliceJobs.filter((j) => j.data.printerId === X1C)).toHaveLength(queued);
       // The settings answer shows that work waiting for the X1C.
       expect((await call("GET", "/app/api/settings")).json()).toMatchObject({
         printerId: P1S,
@@ -535,6 +546,7 @@ describe("the settings page", () => {
       const forA1 = added.find((a) => a.printerId === A1)?.queued ?? 0;
       expect(forX1C).toBeGreaterThanOrEqual(1);
       expect(forA1).toBeGreaterThanOrEqual(1);
+      await estimates.pollOrca();
       // Once the first X1C slice is running, the figures are exact.
       await until(
         () => stub.calls.length,

@@ -641,14 +641,14 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     }
   }
 
-  // The Orca poll's startup run (it runs at startup and every 10
-  // minutes), here beside its schedule. It runs after the workers start, so
-  // the slices it queues are worked at once. A failure, such as a slicer that
-  // is not up yet, is logged and never stops the app: the next scheduled poll
-  // does the same work.
+  // The Orca poll's startup run (it runs at startup and every 10 minutes) is
+  // one job on the maintenance queue, so start-up does not wait while a whole
+  // library is queued after an Orca upgrade (#461). The worker above takes it
+  // at once. A failure to send it is logged and never stops the app: the next
+  // scheduled poll does the same work.
   if (deps.pollOrca) {
     try {
-      await deps.pollOrca();
+      await boss.send(QUEUE.maintenance, { task: MAINTENANCE_TASKS.pollOrca }, { retryLimit: 0 });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`queues: startup Orca poll: ${message.slice(0, 200)}`);
