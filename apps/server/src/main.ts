@@ -651,8 +651,11 @@ export function installSignalHandlers(
  * started. Abort is only noticed between steps and a step can hang (migrate
  * on a database that never answers waits for the pool's connect timeout), so
  * past waitMs this gives up and resolves; the process then exits 0. That is
- * safe: the migrations are one transaction, pg-boss sets itself up in one,
- * and Postgres rolls back whatever a dropped connection left open.
+ * safe: the migrations are one transaction, pg-boss's install is one, and
+ * Postgres rolls back whatever a dropped connection left open; the queue
+ * creation that follows is not one, but is idempotent on the next start.
+ * Only the settling of start() is raced: a server that did start is stopped
+ * outside the race, under the signal handler's own 30 s deadline.
  */
 export async function stopWhileStarting(
   abort: AbortController,
@@ -665,17 +668,21 @@ export async function stopWhileStarting(
   const gaveUp = new Promise<"late">((resolve) => {
     timer = setTimeout(() => resolve("late"), waitMs);
   });
-  const unwound = starting.then(
-    (server) => server.stop(),
+  const settled = starting.then(
+    (server) => server,
     () => undefined,
   );
+  let result: Server | undefined | "late";
   try {
-    if ((await Promise.race([unwound, gaveUp])) === "late") {
-      log("platehouse: stopped during start-up");
-    }
+    result = await Promise.race([settled, gaveUp]);
   } finally {
     clearTimeout(timer);
   }
+  if (result === "late") {
+    log("platehouse: stopped during start-up");
+    return;
+  }
+  if (result !== undefined) await result.stop();
 }
 
 /** The process: configuration from the environment, the server, the signals. */
@@ -703,7 +710,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     server = await starting;
   } catch (error) {
     // A start-up a signal ended: the signal handler exits 0, not this.
-    if (abort.signal.aborted) return;
+    if (abort.signal.aborted && error === abort.signal.reason) return;
     throw error;
   }
 }

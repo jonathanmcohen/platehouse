@@ -137,9 +137,9 @@ LABEL org.opencontainers.image.source="https://github.com/jonathanmcohen/plateho
 # Debian's pending updates, applied here because the base image can lag
 # Debian's security fixes: the release workflow's Trivy gate fails on any
 # fixable OS HIGH or CRITICAL, and run 43661472697 failed on a zlib1g fix the
-# base did not have yet. Upgrades, plus tini for PID 1 (see ENTRYPOINT), no recommends, with
-# apt retrying a failed download 10 times as the other images do (#147), and
-# the package lists removed afterwards. Only this stage needs it: nothing from
+# base did not have yet. Upgrades, plus tini for PID 1 (see ENTRYPOINT), with
+# no recommends, with apt retrying a failed download 10 times as the other
+# images do (#147), and the package lists removed afterwards. Only this stage needs it: nothing from
 # the build stage's OS reaches the image, only /src.
 #
 # OS_UPDATES_STAMP is used in this RUN so that a new value rebuilds it: the

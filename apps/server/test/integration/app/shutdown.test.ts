@@ -137,7 +137,13 @@ describe("the server process", () => {
       proc.once("exit", (code, signal) => resolve({ code, signal })),
     );
     try {
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      // Start-up is in migrate once the silent database has accepted a
+      // connection, and the signal handlers exist by then.
+      await until(
+        async () => sockets.size,
+        (n) => n > 0,
+        60_000,
+      );
       expect(proc.exitCode, log.slice(-4000)).toBeNull();
       proc.kill("SIGTERM");
       const result = await Promise.race([

@@ -73,6 +73,29 @@ describe("stopWhileStarting", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(done).toBe(true);
     expect(log).toHaveBeenCalledWith("platehouse: stopped during start-up");
+  });
+
+  test("a server that did start is stopped in full, however long the stop takes", async () => {
+    const abort = new AbortController();
+    let stopped = false;
+    const stop = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, START_ABORT_WAIT_MS * 3));
+      stopped = true;
+    });
+    const log = vi.fn();
+    const done = stopWhileStarting(
+      abort,
+      Promise.resolve({ stop } as unknown as Server),
+      5_000,
+      log,
+    );
+    await vi.advanceTimersByTimeAsync(START_ABORT_WAIT_MS * 3);
+    await done;
+    expect(stopped).toBe(true);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  test("waits 5 s for start() to unwind", () => {
     expect(START_ABORT_WAIT_MS).toBe(5_000);
   });
 });
