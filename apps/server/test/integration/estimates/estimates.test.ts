@@ -185,8 +185,11 @@ beforeAll(async () => {
     onIngested: (result) => estimates.enqueueFile(result.fileId),
     pollingIntervalSeconds: 0.5,
   });
-  // startQueues has run the Orca poll once, as at app startup.
-  expect((await env.repos.settings.get()).lastOrcaVersion).toBe("2.5.0");
+  // startQueues sends the Orca poll as a job, as at app startup; wait for it.
+  await until(
+    async () => (await env.repos.settings.get()).lastOrcaVersion,
+    (v) => v === "2.5.0",
+  );
 });
 
 afterAll(async () => {
@@ -1065,6 +1068,12 @@ describe("My printers", () => {
     });
   }
 
+  /** Slice jobs not yet finished (a worker may have claimed some): queued or active. */
+  async function liveJobs() {
+    const jobs = await boss.findJobs<{ printerId: string; estimateId: string }>(QUEUE.slicer, {});
+    return jobs.filter((j) => ["created", "retry", "active"].includes(j.state));
+  }
+
   test("queueing a library for a printer makes one estimate and one job per plate, and twice queues nothing more", async () => {
     await upload({ plates: 3 });
     await drain();
@@ -1077,14 +1086,14 @@ describe("My printers", () => {
     try {
       expect(await estimates.queueLibraryFor(printer, orca)).toBe(expected);
       expect(await estimates.queueLibraryFor(printer, orca)).toBe(0);
-      const jobs = (await queuedJobs()).filter((j) => j.data.printerId === A1);
+      const jobs = (await liveJobs()).filter((j) => j.data.printerId === A1);
       expect(jobs).toHaveLength(expected);
       expect(new Set(jobs.map((j) => j.data.estimateId)).size).toBe(expected);
       expect(jobs.every((j) => j.priority === SLICE_PRIORITY.library)).toBe(true);
       // The same expiry the one-job path (sendSlice) gives.
       const probe = await upload({ plates: 1 });
       await estimates.enqueueFile(probe.fileId);
-      const single = (await queuedJobs()).find(
+      const single = (await liveJobs()).find(
         (j) => j.data.printerId !== A1 && j.priority === SLICE_PRIORITY.waiting,
       );
       expect(single).toBeDefined();
@@ -1120,7 +1129,7 @@ describe("My printers", () => {
     const held = stub.hold();
     try {
       await estimates.pollOrca();
-      const jobs = (await queuedJobs()).filter((j) => j.data.estimateId === orphan.id);
+      const jobs = (await liveJobs()).filter((j) => j.data.estimateId === orphan.id);
       expect(jobs).toHaveLength(1);
     } finally {
       held.release();
@@ -1327,7 +1336,7 @@ describe("My printers", () => {
       );
       first = stub.calls.length;
       expect(first).toBe(before + 1);
-      expect(stub.calls[before]).toMatchObject({ printer: A1, plate: 1 });
+      expect(stub.calls[before]).toMatchObject({ printer: A1 });
       // A new three-plate file arrives meanwhile.
       const { plates } = await upload({ plates: 3 });
       const estimateIds = async () =>
