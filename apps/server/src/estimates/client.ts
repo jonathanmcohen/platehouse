@@ -30,6 +30,7 @@ import type { Readable } from "node:stream";
 import {
   type Health,
   type Profiles,
+  type SandboxOffBody,
   type SliceResult,
   slicerContract,
 } from "@platehouse/slicer-contract";
@@ -116,6 +117,21 @@ export class SlicerRefused extends Error {
     super(message);
     this.name = "SlicerRefused";
     this.status = status;
+  }
+}
+
+/**
+ * The slicer's sandbox is off, so it did not run the slice (503 sandbox_off).
+ * Not a fault of the file and not an outage: it lasts until the kernel is
+ * upgraded or the slicer is allowed to run unsandboxed.
+ */
+export class SlicerSandboxOff extends Error {
+  readonly reason: SandboxOffBody["reason"];
+
+  constructor(reason: SandboxOffBody["reason"]) {
+    super(`The slicer's sandbox is off (${reason})`);
+    this.name = "SlicerSandboxOff";
+    this.reason = reason;
   }
 }
 
@@ -339,6 +355,10 @@ export function createSlicerClient(opts: SlicerClientOptions): SlicerClient {
         timeouts ?? { uploadMs: DEFAULT_UPLOAD_TIMEOUT_MS, answerMs: sliceMs },
         { body, size },
       );
+      if (answer.status === 503) {
+        const off = slicerContract.sandboxOff.safeParse(readJson(answer));
+        if (off.success) throw new SlicerSandboxOff(off.data.reason);
+      }
       if (answer.status !== 200) throw refusal(answer);
       return parsed(answer, slicerContract.sliceResult);
     },

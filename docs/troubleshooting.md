@@ -117,6 +117,13 @@ inbox waits and tries again, and the log says an outage started and ended.
 - **The slicer is unreachable.** Check that the app and the slicer share the `platehouse-slicer`
   network and that `SLICER_URL` names the slicer's container and port
   (`http://platehouse-slicer:8080` in the example).
+- **"Estimates are off on this server: its kernel is older than Linux 6.12."** or **"Estimates are
+  off on this server: its sandbox check failed."**: the slicer's sandbox is off, so it refused to
+  slice. The plate is recorded as failed once, with that sentence under **Details**, and is not
+  tried again while the sandbox stays off. Upgrade the host's kernel to Linux 6.12 or newer, or, if
+  you accept slicing without the sandbox, set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer. Once
+  the slicer reports its sandbox on (or allowed without it), the plates it refused are estimated
+  again automatically, at most 50 on each Orca version check; no need to press **Retry**.
 
 OrcaSlicer refusals, shown on the plate with OrcaSlicer's own message behind **Details**:
 

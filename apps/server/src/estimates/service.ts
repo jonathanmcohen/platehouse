@@ -90,6 +90,7 @@ import {
   SlicerBusy,
   type SlicerClient,
   SlicerRefused,
+  SlicerSandboxOff,
   SlicerUnreachable,
 } from "./client.js";
 import {
@@ -393,6 +394,21 @@ export const STORE_DOWN_DETAIL = "The file could not be read from storage.";
  */
 const DOWN_AFTER_LOST_DETAIL =
   "The slicer stopped during a slice of this plate and was not back in time.";
+
+/**
+ * The details of a plate the slicer refused because its sandbox is off. The
+ * Orca poll queues such a plate again once health says the sandbox is on, or
+ * the slicer may run unsandboxed. Kept out of OUTAGE_DETAILS: it is not an
+ * outage, and the poll waits on the sandbox, not on the slicer answering.
+ */
+export const SANDBOX_OFF_KERNEL_DETAIL =
+  "Estimates are off on this server: its kernel is older than Linux 6.12.";
+export const SANDBOX_OFF_CHECK_DETAIL =
+  "Estimates are off on this server: its sandbox check failed.";
+export const SANDBOX_OFF_DETAILS = [SANDBOX_OFF_KERNEL_DETAIL, SANDBOX_OFF_CHECK_DETAIL];
+
+/** The most sandbox-off estimates one poll queues again, so the shared slicer queue is not flooded. */
+const SANDBOX_REQUEUE_LIMIT = 50;
 
 /** The failure details the Orca poll queues again once the outage is over. */
 const OUTAGE_DETAILS = [SLICER_DOWN_DETAIL, STORE_DOWN_DETAIL];
@@ -974,6 +990,15 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         }
         return;
       } catch (error) {
+        if (error instanceof SlicerSandboxOff) {
+          await recordFailed(estimate.id, {
+            code: null,
+            reason: "slicer_error",
+            detail:
+              error.reason === "old_kernel" ? SANDBOX_OFF_KERNEL_DETAIL : SANDBOX_OFF_CHECK_DETAIL,
+          });
+          return;
+        }
         const outage = outageOf(error);
         if (outage !== null) {
           // The slicer never saw this plate, or its file could not be read
@@ -1144,6 +1169,37 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   }
 
   /**
+   * Queues again the estimates a sandbox that was off failed
+   * (SANDBOX_OFF_DETAILS, matched exactly) for My printers and this Orca
+   * version, at most SANDBOX_REQUEUE_LIMIT a poll. The poll calls it only
+   * when the sandbox is on, or off with the slicer allowed to run
+   * unsandboxed. Each goes through retryEstimate, which makes it pending
+   * first, so the next poll finds it no longer failed.
+   */
+  async function requeueSandboxOffFailures(orca: string): Promise<void> {
+    const { myPrinters } = await repos.settings.get();
+    const failed = await db
+      .selectFrom("estimates")
+      .select("id")
+      .where("source", "=", "platehouse")
+      .where("status", "=", "failed")
+      .where("failureCode", "is", null)
+      .where("failureReason", "=", "slicer_error")
+      .where("failureDetail", "in", SANDBOX_OFF_DETAILS)
+      .where("printerId", "in", myPrinters)
+      .where("slicerVersion", "=", orca)
+      .orderBy("createdAt")
+      .limit(SANDBOX_REQUEUE_LIMIT)
+      .execute();
+    let queued = 0;
+    for (const row of failed) {
+      if (await retryEstimate(row.id, SLICE_PRIORITY.library)) queued += 1;
+    }
+    if (queued > 0)
+      log(`queued ${queued} estimate(s) again that a sandbox that was off had failed`);
+  }
+
+  /**
    * Every slice job waiting in the queue (created, or waiting for a retry),
    * read a page at a time. Only queued jobs are read, so the finished jobs
    * pg-boss keeps never crowd out a live one.
@@ -1268,7 +1324,8 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   }
 
   async function pollOrca(): Promise<{ orca: string; changed: boolean }> {
-    const { orca } = await slicer.health();
+    const health = await slicer.health();
+    const { orca } = health;
     const stored = (await repos.settings.get()).lastOrcaVersion;
     const changed = orca !== stored;
     if (profilesCache !== null && profilesCache.orca !== orca) profilesCache = null;
@@ -1278,6 +1335,10 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     }
     await recoverLost();
     await requeueOutageFailures(orca);
+    const { sandbox } = health;
+    if (sandbox.state === "on" || (sandbox.state === "off" && sandbox.allowUnsandboxed)) {
+      await requeueSandboxOffFailures(orca);
+    }
     await reestimateAll(changed ? "orca" : "poll");
     return { orca, changed };
   }

@@ -10,6 +10,7 @@ import {
   SliceBodyUnreadable,
   SlicerBusy,
   SlicerRefused,
+  SlicerSandboxOff,
   SlicerUnreachable,
   sliceTimeoutMs,
 } from "../../src/estimates/client.js";
@@ -18,6 +19,7 @@ import {
   type SlicerStub,
   STUB_FILAMENTS,
   STUB_PRINTERS,
+  sandboxOff,
   startSlicerStub,
 } from "../support/slicer-stub.js";
 
@@ -111,6 +113,41 @@ describe("slicer client", () => {
     await expect(
       client.slice({ printerId: P1S, plate: 1, ...body(build3mf({ plates: 1 })) }),
     ).rejects.toBeInstanceOf(SlicerBusy);
+  });
+
+  test("503 sandbox_off is SlicerSandboxOff, with its reason", async () => {
+    const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
+    for (const reason of ["old_kernel", "check_failed"] as const) {
+      stub.onSlice(() => sandboxOff(reason));
+      const error = await client
+        .slice({ printerId: P1S, plate: 1, ...body(build3mf({ plates: 1 })) })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(SlicerSandboxOff);
+      expect((error as SlicerSandboxOff).reason).toBe(reason);
+    }
+  });
+
+  test("a 503 that is not a valid sandbox_off body stays SlicerRefused", async () => {
+    const { createServer } = await import("node:http");
+    const server = createServer((req, res) => {
+      req.resume();
+      res.writeHead(503, { "content-type": "application/json", connection: "close" });
+      res.end(JSON.stringify({ error: "sandbox_off", reason: "other", detail: "x" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (address === null || typeof address === "string") throw new Error("no port");
+      const client = createSlicerClient({
+        url: `http://127.0.0.1:${address.port}`,
+        plateSeconds: 5,
+      });
+      await expect(
+        client.slice({ printerId: P1S, plate: 1, ...body(build3mf({ plates: 1 })) }),
+      ).rejects.toMatchObject({ name: "SlicerRefused", status: 503 });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   test("a busy answer to a large body is still SlicerBusy, not a lost connection", async () => {

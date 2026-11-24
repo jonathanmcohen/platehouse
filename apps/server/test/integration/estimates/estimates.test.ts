@@ -23,6 +23,8 @@ import {
   MAX_MY_PRINTERS,
   PrinterListRefused,
   PrintersChanged,
+  SANDBOX_OFF_CHECK_DETAIL,
+  SANDBOX_OFF_KERNEL_DETAIL,
   SLICE_PRIORITY,
   SLICER_DOWN_DETAIL,
   STORE_DOWN_DETAIL,
@@ -32,7 +34,12 @@ import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { MAINTENANCE_TASKS, QUEUE, startQueues } from "../../../src/jobs/queues.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
-import { type SlicerStub, STUB_PRINTERS, startSlicerStub } from "../../support/slicer-stub.js";
+import {
+  type SlicerStub,
+  STUB_PRINTERS,
+  sandboxOff,
+  startSlicerStub,
+} from "../../support/slicer-stub.js";
 import {
   build3mf,
   type IngestEnv,
@@ -189,6 +196,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   stub.onSlice(() => ({ kind: "ok" }));
+  stub.setSandbox({ state: "on", reason: null, detail: null, allowUnsandboxed: false });
   storeDown = false;
   storeBreaksMidRead = false;
   await drain();
@@ -637,6 +645,76 @@ describe("estimates", () => {
     }
     // Only the busy request reached the slicer.
     expect(stub.calls.length - before).toBe(1);
+    await estimates.pollOrca();
+    await drain();
+    expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
+    expect(stub.calls.length - before).toBe(2);
+  });
+
+  test("a slice refused for the sandbox is recorded once with its own detail, and is estimated again only once the sandbox is on", async () => {
+    for (const [reason, detail] of [
+      ["old_kernel", SANDBOX_OFF_KERNEL_DETAIL],
+      ["check_failed", SANDBOX_OFF_CHECK_DETAIL],
+    ] as const) {
+      const before = stub.calls.length;
+      stub.onSlice(() => sandboxOff(reason));
+      stub.setSandbox({
+        state: "off",
+        reason,
+        detail: "the sandbox is off",
+        allowUnsandboxed: false,
+      });
+      const { plates } = await upload({ plates: 1 });
+      const id = plateId(plates, 1);
+      const [row] = await until(
+        () => platehouseRows(id),
+        (rows) => rows[0]?.status === "failed",
+      );
+      expect(row).toMatchObject({
+        failureCode: null,
+        failureReason: "slicer_error",
+        failureDetail: detail,
+      });
+      // No retry and no outage wait: the one request was refused and recorded.
+      expect(stub.calls.length - before).toBe(1);
+
+      // Off and not allowed: the poll queues nothing.
+      await estimates.pollOrca();
+      await drain();
+      expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "failed" })]);
+      expect(stub.calls.length - before).toBe(1);
+
+      // Still checking: nothing either.
+      stub.setSandbox({ state: "checking", reason: null, detail: null, allowUnsandboxed: false });
+      await estimates.pollOrca();
+      await drain();
+      expect(stub.calls.length - before).toBe(1);
+
+      // On: it is estimated again once, and a second poll queues none.
+      stub.onSlice(() => ({ kind: "ok" }));
+      stub.setSandbox({ state: "on", reason: null, detail: null, allowUnsandboxed: false });
+      await estimates.pollOrca();
+      await drain();
+      expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
+      expect(stub.calls.length - before).toBe(2);
+      await estimates.pollOrca();
+      await drain();
+      expect(stub.calls.length - before).toBe(2);
+    }
+  });
+
+  test("a sandbox that is off but allowed to run slices unsandboxed queues the refused estimates again", async () => {
+    const before = stub.calls.length;
+    stub.onSlice(() => sandboxOff("old_kernel"));
+    stub.setSandbox({ state: "off", reason: "old_kernel", detail: "old", allowUnsandboxed: false });
+    const { plates } = await upload({ plates: 1 });
+    const id = plateId(plates, 1);
+    await until(
+      () => platehouseRows(id),
+      (rows) => rows[0]?.status === "failed",
+    );
+    stub.onSlice(() => ({ kind: "ok" }));
+    stub.setSandbox({ state: "off", reason: "old_kernel", detail: "old", allowUnsandboxed: true });
     await estimates.pollOrca();
     await drain();
     expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);

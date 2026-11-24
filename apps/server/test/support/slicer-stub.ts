@@ -28,6 +28,7 @@ import { join } from "node:path";
 import {
   CONTRACT_VERSION,
   type FilamentProfile,
+  type Health,
   LIMITS,
   type Printer,
   type Reason,
@@ -259,6 +260,8 @@ export interface SlicerStub {
   readonly profileRequests: number;
   /** The Orca version /v1/health, /v1/profiles and every slice report. */
   setOrca(version: string): void;
+  /** The sandbox state /v1/health reports; "on" with no reason is the default. */
+  setSandbox(sandbox: Health["sandbox"]): void;
   /** Decides each slice request's outcome; the default is ok. */
   onSlice(decide: (call: StubCall, n: number) => StubOutcome): void;
   /** Holds every slice answer until release() is called (ok answers keep their outcome). */
@@ -336,6 +339,12 @@ export async function startSlicerStub(
   opts: { orca?: string; printers?: Printer[]; filaments?: FilamentProfile[] } = {},
 ): Promise<SlicerStub> {
   let orca = opts.orca ?? "2.5.0";
+  let sandbox: Health["sandbox"] = {
+    state: "on",
+    reason: null,
+    detail: null,
+    allowUnsandboxed: false,
+  };
   const printers = opts.printers ?? STUB_PRINTERS;
   const filaments = opts.filaments ?? STUB_FILAMENTS;
   const calls: StubCall[] = [];
@@ -534,7 +543,7 @@ export async function startSlicerStub(
               orca,
               openscad: "2026.11-RC0",
               busy: false,
-              sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+              sandbox,
               timeouts: {
                 sliceSeconds: 180,
                 scadSeconds: 120,
@@ -589,6 +598,9 @@ export async function startSlicerStub(
     },
     setOrca(version) {
       orca = version;
+    },
+    setSandbox(next) {
+      sandbox = next;
     },
     onSlice(fn) {
       decide = fn;
