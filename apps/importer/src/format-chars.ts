@@ -5,7 +5,7 @@
  * ones, so it applies the same rule to the name Manyfold gives. This copy is
  * pinned to the server's rule by test/format-chars.test.ts.
  */
-const FORMAT_CHARACTERS = /(?![‌‍])\p{Cf}/gu;
+export const FORMAT_CHARACTERS = /(?![\u200c\u200d])\p{Cf}/gu;
 
 /** name without its format characters, the joiners U+200C and U+200D kept. */
 export function stripFormatChars(name: string): string {

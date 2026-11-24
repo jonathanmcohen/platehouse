@@ -340,7 +340,11 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
       removed,
     });
   }
-  if (method === "GET" && (path === "/app/api/tokens" || path === "/app/api/users") && state.listsFail) {
+  if (
+    method === "GET" &&
+    (path === "/app/api/tokens" || path === "/app/api/users") &&
+    state.listsFail
+  ) {
     return json(500, { error: "internal_error" });
   }
   if (method === "GET" && path === "/app/api/tokens") return json(200, { tokens: state.tokens });
