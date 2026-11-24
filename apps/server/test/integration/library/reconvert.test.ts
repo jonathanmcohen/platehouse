@@ -47,6 +47,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await env.db.deleteFrom("upgradeSteps").execute();
+  await env.db.deleteFrom("upgradeLeases").execute();
 });
 
 /** A new model from a MakerWorld .3mf with HTML as its description. */
@@ -376,7 +377,7 @@ describe("a run", () => {
   test("does nothing and records nothing while another run holds the step", async () => {
     const old = await ingestMakerWorld(HTML);
     await asBefore011(old.modelId, BY_RC);
-    const held = await descriptionsRepo(env.db).exclusive(RECONVERT_STEP, async () =>
+    const held = await descriptionsRepo(env.db).exclusive(RECONVERT_STEP, async (_lost) =>
       reconvert().run.run(),
     );
     expect(held).toBeNull();
@@ -385,6 +386,87 @@ describe("a run", () => {
     // Once the step is free, a run goes.
     expect(await reconvert().run.run()).not.toBeNull();
     expect((await row(old.modelId)).descriptionMd).toBe(NOW);
+  });
+
+  test("an expired lease is taken over", async () => {
+    const old = await ingestMakerWorld(HTML);
+    await asBefore011(old.modelId, BY_RC);
+    await sql`insert into upgrade_leases (name, holder, expires_at)
+      values (${RECONVERT_STEP}, 'a-server-that-died', now() - interval '1 second')`.execute(
+      env.db,
+    );
+    expect(await reconvert().run.run()).not.toBeNull();
+    expect((await row(old.modelId)).descriptionMd).toBe(NOW);
+    expect(await env.db.selectFrom("upgradeLeases").selectAll().execute()).toEqual([]);
+  });
+
+  test("a run that loses its lease stops after the model it is on", async () => {
+    for (let i = 0; i < 2; i += 1) {
+      const m = await ingestMakerWorld(HTML);
+      await asBefore011(m.modelId, BY_RC);
+    }
+    const repo = descriptionsRepo(env.db);
+    let first = true;
+    let lostSignal: AbortSignal | undefined;
+    const store = {
+      ...repo,
+      exclusive: <T>(name: string, fn: (lost: AbortSignal) => Promise<T>) =>
+        repo.exclusive(
+          name,
+          (s) => {
+            lostSignal = s;
+            return fn(s);
+          },
+          { renewMs: 20 },
+        ),
+      // Another server takes the lease while the first model is being read.
+      async sourceFiles(modelId: string) {
+        if (first) {
+          first = false;
+          await env.db.deleteFrom("upgradeLeases").execute();
+          const signal = lostSignal;
+          if (signal === undefined) throw new Error("the run was not given a lease signal");
+          await new Promise<void>((resolve, reject) => {
+            if (signal.aborted) return resolve();
+            const timer = setTimeout(() => reject(new Error("the lease was never lost")), 10_000);
+            signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true },
+            );
+          });
+        }
+        return repo.sourceFiles(modelId);
+      },
+    };
+    const run = createDescriptionReconvert({
+      store,
+      readText: storeTextReader(env.store),
+      batchSize: 1,
+      log: () => {},
+    });
+    expect(await run.run()).toBe(RECONVERT_PAUSED);
+    const counted = (await progressRow())?.result as { checked?: number } | undefined;
+    expect(counted?.checked).toBe(1);
+    expect(await run.pending()).toBe(true);
+  });
+
+  test("the lease is released when the run throws", async () => {
+    const old = await ingestMakerWorld(HTML);
+    await asBefore011(old.modelId, BY_RC);
+    const outage = new SourceOutage(new Error("the store is down"));
+    const run = createDescriptionReconvert({
+      store: descriptionsRepo(env.db),
+      readText: async () => {
+        throw outage;
+      },
+      log: () => {},
+    });
+    await expect(run.run()).rejects.toBe(outage);
+    expect(await env.db.selectFrom("upgradeLeases").selectAll().execute()).toEqual([]);
   });
 
   test("leaves a model already written by this converter out of the candidates", async () => {
@@ -416,5 +498,141 @@ describe("a run", () => {
       env.db,
     );
     expect(rows[0]?.n).toBe(1);
+  });
+});
+
+describe("a description found unproven", () => {
+  const BY_HAND = "Written by hand, not by the converter";
+
+  /** A run that records which files it read. */
+  function recordingRun() {
+    const read: string[] = [];
+    const inner = storeTextReader(env.store);
+    const run = createDescriptionReconvert({
+      store: descriptionsRepo(env.db),
+      readText: async (file, signal) => {
+        read.push(file.fileId);
+        return inner(file, signal);
+      },
+      log: () => {},
+    });
+    return { run, read };
+  }
+
+  /** The next converter's step: the finished record of this one is gone, as a new step name has none. */
+  async function nextStep() {
+    await env.db.deleteFrom("upgradeSteps").execute();
+  }
+
+  async function unprovenMarker(modelId: string) {
+    return env.db
+      .selectFrom("models")
+      .select(["descriptionUnprovenFileId", "descriptionUnprovenSha256"])
+      .where("id", "=", modelId)
+      .executeTakeFirstOrThrow();
+  }
+
+  async function foundUnproven() {
+    const m = await ingestMakerWorld(HTML);
+    await asBefore011(m.modelId, BY_HAND);
+    const first = recordingRun();
+    await runToEnd(first.run);
+    expect(first.read).toContain(m.fileId);
+    expect(await unprovenMarker(m.modelId)).toEqual({
+      descriptionUnprovenFileId: m.fileId,
+      descriptionUnprovenSha256: descriptionSha256(BY_HAND),
+    });
+    await nextStep();
+    return m;
+  }
+
+  test("is not read again by the next converter's step", async () => {
+    const m = await foundUnproven();
+    const others = await descriptionsRepo(env.db).candidates(null, 10_000);
+    expect(others.map((c) => c.modelId)).not.toContain(m.modelId);
+    const second = recordingRun();
+    const result = await runToEnd(second.run);
+    expect(second.read).not.toContain(m.fileId);
+    // Counted nowhere: the run checked exactly the other candidates.
+    expect(result?.checked).toBe(others.length);
+    expect((await row(m.modelId)).descriptionMd).toBe(BY_HAND);
+  });
+
+  test("is read again once a newer .3mf arrives", async () => {
+    const m = await foundUnproven();
+    const added = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, build3mf({ plates: 1, nonce: marker() })),
+      originalName: "second.3mf",
+      target: { modelId: m.modelId },
+    });
+    const second = recordingRun();
+    await runToEnd(second.run);
+    expect(second.read).toContain(m.fileId);
+    expect(second.read).toContain(added.fileId);
+  });
+
+  test("is read again once its description changed", async () => {
+    const m = await foundUnproven();
+    await env.db
+      .updateTable("models")
+      .set({ descriptionMd: `${BY_HAND}, edited` })
+      .where("id", "=", m.modelId)
+      .execute();
+    const second = recordingRun();
+    await runToEnd(second.run);
+    expect(second.read).toContain(m.fileId);
+  });
+
+  test("is a candidate again when it has no stored .3mf left", async () => {
+    const m = await foundUnproven();
+    await env.db
+      .updateTable("blobs")
+      .set({ state: "pending" })
+      .where("id", "in", env.db.selectFrom("files").select("blobId").where("id", "=", m.fileId))
+      .execute();
+    const ids = (await descriptionsRepo(env.db).candidates(null, 10_000)).map((c) => c.modelId);
+    expect(ids).toContain(m.modelId);
+  });
+
+  test("is not marked when its file could not be read, and is checked again", async () => {
+    const m = await ingestMakerWorld(HTML);
+    await asBefore011(m.modelId, BY_HAND);
+    const blob = await env.db
+      .selectFrom("files")
+      .innerJoin("blobs", "blobs.id", "files.blobId")
+      .select("blobs.key")
+      .where("files.id", "=", m.fileId)
+      .executeTakeFirstOrThrow();
+    await env.store.deleteBlobs([blob.key]);
+    const first = recordingRun();
+    const result = await runToEnd(first.run);
+    expect(result?.unreadable).toBeGreaterThanOrEqual(1);
+    expect(await unprovenMarker(m.modelId)).toEqual({
+      descriptionUnprovenFileId: null,
+      descriptionUnprovenSha256: null,
+    });
+    await nextStep();
+    // Still a candidate for the next step: nothing was proven either way.
+    const ids = (await descriptionsRepo(env.db).candidates(null, 10_000)).map((c) => c.modelId);
+    expect(ids).toContain(m.modelId);
+  });
+
+  test("is not marked when it was edited", async () => {
+    const m = await ingestMakerWorld(HTML);
+    await env.db
+      .updateTable("models")
+      .set({ descriptionMd: `${NOW}\n\nMy own notes`, descriptionConverter: 3 })
+      .where("id", "=", m.modelId)
+      .execute();
+    await runToEnd(recordingRun().run);
+    expect((await unprovenMarker(m.modelId)).descriptionUnprovenFileId).toBeNull();
+  });
+
+  test("SQL and JS agree on the description hash", async () => {
+    for (const text of ["plain", "Crème brûlée \u2014 \u30e2\u30c7\u30eb \u{1f9f1}", "a\nb\r\n"]) {
+      const { rows } = await sql<{ h: string }>`
+        select encode(sha256(convert_to(${text}, 'UTF8')), 'hex') as h`.execute(env.db);
+      expect(rows[0]?.h).toBe(descriptionSha256(text));
+    }
   });
 });

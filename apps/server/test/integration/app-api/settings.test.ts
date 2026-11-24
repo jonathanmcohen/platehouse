@@ -40,12 +40,12 @@ import { patternClass } from "../../../src/auth/gate.js";
 import { dbSessionStore, SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { createSlicerClient } from "../../../src/estimates/client.js";
-import { plateNumbers } from "../../../src/estimates/display.js";
+import { plateNumbersMany } from "../../../src/estimates/display.js";
 import { FALLBACK_SLICES_PER_MINUTE, MIN_FINISHES_FOR_RATE } from "../../../src/estimates/rate.js";
 import { createEstimates, type Estimates } from "../../../src/estimates/service.js";
 import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
-import { QUEUE, startQueues } from "../../../src/jobs/queues.js";
+import { MAINTENANCE_TASKS, QUEUE, startQueues } from "../../../src/jobs/queues.js";
 import { createTrash, type PurgeStore } from "../../../src/library/trash.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { createUploads } from "../../../src/uploads/tus.js";
@@ -246,7 +246,7 @@ beforeAll(async () => {
             settings: () => env.repos.settings.get(),
             listPrinters: () => estimates.listPrinters(),
           }),
-        plateNumbers: (ctx, id) => plateNumbers(env.db, ctx, id),
+        plateNumbersMany: (ctx, ids) => plateNumbersMany(env.db, ctx, ids),
       }),
     },
     appApi: {
@@ -473,9 +473,13 @@ describe("the settings page", () => {
     }
   });
 
-  test("adding a printer queues every plate for it and answers how many", async () => {
+  test("adding a printer answers how many plates it will queue, before queueing them", async () => {
     await uploadPlate();
     await drain();
+    const pollJobs = async () =>
+      (await boss.findJobs(QUEUE.maintenance, { data: { task: MAINTENANCE_TASKS.pollOrca } }))
+        .length;
+    const pollsBefore = await pollJobs();
     const held = stub.hold();
     try {
       const res = await call("PUT", "/app/api/settings/printers", {
@@ -493,6 +497,21 @@ describe("the settings page", () => {
       expect(queued).toBeGreaterThanOrEqual(1);
       // Nothing else was queued, so its plates are through after its own.
       expect(answer.added[0]?.through).toBe(queued);
+      // The save sent a poll to queue them (a maintenance worker may have
+      // taken it already, so the slicer queue is not asserted empty).
+      expect(await pollJobs()).toBeGreaterThan(pollsBefore);
+      // Running the poll queues one slice job per plate.
+      await estimates.pollOrca();
+      // Live jobs (a worker may have claimed one), by estimate: a poll the
+      // maintenance worker runs at the same time may send a copy.
+      const sliceJobs = await boss.findJobs<{ printerId: string; estimateId: string }>(
+        QUEUE.slicer,
+        {},
+      );
+      const forX1C = sliceJobs.filter(
+        (j) => j.data.printerId === X1C && ["created", "retry", "active"].includes(j.state),
+      );
+      expect(new Set(forX1C.map((j) => j.data.estimateId)).size).toBe(queued);
       // The settings answer shows that work waiting for the X1C.
       expect((await call("GET", "/app/api/settings")).json()).toMatchObject({
         printerId: P1S,
@@ -535,6 +554,7 @@ describe("the settings page", () => {
       const forA1 = added.find((a) => a.printerId === A1)?.queued ?? 0;
       expect(forX1C).toBeGreaterThanOrEqual(1);
       expect(forA1).toBeGreaterThanOrEqual(1);
+      await estimates.pollOrca();
       // Once the first X1C slice is running, the figures are exact.
       await until(
         () => stub.calls.length,
@@ -568,6 +588,7 @@ describe("the settings page", () => {
     await call("PUT", "/app/api/settings/printers", {
       json: { printers: [P1S, X1C], defaultId: P1S, version: await version() },
     });
+    await estimates.pollOrca();
     await drain();
     const calls = stub.calls.length;
     const reorder = await call("PUT", "/app/api/settings/printers", {
@@ -633,6 +654,8 @@ describe("the settings page", () => {
       expect(added.status, added.text).toBe(200);
       const queued = (added.json() as { added: Array<{ queued: number }> }).added[0]?.queued ?? 0;
       expect(queued).toBeGreaterThanOrEqual(1);
+      // The poll the save sent queues its plates (run here, as in the other tests).
+      await estimates.pollOrca();
       // Window A, still showing [P1S], saves [P1S]: refused, nothing dropped.
       const stale = await call("PUT", "/app/api/settings/printers", {
         json: { printers: [P1S], defaultId: P1S, version: readByA },
@@ -659,6 +682,7 @@ describe("the settings page", () => {
     await call("PUT", "/app/api/settings/printers", {
       json: { printers: [P1S, X1C], defaultId: P1S, version: await version() },
     });
+    await estimates.pollOrca();
     await drain();
     const A1 = "Bambu Lab A1 0.4 nozzle";
     const readByA = await version();

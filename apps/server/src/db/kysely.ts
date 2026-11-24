@@ -55,6 +55,14 @@ function logPoolError(error: Error): void {
 }
 
 /**
+ * How long the pool waits to get a connection to the database before the
+ * query fails, so a database that never answers fails start-up after 30 s
+ * instead of hanging it (#457). It also bounds the wait for a free pooled
+ * client when all of them are busy.
+ */
+export const POOL_CONNECT_TIMEOUT_MS = 30_000;
+
+/**
  * The pg pool under createDb. An 'error' event nobody listens to ends the
  * Node process, and a lost connection raises one in two places:
  * - an idle client: pg-pool's own listener on the client re-emits the error
@@ -68,7 +76,12 @@ function logPoolError(error: Error): void {
  * hears about each client once.
  */
 export function createPool(connectionString: string, options: DbOptions = {}): pg.Pool {
-  const pool = new pg.Pool({ connectionString, types, max: options.max ?? 10 });
+  const pool = new pg.Pool({
+    connectionString,
+    types,
+    max: options.max ?? 10,
+    connectionTimeoutMillis: POOL_CONNECT_TIMEOUT_MS,
+  });
   const onError = options.onError ?? logPoolError;
   const reported = new WeakSet<pg.PoolClient>();
   const report = (error: Error, client: pg.PoolClient): void => {

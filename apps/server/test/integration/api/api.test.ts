@@ -31,7 +31,7 @@ import {
 } from "../../../src/api/tokens.js";
 import { createApiLibrary, FILE_UNAVAILABLE_MESSAGE } from "../../../src/api/v1.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
-import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
+import { type DisplayContext, plateNumbersMany } from "../../../src/estimates/display.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { startQueues } from "../../../src/jobs/queues.js";
 import { createRepos } from "../../../src/repos/index.js";
@@ -206,7 +206,7 @@ beforeAll(async () => {
       },
     },
     displayContext: async () => CONTEXT,
-    plateNumbers: (ctx, id) => plateNumbers(env.db, ctx, id),
+    plateNumbersMany: (ctx, ids) => plateNumbersMany(env.db, ctx, ids),
   });
   t = await authTestApp({
     api: { tokens, library },

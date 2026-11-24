@@ -1,6 +1,6 @@
 // The database side of the description re-conversion (#357,
 // library/reconvert.ts): the candidates, their source files, the
-// compare-and-set write, the counts kept while a run goes, the lock that lets
+// compare-and-set write, the counts kept while a run goes, the lease that lets
 // one run go at a time, and the upgrade_steps record (migration 0014).
 //
 // The counts of a step that has not finished are kept in upgrade_steps too,
@@ -11,6 +11,7 @@
 // step's own row and deletes it in one transaction.
 import { CONVERTER_VERSION } from "@platehouse/makerworld";
 import { type Kysely, sql } from "kysely";
+import { uuidv7 } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB } from "../db/types.js";
 import {
@@ -21,6 +22,11 @@ import {
   type SourceFile,
   type StoredDescription,
 } from "../library/reconvert.js";
+
+/** How long a lease on an upgrade step lasts without being renewed. */
+export const LEASE_MS = 60_000;
+/** How often a run renews its lease; well inside LEASE_MS, so one missed renewal costs nothing. */
+export const LEASE_RENEW_MS = 20_000;
 
 /** The upgrade_steps row that holds a step's counts while it has not finished. */
 export function progressName(name: string): string {
@@ -99,30 +105,72 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
       return row !== undefined;
     },
 
-    // A session-level advisory lock on a connection of its own, held while
-    // fn runs; the run's own queries use the pool as usual. A server that
-    // dies mid-run closes its connection, which releases the lock.
-    async exclusive(name, fn) {
-      const key = `platehouse-upgrade-step:${name}`;
-      return db.connection().execute(async (conn) => {
-        const { rows } = await sql<{
-          locked: boolean;
-        }>`select pg_try_advisory_lock(hashtext(${key})) as locked`.execute(conn);
-        if (rows[0]?.locked !== true) return null;
-        const unlock = () => sql`select pg_advisory_unlock(hashtext(${key}))`.execute(conn);
-        let out: Awaited<ReturnType<typeof fn>>;
-        try {
-          out = await fn();
-        } catch (err) {
-          // The run's own error is the one to report. An unlock that fails
-          // too means the connection is broken, and Postgres releases a
-          // session's locks when its connection ends.
-          await unlock().catch(() => undefined);
-          throw err;
+    // A lease row, not a session lock: every query here uses the pool, so a
+    // dropped connection or a connection pooler cannot hand the step to two
+    // servers. The run renews the lease while it goes and stops after the
+    // model it is on when it can no longer prove it holds it; a server that
+    // dies leaves a lease that runs out by itself.
+    async exclusive(name, fn, options) {
+      const holder = uuidv7();
+      const leaseMs = options?.leaseMs ?? LEASE_MS;
+      const renewMs = options?.renewMs ?? LEASE_RENEW_MS;
+      // Elapsed time on this machine's own clock only, so it is no
+      // comparison with the database's clock.
+      let sentAt = performance.now();
+      const taken = await sql<{ holder: string }>`
+        insert into upgrade_leases (name, holder, expires_at)
+        values (${name}, ${holder}, now() + ${leaseMs} * interval '1 millisecond')
+        on conflict (name) do update
+          set holder = excluded.holder, expires_at = excluded.expires_at
+          where upgrade_leases.expires_at < now()
+        returning holder`.execute(db);
+      if (taken.rows.length === 0) return null;
+      let lastRenewedAt = sentAt;
+      const lost = new AbortController();
+      let failures = 0;
+      let renewing = false;
+      const renew = async () => {
+        // A renewal that hangs (a connection that died without telling us)
+        // never fails, so while one is in flight the lease is given up on
+        // when the last one that worked was sent so long ago that the lease
+        // is about to run out. One that failed and returned is tolerated: the
+        // next tick tries again, and only a second failure in a row gives up.
+        if (renewing) {
+          if (performance.now() - lastRenewedAt >= leaseMs - renewMs) lost.abort();
+          return;
         }
-        await unlock();
-        return out;
-      });
+        if (lost.signal.aborted) return;
+        renewing = true;
+        sentAt = performance.now();
+        const sent = sentAt;
+        try {
+          const { rows } = await sql<{ holder: string }>`
+            update upgrade_leases
+            set expires_at = now() + ${leaseMs} * interval '1 millisecond'
+            where name = ${name} and holder = ${holder}
+            returning holder`.execute(db);
+          if (rows.length === 0) lost.abort();
+          else lastRenewedAt = sent;
+          failures = 0;
+        } catch {
+          failures += 1;
+          if (failures >= 2) lost.abort();
+        } finally {
+          renewing = false;
+        }
+      };
+      const timer = setInterval(() => void renew(), renewMs);
+      timer.unref();
+      try {
+        return await fn(lost.signal);
+      } finally {
+        clearInterval(timer);
+        // The run's own error is the one to report; a lease that cannot be
+        // deleted runs out by itself.
+        await sql`delete from upgrade_leases where name = ${name} and holder = ${holder}`
+          .execute(db)
+          .catch(() => undefined);
+      }
     },
 
     async resumeAfter(name) {
@@ -186,6 +234,23 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
         .where("descriptionMd", "is not", null)
         .where("descriptionMd", "<>", "")
         .where("purgeStartedAt", "is", null)
+        // Not one already found unproven against its newest .3mf with this
+        // very text; a new .3mf or an edit makes it a candidate again. A
+        // model with no stored .3mf left has no newest file, which is not the
+        // marked one, so it stays a candidate (is not distinct from, not =).
+        .where(
+          sql<boolean>`not (
+            description_unproven_file_id is not null
+            and description_unproven_sha256 = encode(sha256(convert_to(description_md, 'UTF8')), 'hex')
+            and description_unproven_file_id is not distinct from (
+              select f.id from files f
+              join blobs b on b.id = f.blob_id
+              where f.model_id = models.id and f.kind = '3mf' and b.state = 'stored'
+              order by f.created_at desc, f.id desc
+              limit 1
+            )
+          )`,
+        )
         .where((eb) =>
           eb.or([
             eb("descriptionConverter", "is", null),
@@ -219,6 +284,18 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
         .orderBy("files.id")
         .execute();
       return rows.map((r): SourceFile => ({ fileId: r.fileId, key: r.key, size: r.size ?? 0 }));
+    },
+
+    async markUnproven(row, newestFileId) {
+      await db
+        .updateTable("models")
+        .set({
+          descriptionUnprovenFileId: newestFileId,
+          descriptionUnprovenSha256: descriptionSha256(row.description),
+        })
+        .where("id", "=", row.modelId)
+        .where("descriptionMd", "=", row.description)
+        .execute();
     },
 
     // The write and its count commit together, so a run cut off between

@@ -75,7 +75,7 @@ import { hasPreviewPicture, isPictureShown } from "../derived/picture.js";
 import {
   type DisplayContext,
   type PlateNumbers,
-  plateNumbers,
+  plateNumbersMany,
   printerName,
 } from "../estimates/display.js";
 import { createRepos } from "../repos/index.js";
@@ -363,7 +363,12 @@ export function createAppModel(deps: AppModelDeps): AppModel {
               .where("status", "in", ["pending", "running"])
               .execute();
             for (const r of pendingRows) pending.add(r.plateId);
-            for (const p of plates) numbers.set(p.id, await plateNumbers(trx, ctx, p.id));
+            const read = await plateNumbersMany(
+              trx,
+              ctx,
+              plates.map((p) => p.id),
+            );
+            for (const p of plates) numbers.set(p.id, read.get(p.id) ?? {});
           });
       }
 

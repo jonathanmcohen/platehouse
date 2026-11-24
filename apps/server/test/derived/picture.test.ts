@@ -55,10 +55,15 @@ describe("previewState", () => {
     expect(
       previewState({ ...none, failureSourceBlobId: CURRENT, failureMessage: "ERROR: bad facet" }),
     ).toEqual({ status: "failed", message: "ERROR: bad facet" });
-    for (const outage of PREVIEW_RETRIED) {
+    for (const message of [
+      DERIVED_MESSAGES.previewSlicerDown,
+      DERIVED_MESSAGES.previewStoreDown,
+      DERIVED_MESSAGES.previewQueueFailed,
+      DERIVED_MESSAGES.previewTempFailed,
+    ]) {
       expect(
-        previewState({ ...none, failureSourceBlobId: CURRENT, failureMessage: outage }),
-      ).toEqual({ status: "failed", message: outage });
+        previewState({ ...none, failureSourceBlobId: CURRENT, failureMessage: message }),
+      ).toEqual({ status: "failed", message });
     }
   });
 
@@ -102,12 +107,20 @@ describe("previewState", () => {
     }
   });
 
-  test("the outage reasons the backfill retries say so", () => {
-    expect(PREVIEW_RETRIED.length).toBe(4);
-    for (const message of PREVIEW_RETRIED) {
+  test("the outage messages the backfill retries say so", () => {
+    for (const message of [
+      DERIVED_MESSAGES.previewSlicerDown,
+      DERIVED_MESSAGES.previewStoreDown,
+      DERIVED_MESSAGES.previewQueueFailed,
+      DERIVED_MESSAGES.previewTempFailed,
+    ]) {
       expect(message).toMatch(/tried again automatically/);
       expect(message).not.toMatch(/started again/);
     }
+  });
+
+  test("the failures the backfill retries are named by reason code, not by wording", () => {
+    expect(PREVIEW_RETRIED).toEqual(["slicer_down", "store_down", "queue_failed", "temp_failed"]);
   });
 });
 
@@ -116,22 +129,19 @@ describe("a temp file problem (issue #415)", () => {
     expect(DERIVED_MESSAGES.previewTempFailed).toBe(
       "Platehouse could not write a temporary file; it will be tried again automatically.",
     );
-    expect(PREVIEW_RETRIED).toContain(DERIVED_MESSAGES.previewTempFailed);
+    expect(PREVIEW_RETRIED).toContain("temp_failed");
   });
 
   test("is not the render check's sentence, which the backfill leaves alone", () => {
     expect(DERIVED_MESSAGES.previewTempFailed).not.toBe(DERIVED_MESSAGES.renderLost);
-    expect(PREVIEW_RETRIED).not.toContain(DERIVED_MESSAGES.renderLost);
+    expect(PREVIEW_RETRIED).not.toContain("lost");
   });
 });
 
 describe("a picture refused because the slicer's sandbox is off", () => {
   test("has its two sentences, which are not in the always-retried set", () => {
-    expect(PREVIEW_SANDBOX_OFF).toEqual([
-      DERIVED_MESSAGES.sandboxOffKernel,
-      DERIVED_MESSAGES.sandboxOffCheck,
-    ]);
-    for (const message of PREVIEW_SANDBOX_OFF) expect(PREVIEW_RETRIED).not.toContain(message);
+    expect(PREVIEW_SANDBOX_OFF).toEqual(["sandbox_off_kernel", "sandbox_off_check"]);
+    for (const code of PREVIEW_SANDBOX_OFF) expect(PREVIEW_RETRIED).not.toContain(code);
   });
 
   test("is failed with that reason", () => {

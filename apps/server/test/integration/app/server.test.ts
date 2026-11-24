@@ -133,8 +133,15 @@ describe("health", () => {
     expect(await healthStatus(env)).toBe(200);
   });
 
-  test("the Orca poll ran at startup", async () => {
-    expect((await env.repos.settings.get()).lastOrcaVersion).toBe("2.5.0");
+  test("the Orca poll runs soon after startup", async () => {
+    // Start-up sends the poll as a job; the maintenance worker runs it.
+    const deadline = Date.now() + 30_000;
+    let version = (await env.repos.settings.get()).lastOrcaVersion;
+    while (version !== "2.5.0" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      version = (await env.repos.settings.get()).lastOrcaVersion;
+    }
+    expect(version).toBe("2.5.0");
   });
 });
 

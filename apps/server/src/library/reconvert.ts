@@ -165,10 +165,20 @@ export interface ReconvertResult {
 export interface ReconvertStore {
   stepFinished(name: string): Promise<boolean>;
   /**
-   * Runs fn while holding the step, so two runs never go at once. Null,
-   * without running fn, while another run holds it.
+   * Runs fn while holding the step's lease, so two runs never go at once.
+   * Null, without running fn, while another run holds it. The lease is a
+   * row that the run renews while fn goes and releases when it ends, however
+   * it ends; one a dead server left runs out by itself. The signal fn is
+   * given aborts when the lease can no longer be shown to be held (taken
+   * over, two renewals in a row failed, or one renewal has hung past the
+   * lease's safe margin), and fn then stops, as it does for a stop. renewMs and leaseMs are for tests: how often to renew, how long
+   * a lease lasts.
    */
-  exclusive<T>(name: string, fn: () => Promise<T>): Promise<T | null>;
+  exclusive<T>(
+    name: string,
+    fn: (lost: AbortSignal) => Promise<T>,
+    options?: { renewMs?: number; leaseMs?: number },
+  ): Promise<T | null>;
   /** The last model counted by runs of the step cut off before it finished; null when none. */
   resumeAfter(name: string): Promise<string | null>;
   /** Adds one model's outcome to the step's counts, the model as the last counted. */
@@ -184,6 +194,14 @@ export interface ReconvertStore {
    */
   candidates(after: string | null, limit: number): Promise<StoredDescription[]>;
   sourceFiles(modelId: string): Promise<SourceFile[]>;
+  /**
+   * Remembers that this description was read against the model's newest .3mf
+   * and could not be proven to be the converter's own, so a later converter
+   * version does not read the model's files again for it. Only while the
+   * stored description is still the one given; a new .3mf or an edit makes
+   * the model a candidate again by itself.
+   */
+  markUnproven(row: StoredDescription, newestFileId: string): Promise<void>;
   /**
    * Writes the description, its hash, the current converter and the file,
    * only while the stored description and hash are still the ones read, and
@@ -375,14 +393,14 @@ export function createDescriptionReconvert(deps: {
     },
     async run(stop = () => false, signal?: AbortSignal) {
       if (await deps.store.stepFinished(RECONVERT_STEP)) return null;
-      return deps.store.exclusive(RECONVERT_STEP, async () => {
+      return deps.store.exclusive(RECONVERT_STEP, async (lost) => {
         // Another run may have finished between the check above and taking the step.
         if (await deps.store.stepFinished(RECONVERT_STEP)) return null;
         let after = await deps.store.resumeAfter(RECONVERT_STEP);
         for (;;) {
           const page = await deps.store.candidates(after, batch);
           for (const row of page) {
-            if (signal?.aborted) return RECONVERT_PAUSED;
+            if (signal?.aborted || lost.aborted) return RECONVERT_PAUSED;
             const files = await deps.store.sourceFiles(row.modelId);
             let decision: Decision;
             try {
@@ -403,8 +421,16 @@ export function createDescriptionReconvert(deps: {
               // Changed since it was read, so it is left as it is now.
               if (!written) await deps.store.count(RECONVERT_STEP, row.modelId, "kept");
             } else {
+              const newest = files[files.length - 1];
+              if (decision.kind === "unproven" && newest !== undefined) {
+                await deps.store.markUnproven(row, newest.fileId);
+              }
               const outcome = decision.kind === "unreadable" ? "unreadable" : "kept";
               await deps.store.count(RECONVERT_STEP, row.modelId, outcome);
+            }
+            if (lost.aborted) {
+              log("platehouse: MakerWorld description re-conversion: lost its lease; stopping");
+              return RECONVERT_PAUSED;
             }
             if (stop() || signal?.aborted) {
               log(

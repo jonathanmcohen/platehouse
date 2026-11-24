@@ -49,11 +49,11 @@
 // - A model's or a file's plate numbers are read as the library page reads
 //   them (app-api/library.ts): one display context per request
 //   (readDisplayContext, so the printer menu waits at most
-//   DISPLAY_MENU_TIMEOUT_MS), shared by every plate, and at most
-//   PLATE_NUMBERS_CONCURRENCY plate lookups at once (mapLimit). A model with
-//   many plates then asks the slicer for its printers once, not once per
-//   plate, leaves most of the database pool free, and shows every plate for
-//   the same printer.
+//   DISPLAY_MENU_TIMEOUT_MS), shared by every plate, and every plate's
+//   numbers in one call (plateNumbersMany, two queries). A model with many
+//   plates then asks the slicer for its printers once, not once per plate,
+//   leaves most of the database pool free, and shows every plate for the
+//   same printer.
 // - No CORS plugin is registered and no answer carries an Access-Control
 //   header, so a browser on another origin cannot read the API.
 // - A file's content is named and sized here once for every route that
@@ -68,7 +68,6 @@
 import { pipeline, Readable, Transform } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
-import { mapLimit, PLATE_NUMBERS_CONCURRENCY } from "../app-api/library.js";
 import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB, FileKind, ModelFile, ParseStatus, Plate } from "../db/types.js";
@@ -371,8 +370,11 @@ export function createApiLibrary(deps: {
    * menu (readDisplayContext), read once per request.
    */
   displayContext(): Promise<DisplayContext>;
-  /** The estimates module's plateNumbers for one plate with that context (estimates/display.ts). */
-  plateNumbers(ctx: DisplayContext, plateId: string): Promise<PlateNumbers>;
+  /** The estimates module's plateNumbersMany for several plates with that context (estimates/display.ts). */
+  plateNumbersMany(
+    ctx: DisplayContext,
+    plateIds: readonly string[],
+  ): Promise<Map<string, PlateNumbers>>;
 }): ApiLibrary {
   const { db, store } = deps;
   const repos = createRepos(db);
@@ -427,27 +429,29 @@ export function createApiLibrary(deps: {
   }
 
   /**
-   * These files as the API shows them. Their plates are listed one file at
-   * a time, then every plate's numbers are read with the one context, at
-   * most PLATE_NUMBERS_CONCURRENCY at once. Files with no plates (an STL,
+   * These files as the API shows them. Their plates are listed in one query,
+   * then every plate's numbers are read in one call with the one context
+   * (two queries in all). Files with no plates (an STL,
    * STEP or SCAD file, or a .3mf with no plate data) read no context, so
    * their answer never waits on the printer menu or the slicer.
    */
   async function toApiFiles(files: readonly ModelFile[]): Promise<ApiFile[]> {
-    const platesOf: Plate[][] = [];
-    for (const file of files) platesOf.push(await repos.plates.listForFile(file.id));
-    const plates = platesOf.flat();
-    const numbers = new Map<string, PlateNumbers>();
+    const plates = await repos.plates.listForFiles(files.map((f) => f.id));
+    let numbers = new Map<string, PlateNumbers>();
     if (plates.length > 0) {
       const ctx = await deps.displayContext();
-      const read = await mapLimit(
-        plates,
-        PLATE_NUMBERS_CONCURRENCY,
-        async (p) => [p.id, await deps.plateNumbers(ctx, p.id)] as const,
+      numbers = await deps.plateNumbersMany(
+        ctx,
+        plates.map((p) => p.id),
       );
-      for (const [id, n] of read) numbers.set(id, n);
     }
-    return files.map((file, i) => toApiFile(file, platesOf[i] ?? [], numbers));
+    return files.map((file) =>
+      toApiFile(
+        file,
+        plates.filter((p) => p.fileId === file.id),
+        numbers,
+      ),
+    );
   }
 
   function toApiFile(

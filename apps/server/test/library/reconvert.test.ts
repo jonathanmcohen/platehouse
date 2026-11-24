@@ -314,6 +314,7 @@ function memoryStore(rows: StoredDescription[], files: Record<string, SourceFile
   const written = new Set<string>();
   const writes: Array<{ modelId: string; description: string; fileId: string }> = [];
   const pages: Array<string | null> = [];
+  const unproven: Array<{ modelId: string; newestFileId: string }> = [];
   let refuse = new Set<string>();
   let locked = false;
   const add = (name: string, modelId: string, outcome: Outcome) => {
@@ -336,7 +337,7 @@ function memoryStore(rows: StoredDescription[], files: Record<string, SourceFile
       if (locked) return null;
       locked = true;
       try {
-        return await fn();
+        return await fn(new AbortController().signal);
       } finally {
         locked = false;
       }
@@ -365,6 +366,9 @@ function memoryStore(rows: StoredDescription[], files: Record<string, SourceFile
         .slice(0, limit);
     },
     sourceFiles: async (modelId) => files[modelId] ?? [],
+    markUnproven: async (row, newestFileId) => {
+      unproven.push({ modelId: row.modelId, newestFileId });
+    },
     write: async (row, next, count) => {
       if (refuse.has(row.modelId)) return false;
       writes.push({ modelId: row.modelId, ...next });
@@ -379,6 +383,7 @@ function memoryStore(rows: StoredDescription[], files: Record<string, SourceFile
     progress,
     writes,
     pages,
+    unproven,
     refuseWrites: (ids: string[]) => {
       refuse = new Set(ids);
     },
@@ -557,6 +562,21 @@ describe("a run", () => {
     expect(read).toEqual([fileOf(5)]);
   });
 
+  test("marks only a description it found unproven, with the model's newest .3mf", async () => {
+    const { rows, files, texts } = library();
+    files[model(3)] = [file(fileOf(3)), file(fileOf(13))];
+    texts[fileOf(13)] = { html: HTML, note: null };
+    const mem = memoryStore(rows, files);
+    const reconvert = createDescriptionReconvert({
+      store: mem.store,
+      readText: reader(texts).readText,
+      log: () => {},
+    });
+    await reconvert.run();
+    // Model 3 is unproven; 4 is edited and 5 unreadable, which are not marked.
+    expect(mem.unproven).toEqual([{ modelId: model(3), newestFileId: fileOf(13) }]);
+  });
+
   test("checks at least one model before it stops, so every run makes progress", async () => {
     const { rows, files, texts } = library();
     const mem = memoryStore(rows, files);
@@ -579,6 +599,30 @@ describe("a run", () => {
     expect(readText).not.toHaveBeenCalled();
     expect(mem.finished.size).toBe(0);
     expect(mem.progress.size).toBe(0);
+    expect(await reconvert.pending()).toBe(true);
+  });
+
+  test("stops after the model it is on when it loses its lease, and goes on from there", async () => {
+    const { rows, files, texts } = library();
+    const mem = memoryStore(rows, files);
+    const lost = new AbortController();
+    const store: ReconvertStore = {
+      ...mem.store,
+      exclusive: (name, fn) => mem.store.exclusive(name, () => fn(lost.signal)),
+    };
+    const { readText } = reader(texts);
+    const logged: string[] = [];
+    const reconvert = createDescriptionReconvert({
+      store,
+      readText: async (file) => {
+        lost.abort();
+        return readText(file);
+      },
+      log: (line) => logged.push(line),
+    });
+    expect(await reconvert.run()).toBe(RECONVERT_PAUSED);
+    expect(mem.progress.get(RECONVERT_STEP)).toMatchObject({ checked: 1, after: model(1) });
+    expect(logged.join("\n")).toContain("lost its lease; stopping");
     expect(await reconvert.pending()).toBe(true);
   });
 

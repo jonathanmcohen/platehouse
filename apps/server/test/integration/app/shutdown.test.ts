@@ -11,6 +11,7 @@
 // only start() with processWeb(), fails its health check without the build.
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import pg from "pg";
@@ -105,4 +106,55 @@ describe("the server process", () => {
       ),
     ).toBe(0);
   }, 180_000);
+
+  // A database that accepts the connection and never answers keeps start-up
+  // in migrate(); a SIGTERM then must not wait for the 30 s connect timeout.
+  test("SIGTERM during start-up exits 0 promptly", async () => {
+    const sockets = new Set<Socket>();
+    const silent = createServer((socket) => {
+      sockets.add(socket);
+      socket.on("error", () => {});
+    });
+    await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve));
+    const address = silent.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    let log = "";
+    const proc = spawn(process.execPath, ["--conditions=source", "--import", HOOKS.href, MAIN], {
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? "",
+        ...env.env,
+        DATABASE_URL: `postgres://nobody:nothing@127.0.0.1:${port}/none`,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    for (const stream of [proc.stdout, proc.stderr]) {
+      stream?.on("data", (chunk: Buffer) => {
+        log += chunk.toString("utf8");
+      });
+    }
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+      proc.once("exit", (code, signal) => resolve({ code, signal })),
+    );
+    try {
+      // Start-up is in migrate once the silent database has accepted a
+      // connection, and the signal handlers exist by then.
+      await until(
+        async () => sockets.size,
+        (n) => n > 0,
+        60_000,
+      );
+      expect(proc.exitCode, log.slice(-4000)).toBeNull();
+      proc.kill("SIGTERM");
+      const result = await Promise.race([
+        exited,
+        new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 10_000)),
+      ]);
+      expect(result, log.slice(-4000)).toEqual({ code: 0, signal: null });
+    } finally {
+      if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => silent.close(resolve));
+    }
+  }, 30_000);
 });

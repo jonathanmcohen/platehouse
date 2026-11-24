@@ -28,7 +28,7 @@ import { migrate } from "../../../src/db/migrate.js";
 import type { DB } from "../../../src/db/types.js";
 import { createDeliveryLibrary } from "../../../src/delivery/download.js";
 import { linkFileName, type SlicerLink } from "../../../src/delivery/links.js";
-import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
+import { type DisplayContext, plateNumbersMany } from "../../../src/estimates/display.js";
 import { createRepos } from "../../../src/repos/index.js";
 import { type BlobStore, createBlobStore } from "../../../src/storage/s3.js";
 import { createUploads } from "../../../src/uploads/tus.js";
@@ -197,7 +197,7 @@ beforeAll(async () => {
         db,
         store: switching,
         displayContext: async () => CONTEXT,
-        plateNumbers: (ctx, id) => plateNumbers(db, ctx, id),
+        plateNumbersMany: (ctx, ids) => plateNumbersMany(db, ctx, ids),
       }),
       library: createDeliveryLibrary({ db, store: switching }),
       linkSecret: randomBytes(32).toString("hex"),

@@ -204,15 +204,35 @@ function fileIsFor(row: EstimateRow, selected: Printer | undefined): boolean {
   return printerForFile(row, [selected]) !== undefined;
 }
 
-export async function plateNumbers(
+interface FilamentRow {
+  estimateId: string;
+  slot: number;
+  type: string;
+  color: string | null;
+  grams: number | null;
+  profile: string | null;
+  profileSource: string | null;
+}
+
+/**
+ * Every plate's numbers for the one display context, in two queries however
+ * many plates there are: the plates' estimates, then those estimates'
+ * filaments. Every requested id is a key; an id that is not a UUID, or a
+ * plate with no estimates, maps to {}. No query runs when no id is a UUID.
+ */
+export async function plateNumbersMany(
   db: Kysely<DB>,
   ctx: DisplayContext,
-  plateId: string,
-): Promise<PlateNumbers> {
-  if (!isUuid(plateId)) return {};
-  const rows: EstimateRow[] = await db
+  plateIds: readonly string[],
+): Promise<Map<string, PlateNumbers>> {
+  const out = new Map<string, PlateNumbers>();
+  for (const id of plateIds) out.set(id, {});
+  const valid = [...new Set(plateIds.filter(isUuid))];
+  if (valid.length === 0) return out;
+  const rows = await db
     .selectFrom("estimates")
     .select([
+      "plateId",
       "id",
       "source",
       "printerId",
@@ -229,22 +249,52 @@ export async function plateNumbers(
       "createdAt",
       "finishedAt",
     ])
-    .where("plateId", "=", plateId)
+    .where("plateId", "=", sql<string>`any(${valid}::uuid[])`)
+    .orderBy("plateId")
     .orderBy("createdAt", "desc")
     .orderBy("id", "desc")
     .execute();
-  if (rows.length === 0) return {};
-  const filaments = await db
+  if (rows.length === 0) return out;
+  const filaments: FilamentRow[] = await db
     .selectFrom("estimateFilaments")
     .select(["estimateId", "slot", "type", "color", "grams", "profile", "profileSource"])
-    .where(
-      "estimateId",
-      "in",
-      rows.map((r) => r.id),
-    )
+    .where("estimateId", "=", sql<string>`any(${rows.map((r) => r.id)}::uuid[])`)
     .orderBy("slot")
     .execute();
 
+  const rowsOf = new Map<string, EstimateRow[]>();
+  for (const { plateId, ...row } of rows) {
+    const own = rowsOf.get(plateId);
+    if (own === undefined) rowsOf.set(plateId, [row]);
+    else own.push(row);
+  }
+  const filamentsOf = new Map<string, FilamentRow[]>();
+  for (const f of filaments) {
+    const own = filamentsOf.get(f.estimateId);
+    if (own === undefined) filamentsOf.set(f.estimateId, [f]);
+    else own.push(f);
+  }
+  for (const [plateId, own] of rowsOf) {
+    out.set(plateId, numbersOfPlate(ctx, own, filamentsOf));
+  }
+  return out;
+}
+
+/** One plate's numbers: the same as plateNumbersMany([plateId]).get(plateId). */
+export async function plateNumbers(
+  db: Kysely<DB>,
+  ctx: DisplayContext,
+  plateId: string,
+): Promise<PlateNumbers> {
+  return (await plateNumbersMany(db, ctx, [plateId])).get(plateId) ?? {};
+}
+
+/** A plate's numbers from its estimates (newest first) and their filaments by estimate id. */
+function numbersOfPlate(
+  ctx: DisplayContext,
+  rows: readonly EstimateRow[],
+  filamentsOf: ReadonlyMap<string, readonly FilamentRow[]>,
+): PlateNumbers {
   const numbers = (
     row: EstimateRow,
     printerId: string,
@@ -263,19 +313,17 @@ export async function plateNumbers(
     weightGrams: row.status === "ok" ? row.weightGrams : null,
     filaments:
       row.status === "ok"
-        ? filaments
-            .filter((f) => f.estimateId === row.id)
-            .map((f) => ({
-              slot: f.slot,
-              type: f.type,
-              color: f.color,
-              grams: f.grams,
-              // Stored when the slice landed; null where the slot could not
-              // be matched to the slicer's preset list.
-              profile: row.source === "file" ? null : f.profile,
-              profileSource:
-                row.source !== "file" && isProfileSource(f.profileSource) ? f.profileSource : null,
-            }))
+        ? (filamentsOf.get(row.id) ?? []).map((f) => ({
+            slot: f.slot,
+            type: f.type,
+            color: f.color,
+            grams: f.grams,
+            // Stored when the slice landed; null where the slot could not
+            // be matched to the slicer's preset list.
+            profile: row.source === "file" ? null : f.profile,
+            profileSource:
+              row.source !== "file" && isProfileSource(f.profileSource) ? f.profileSource : null,
+          }))
         : [],
   });
 

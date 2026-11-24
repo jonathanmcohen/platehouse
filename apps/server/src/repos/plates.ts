@@ -39,6 +39,19 @@ export function platesRepo(db: Kysely<DB>) {
         .orderBy("index")
         .execute();
     },
+
+    /** Several files' plates in one query, ordered by file then plate index. */
+    async listForFiles(fileIds: readonly string[]): Promise<Plate[]> {
+      const ids = fileIds.filter(isUuid);
+      if (ids.length === 0) return [];
+      return db
+        .selectFrom("plates")
+        .selectAll()
+        .where("fileId", "in", ids)
+        .orderBy("fileId")
+        .orderBy("index")
+        .execute();
+    },
   };
 }
 

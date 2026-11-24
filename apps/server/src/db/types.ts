@@ -20,6 +20,16 @@ export type EstimateSource = "file" | "platehouse";
 export type EstimateStatus = "pending" | "running" | "ok" | "failed";
 export type BucketVersioning = "enabled" | "suspended" | "off" | "unknown";
 export type FilamentProfileSource = "bambu" | "generic" | "file";
+/** Why a picture attempt failed (0016); retry decisions read this, never the message. */
+export type PreviewFailureReason =
+  | "slicer_down"
+  | "store_down"
+  | "queue_failed"
+  | "temp_failed"
+  | "sandbox_off_kernel"
+  | "sandbox_off_check"
+  | "lost"
+  | "render_failed";
 export type NameSource = "file" | "title" | "user";
 
 type CreatedAt = Generated<Date>;
@@ -60,6 +70,10 @@ export interface ModelsTable {
   descriptionConverter: number | null;
   /** The .3mf the description was converted from; no foreign key (0014). */
   descriptionFileId: string | null;
+  /** The newest .3mf the description was checked against and could not be proven to be Platehouse's own conversion; no foreign key (0016). */
+  descriptionUnprovenFileId: string | null;
+  /** SHA-256, lowercase hex, of the exact description text that check read; set with descriptionUnprovenFileId (0016). */
+  descriptionUnprovenSha256: string | null;
   createdAt: CreatedAt;
   updatedAt: UpdatedAt;
 }
@@ -119,6 +133,8 @@ export interface FilesTable {
   previewFailureSourceBlobId: string | null;
   /** Why that attempt failed, in derived_message's form. */
   previewFailureMessage: string | null;
+  /** The code for previewFailureMessage (0016); null exactly when the message is. */
+  previewFailureReason: PreviewFailureReason | null;
   meshBlobId: string | null;
   renderStlBlobId: string | null;
   renderPngBlobId: string | null;
@@ -241,6 +257,13 @@ export interface UpgradeStepsTable {
   result: ColumnType<unknown, string | undefined, string>;
 }
 
+/** One holder at a time for a one-off upgrade run (0016). */
+export interface UpgradeLeasesTable {
+  name: string;
+  holder: string;
+  expiresAt: Date;
+}
+
 export interface DB {
   schemaMigrations: SchemaMigrationsTable;
   creators: CreatorsTable;
@@ -260,6 +283,7 @@ export interface DB {
   apiTokens: ApiTokensTable;
   sessions: SessionsTable;
   upgradeSteps: UpgradeStepsTable;
+  upgradeLeases: UpgradeLeasesTable;
 }
 
 export type Blob = Selectable<BlobsTable>;

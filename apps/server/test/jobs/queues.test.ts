@@ -140,32 +140,32 @@ describe("startQueues", () => {
     expect(boss.updateQueue).toHaveBeenCalledWith(QUEUE.slicer, { ...SLICER_RETRY });
   });
 
-  test("runs the Orca poll once at startup, after its schedule and the workers", async () => {
-    const { boss, calls } = fakeBoss();
-    const pollOrca = vi.fn(async () => {
-      calls.push("pollOrca");
-    });
+  test("sends one Orca poll job at startup instead of running it", async () => {
+    const { boss, calls, sent } = fakeBoss();
+    const pollOrca = vi.fn(async () => {});
     await startQueues(boss, deps({ pollOrca }));
-    expect(pollOrca).toHaveBeenCalledTimes(1);
-    expect(calls.indexOf("pollOrca")).toBe(calls.length - 1);
+    expect(pollOrca).not.toHaveBeenCalled();
+    expect(boss.send).toHaveBeenCalledWith(
+      QUEUE.maintenance,
+      { task: MAINTENANCE_TASKS.pollOrca },
+      expect.anything(),
+    );
+    expect(sent.filter((s) => s.data.task === MAINTENANCE_TASKS.pollOrca)).toHaveLength(1);
+    // After its schedule and the workers, so the slices it queues are worked at once.
+    expect(
+      calls.indexOf(`send ${QUEUE.maintenance} ${MAINTENANCE_TASKS.pollOrca}`),
+    ).toBeGreaterThan(calls.indexOf(`work ${QUEUE.maintenance}`));
     expect(calls).toContain(`schedule ${MAINTENANCE_TASKS.pollOrca}`);
-    expect(calls).toContain(`work ${QUEUE.maintenance}`);
   });
 
-  test("a startup poll that fails is logged and does not stop the queues", async () => {
+  test("a startup poll job that cannot be sent is logged and does not stop the queues", async () => {
     const { boss } = fakeBoss();
+    (boss as unknown as { send: () => Promise<never> }).send = async () => {
+      throw new Error("connect ECONNREFUSED");
+    };
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await expect(
-        startQueues(
-          boss,
-          deps({
-            pollOrca: async () => {
-              throw new Error("connect ECONNREFUSED");
-            },
-          }),
-        ),
-      ).resolves.toBeUndefined();
+      await expect(startQueues(boss, deps({ pollOrca: async () => {} }))).resolves.toBeUndefined();
       expect(logged).toHaveBeenCalledWith(expect.stringContaining("startup Orca poll"));
     } finally {
       logged.mockRestore();

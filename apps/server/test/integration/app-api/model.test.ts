@@ -45,7 +45,7 @@ import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { createPool } from "../../../src/db/kysely.js";
 import type { DB } from "../../../src/db/types.js";
 import { createDeliveryLibrary } from "../../../src/delivery/download.js";
-import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
+import { type DisplayContext, plateNumbersMany } from "../../../src/estimates/display.js";
 import { REASON_WORDS } from "../../../src/estimates/reasons.js";
 import { createRename } from "../../../src/library/rename.js";
 import { createUploads } from "../../../src/uploads/tus.js";
@@ -201,7 +201,7 @@ beforeAll(async () => {
     db: env.db,
     store: env.store,
     displayContext: async () => CONTEXT,
-    plateNumbers: (ctx, plateId) => plateNumbers(env.db, ctx, plateId),
+    plateNumbersMany: (ctx, ids) => plateNumbersMany(env.db, ctx, ids),
   });
   app = await buildApp({
     health: { database: async () => 1, queuesRunning: () => true },
