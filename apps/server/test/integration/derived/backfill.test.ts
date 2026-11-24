@@ -304,7 +304,7 @@ describe("the preview backfill (issue #316)", () => {
       backfillBatch: 1,
     });
     const first = await legacyStl("Catch-up one");
-    await legacyStl("Catch-up two");
+    const second = await legacyStl("Catch-up two");
     const before = await backfillMaintenanceJobs();
 
     const run = await batched.backfillPreviews(later());
@@ -313,7 +313,18 @@ describe("the preview backfill (issue #316)", () => {
 
     // The maintenance worker of this env may already have taken the job, so
     // any state counts.
-    await until(backfillMaintenanceJobs, (jobs) => jobs.length > before.length);
+    const sent = await until(backfillMaintenanceJobs, (jobs) => jobs.length > before.length);
+
+    // Out of the later tests' way: nothing here queues the second file, and
+    // the job sent would keep retrying (this env has no backfill handler).
+    await env.db
+      .updateTable("models")
+      .set({ trashedAt: new Date() })
+      .where("id", "=", second.modelId)
+      .execute();
+    for (const j of sent) {
+      if (!before.some((o) => o.id === j.id)) await env.boss.cancel(QUEUE.maintenance, j.id);
+    }
   });
 
   test("no next batch is sent while another backfill picture is still queued", async () => {
@@ -347,6 +358,8 @@ describe("the preview backfill (issue #316)", () => {
     expect(run.queued).toEqual([a.fileId, b.fileId]);
     // The second picture completes while the first stays queued.
     await settledFile(env, b.fileId);
+    // The worker sends the next batch within a poll (0.5s) of the picture
+    // finishing, so 1.5s covers the window.
     await new Promise((resolve) => setTimeout(resolve, 1500));
     expect(await backfillMaintenanceJobs()).toHaveLength(before.length);
 
