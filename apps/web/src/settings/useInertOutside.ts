@@ -39,8 +39,21 @@ export function useInertOutside(ref: RefObject<HTMLElement | null>, active: bool
     const mine: Element[] = [];
     const observers: MutationObserver[] = [];
 
+    // A quiet region is watched: if a control appears inside it (a failed
+    // reload's Try again), it goes inert from then on and gives up announcing.
+    function watchRegion(region: Element) {
+      const observer = new MutationObserver(() => {
+        if (!isQuietLiveRegion(region) && !mine.includes(region)) isolate(region);
+      });
+      observer.observe(region, { childList: true, subtree: true, attributes: true });
+      observers.push(observer);
+    }
+
     function isolate(element: Element) {
-      if (isQuietLiveRegion(element)) return;
+      if (isQuietLiveRegion(element)) {
+        watchRegion(element);
+        return;
+      }
       const count = holds.get(element);
       if (count !== undefined) {
         holds.set(element, count + 1);
@@ -66,6 +79,8 @@ export function useInertOutside(ref: RefObject<HTMLElement | null>, active: bool
           }
         }
       });
+      // A dialog mounted later as a sibling on another open dialog's path
+      // would be made inert here too; no caller does that.
       observer.observe(parent, { childList: true });
       observers.push(observer);
       node = parent;

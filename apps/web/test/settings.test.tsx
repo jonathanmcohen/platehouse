@@ -3025,6 +3025,22 @@ describe("an open dialog isolates the rest of the page", () => {
     live.remove();
   });
 
+  test("a quiet live region that gains a control while the dialog is open goes inert", async () => {
+    const status = document.createElement("div");
+    status.setAttribute("role", "status");
+    document.body.prepend(status);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(status.hasAttribute("inert")).toBe(false);
+    await act(async () => {
+      status.append(document.createElement("button"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(status.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    status.remove();
+  });
+
   test("an element added beside the dialog while it is open is inert, and freed on close", async () => {
     await act(async () => root.render(<Harness nested={false} />));
     const late = document.createElement("div");
