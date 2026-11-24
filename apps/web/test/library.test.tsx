@@ -1894,7 +1894,7 @@ describe("upload dialog shows progress per file and honours combine", () => {
       expect(onClose).toHaveBeenCalledTimes(1);
     });
 
-    test("Tab from behind the dialog goes back into it, never into the shell", async () => {
+    test("the page behind the dialog is inert, so Tab cannot reach the shell", async () => {
       const { start, fetchResult } = stubUploads();
       await render(
         <UploadDialog
@@ -1905,21 +1905,8 @@ describe("upload dialog shows progress per file and honours combine", () => {
           fetchResult={fetchResult}
         />,
       );
-      behind.focus();
-      let tab: KeyboardEvent | undefined;
-      await act(async () => {
-        tab = press(behind, "Tab");
-      });
-      expect(tab?.defaultPrevented).toBe(true);
-      expect(dialogEl().contains(document.activeElement)).toBe(true);
-      expect(document.activeElement).toBe(button(/choose files/i));
-
-      behind.focus();
-      await act(async () => {
-        tab = press(behind, "Tab", true);
-      });
-      expect(tab?.defaultPrevented).toBe(true);
-      expect(document.activeElement).toBe(button(/^upload/i));
+      expect(behind.closest("[inert]")).not.toBeNull();
+      expect(dialogEl().closest("[inert]")).toBeNull();
     });
 
     test("closed, it leaves the page's keys alone", async () => {

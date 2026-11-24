@@ -161,6 +161,8 @@
   gap: 12px;
   width: min(34rem, 100%);
   max-height: calc(100vh - 32px);
+  /* biome-ignore lint/suspicious/noDuplicateProperties: the dvh line wins where supported (phone address bars); vh is the fallback. */
+  max-height: calc(100dvh - 32px);
   overflow: auto;
   padding: 20px;
   border-radius: 14px;

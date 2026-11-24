@@ -17,11 +17,11 @@
 // not shown.
 //
 // It is a themed dialog in the page (role dialog, aria-modal), never a
-// native browser dialog: focus moves into it when it opens, Tab stays inside
-// it, Escape closes it, and focus goes back where it was. Escape and Tab are
-// handled on the document while it is open, so they keep working wherever
-// focus has gone, and Tab from outside it (the shell behind) goes back into
-// it; pressing the backdrop keeps focus in the dialog. Closing while
+// native browser dialog: focus moves into it when it opens, the page behind
+// it is inert (useInertOutside) so Tab and a screen reader stay inside it,
+// Escape closes it (handled on the document, as focus can sit on the body),
+// and focus goes back where it was. Pressing the backdrop keeps focus in the
+// dialog. Closing while
 // files are still sending only hides it: the uploads go on, and every row
 // still sending, failed or not yet sent is there when it is opened again (a
 // row that went in is cleared when its round ends while hidden). Files that
@@ -69,6 +69,7 @@ import {
 import { Link, useInRouterContext } from "react-router";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import "../settings/organise.css";
+import { useInertOutside } from "../settings/useInertOutside";
 import "./upload.css";
 import {
   ACCEPT,
@@ -237,9 +238,6 @@ function focusRowStatus(button: HTMLElement) {
   button.closest("li")?.querySelector<HTMLElement>(".ph-upload-status")?.focus();
 }
 
-const FOCUSABLE =
-  'button:not([disabled]), input:not([disabled]):not([hidden]), [href], [tabindex]:not([tabindex="-1"])';
-
 export function UploadDialog({
   open,
   files,
@@ -253,11 +251,12 @@ export function UploadDialog({
   const i18n = useI18n();
   const { t } = i18n;
   const titleId = useId();
+  const backdrop = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<() => void>(() => {});
   const picker = useRef<HTMLInputElement>(null);
   const returnFocus = useRef<Element | null>(null);
   /** The current close(), for the document's key handler. */
-  const closeRef = useRef<() => void>(() => {});
   const [combine, setCombine] = useState(false);
   /** The combined batch's id, from its first Upload until close or a switch change. */
   const batch = useRef<string | null>(null);
@@ -330,6 +329,26 @@ export function UploadDialog({
 
   useEffect(() => guardFileDrops(), []);
 
+  // The page behind is inert while the dialog is open. Declared before the
+  // focus effect so its cleanup runs first on close: focus cannot go back to
+  // where it was while that is still inert.
+  useInertOutside(backdrop, open);
+
+  // Escape, on the document while the dialog is open: a click on the page
+  // text or the backdrop can leave focus on the body, outside the dialog,
+  // and Escape must still close it. Tab needs no trap here, the page behind
+  // is inert.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeRef.current();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
   // Focus moves into the dialog when it opens and back when it closes.
   useEffect(() => {
     if (!open) return;
@@ -339,44 +358,6 @@ export function UploadDialog({
       const back = returnFocus.current;
       if (back instanceof HTMLElement && back.isConnected) back.focus();
     };
-  }, [open]);
-
-  // Escape and the Tab trap, on the document while the dialog is open: a
-  // click on the backdrop or elsewhere can leave focus outside the dialog,
-  // and the shell behind it is not inert.
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      const box = dialog.current;
-      if (box === null) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)];
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      const active = document.activeElement;
-      if (first === undefined || last === undefined) {
-        event.preventDefault();
-        box.focus();
-        return;
-      }
-      if (!box.contains(active)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-      } else if (event.shiftKey && (active === first || active === box)) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
   }, [open]);
 
   if (!open) return null;
@@ -392,6 +373,7 @@ export function UploadDialog({
     }
     onClose();
   }
+
   closeRef.current = close;
 
   function send() {
@@ -429,8 +411,9 @@ export function UploadDialog({
   }
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: dropping files and pressing the backdrop are pointer gestures only; Choose files is the keyboard route, and Escape and Tab are handled on the document.
+    // biome-ignore lint/a11y/noStaticElementInteractions: dropping files and pressing the backdrop are pointer gestures only; Choose files is the keyboard route, and Escape is handled on the dialog.
     <div
+      ref={backdrop}
       className="ph-dialog-backdrop"
       onDragOver={onDragOver}
       onDrop={onDrop}

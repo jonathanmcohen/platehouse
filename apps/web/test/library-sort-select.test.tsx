@@ -1099,6 +1099,15 @@ describe("bulk actions", () => {
     expect(statusText()).toBe("2 models selected");
   });
 
+  test("Move to trash isolates the page while it asks and leaves nothing inert after", async () => {
+    await twoSelected();
+    await click(button("Move to trash"));
+    expect(document.querySelectorAll("[inert]").length).toBeGreaterThan(0);
+    expect(dialog()?.closest("[inert]")).toBeNull();
+    await click(dialogButton("Cancel"));
+    expect(document.querySelectorAll("[inert]")).toHaveLength(0);
+  });
+
   test("Move to trash: confirmed, the models go and leave the selection", async () => {
     await twoSelected();
     await click(button("Move to trash"));

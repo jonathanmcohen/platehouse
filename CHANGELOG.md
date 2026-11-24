@@ -30,6 +30,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Fixed
 
+- Dialogs keep focus and screen readers inside them even after a trip to the address bar, the top-bar search box has a visible edge, and tall dialogs fit on phones. The docs now say right-to-left languages are not supported yet ([#471](https://github.com/jonathanmcohen/platehouse/issues/471)).
 - Library reloads keep keyboard focus and the grid, a finished upload refreshes the library quietly, and an expired session shows that you are signed out instead of "could not be loaded" ([#470](https://github.com/jonathanmcohen/platehouse/issues/470)).
 - The library shows the 30 most-used tags first, with a More tags button for the rest, instead of every tag above the grid ([#458](https://github.com/jonathanmcohen/platehouse/issues/458)).
 - The trash is shown 100 models at a time, with pages, instead of all at once ([#458](https://github.com/jonathanmcohen/platehouse/issues/458)).

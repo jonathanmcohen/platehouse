@@ -4,7 +4,10 @@
 // it when it opens and kept there (Tab and Shift+Tab wrap), Escape closes it,
 // and on close focus goes back to the control that opened it
 // (returnFocusTo), so a keyboard user never lands on the document body.
-// A press on the backdrop does not move focus out of the panel either.
+// A press on the backdrop does not move focus out of the panel either, and the
+// page behind it is inert (useInertOutside), so nothing outside the dialog can
+// take focus or be read while it is open. ConfirmDialog is a Dialog, so it is
+// isolated the same way.
 // ConfirmDialog asks before something that cannot be undone, with the safe
 // choice, Cancel, focused first. Once the change is sent it cannot be called
 // back, so while it runs both buttons are marked aria-disabled and ignore a
@@ -26,6 +29,7 @@ import { useI18n } from "../i18n/I18n";
 import { useErrorText } from "./api";
 import { focusFirst } from "./focus";
 import "./organise.css";
+import { useInertOutside } from "./useInertOutside";
 
 const FOCUSABLE =
   'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
@@ -42,9 +46,14 @@ export interface DialogProps {
 
 export function Dialog({ title, onClose, returnFocusTo, initialFocus, children }: DialogProps) {
   const titleId = useId();
+  const backdrop = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const opener = useRef<Element | null>(null);
   const returnTo = useRef(returnFocusTo);
+
+  // Before the focus effect, so its cleanup runs first on close: focus cannot
+  // go back to the opener while the page is still inert.
+  useInertOutside(backdrop, true);
 
   useEffect(() => {
     opener.current = document.activeElement;
@@ -90,7 +99,7 @@ export function Dialog({ title, onClose, returnFocusTo, initialFocus, children }
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the backdrop only stops a press from taking focus away; the dialog's own controls and keys do the work.
-    <div className="ph-dialog-backdrop" onMouseDown={keepFocus}>
+    <div ref={backdrop} className="ph-dialog-backdrop" onMouseDown={keepFocus}>
       <div
         ref={panel}
         className="ph-dialog"

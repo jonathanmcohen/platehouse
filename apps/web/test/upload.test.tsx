@@ -1218,3 +1218,44 @@ describe("many files, slow imports and failures", () => {
     expect([...dialogRegion().children][0]?.textContent).toMatch(/^Fresh\.stl: The server is out/);
   });
 });
+
+describe("the upload dialog isolates the page", () => {
+  test("the upload dialog makes the page inert while open, and clears it when closed", async () => {
+    const page = document.createElement("div");
+    document.body.prepend(page);
+    const { start, fetchResult } = stubUploads(duplicateUnlessAllowed);
+    const show = (open: boolean) =>
+      render(
+        inRouter(
+          <UploadDialog
+            open={open}
+            files={[]}
+            onClose={() => {}}
+            start={start}
+            fetchResult={fetchResult}
+          />,
+        ),
+      );
+    await show(true);
+    expect(page.hasAttribute("inert")).toBe(true);
+    expect(container.querySelector('[role="dialog"]')?.closest("[inert]")).toBeNull();
+    await show(false);
+    expect(document.querySelectorAll("[inert]")).toHaveLength(0);
+    page.remove();
+  });
+
+  test("Escape on the dialog closes it", async () => {
+    const { start, fetchResult } = stubUploads(duplicateUnlessAllowed);
+    const onClose = vi.fn();
+    await render(
+      inRouter(
+        <UploadDialog open files={[]} onClose={onClose} start={start} fetchResult={fetchResult} />,
+      ),
+    );
+    const box = container.querySelector('[role="dialog"]') as HTMLElement;
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(onClose).toHaveBeenCalled();
+  });
+});

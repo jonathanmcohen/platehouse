@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { CollectionsPage } from "../src/collections/CollectionsPage";
 import { CreatorsPage } from "../src/creators/CreatorsPage";
 import { LibraryPage } from "../src/library/LibraryPage";
+import { ConfirmDialog, Dialog } from "../src/settings/Dialog";
 import { howLong, REREAD_SHOWS_CHANGE, WAITING_POLL_MS } from "../src/settings/PrinterMenu";
 import { SettingsPage } from "../src/settings/SettingsPage";
 import { VERSIONING_OFF_WARNING } from "../src/settings/VersioningBanner";
@@ -2889,5 +2890,74 @@ describe("the pages' stylesheet", () => {
     expect(rules).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(rules).not.toMatch(/\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i);
     expect(rules).not.toMatch(/\b(?:black|white)\b/i);
+  });
+});
+
+function Harness({ nested }: { nested: boolean }) {
+  return (
+    <div id="outside-sibling">
+      <Dialog title="Outer" onClose={() => {}}>
+        <button type="button">Outer button</button>
+        {nested ? (
+          <ConfirmDialog
+            title="Inner"
+            message="Sure?"
+            confirmLabel="Go"
+            onConfirm={async () => {}}
+            onCancel={() => {}}
+          />
+        ) : null}
+      </Dialog>
+    </div>
+  );
+}
+
+describe("an open dialog isolates the rest of the page", () => {
+  function inertCount(): number {
+    return document.querySelectorAll("[inert]").length;
+  }
+
+  test("an open dialog makes the rest of the page inert, and closing it restores it", async () => {
+    const before = document.createElement("div");
+    before.id = "page-before";
+    document.body.prepend(before);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    expect(container.hasAttribute("inert")).toBe(false);
+    expect(document.querySelector(".ph-dialog")?.closest("[inert]")).toBeNull();
+    await act(async () => root.render(<div id="outside-sibling" />));
+    expect(inertCount()).toBe(0);
+    before.remove();
+  });
+
+  test("an element that was already inert stays inert after the dialog closes", async () => {
+    const other = document.createElement("div");
+    other.setAttribute("inert", "");
+    document.body.prepend(other);
+    await act(async () => root.render(<Harness nested={false} />));
+    await act(async () => root.render(<div />));
+    expect(other.hasAttribute("inert")).toBe(true);
+    other.remove();
+  });
+
+  test("a dialog opened from inside another keeps the outer isolation when it closes", async () => {
+    const before = document.createElement("div");
+    document.body.prepend(before);
+    await act(async () => root.render(<Harness nested={false} />));
+    const outerButton = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Outer button",
+    ) as HTMLButtonElement;
+    await act(async () => root.render(<Harness nested />));
+    // The inner dialog is usable; the outer dialog's own content is inert behind it.
+    const dialogs = document.querySelectorAll('[role="dialog"]');
+    expect(dialogs).toHaveLength(2);
+    expect(outerButton.closest("[inert]")).not.toBeNull();
+    expect(dialogs[1]?.closest("[inert]")).toBeNull();
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    expect(outerButton.closest("[inert]")).toBeNull();
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    before.remove();
   });
 });

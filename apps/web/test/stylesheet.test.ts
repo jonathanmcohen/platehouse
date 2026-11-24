@@ -226,6 +226,23 @@ describe("palettes", () => {
   test.each([
     ["dark", DARK],
     ["light", LIGHT],
+  ])("form fields have a visible edge in %s", (name, selector) => {
+    const colours = palette(selector);
+    for (const background of ["--surface", "--bg"]) {
+      const ratio = contrast(colours["--muted"] as string, colours[background] as string);
+      expect(
+        ratio,
+        `${name}: --muted on ${background} is ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(3);
+    }
+    expect(declarationsFor('.studio-search input[type="search"]')).toMatch(
+      /border:\s*1px solid var\(--muted\)/,
+    );
+  });
+
+  test.each([
+    ["dark", DARK],
+    ["light", LIGHT],
   ])("the alert edges are at least 3:1 against surface and bg in %s", (name, selector) => {
     const colours = palette(selector);
     for (const edge of ["--accent-text", "--danger"]) {
