@@ -513,6 +513,8 @@ export async function registerModelApi(app: FastifyInstance, model: AppModel): P
 
     // Registered beside /app/api/models/:id; Fastify matches the fixed
     // segment first, so "title-names" never reaches the id route.
+    // The plan is one list of every model whose name differs from its file's
+    // title, not paged: it assumes a household-sized library.
     scope.get("/app/api/models/title-names", async () => model.titleNames());
 
     // The one route here with a body. The gate removes every body parser

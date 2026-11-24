@@ -112,7 +112,7 @@ import {
 import { bulkRepo, MAX_BULK_IDS, MAX_BULK_TAGS } from "../repos/bulk.js";
 import { collectionsRepo } from "../repos/collections.js";
 import { tagsRepo } from "../repos/tags.js";
-import { viewOf } from "./library.js";
+import { MAX_PAGE_NUMBER, MAX_PAGE_SIZE, pageWindow, viewOf } from "./library.js";
 import { appApiScope, need, refuse } from "./settings.js";
 
 /** The model rows one request of /app/api/organise/models answers at most. */
@@ -373,11 +373,44 @@ async function databaseNow(db: Kysely<DB>): Promise<Date> {
   return now;
 }
 
+/** Models on one page of the trash when the request names no limit. */
+export const TRASH_PAGE_SIZE = 100;
+
+/** GET /app/api/trash's query: a 1-based page and a page size, as the library's. */
+const TRASH_QUERY = {
+  type: "object",
+  properties: {
+    page: { type: "integer", minimum: 1, maximum: MAX_PAGE_NUMBER },
+    limit: { type: "integer", minimum: 1, maximum: MAX_PAGE_SIZE },
+  },
+} as const;
+
 /**
- * The trash, newest first, and readAt: the database's time when it read the
- * list, taken in the same statement so the list and the time agree.
+ * One page of the trash, newest first, and readAt: the database's time when
+ * it read the page, taken in the same statement so the list and the time
+ * agree. A page past the end is served as the last page. Empty trash's
+ * cutoff is readAt whichever page it came from, so a model trashed after it
+ * is never purged unseen, on any page.
  */
-async function trashListing(db: Kysely<DB>): Promise<{ models: TrashedModel[]; readAt: string }> {
+async function trashListing(
+  db: Kysely<DB>,
+  query: { page?: number; limit?: number } = {},
+): Promise<{
+  models: TrashedModel[];
+  readAt: string;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  total: number;
+}> {
+  const pageSize = query.limit ?? TRASH_PAGE_SIZE;
+  const counted = await db
+    .selectFrom("models")
+    .select(sql<string>`count(*)`.as("total"))
+    .where("models.trashedAt", "is not", null)
+    .executeTakeFirstOrThrow();
+  const total = Number(counted.total);
+  const window = pageWindow({ total, pageSize, page: query.page ?? 1 });
   const rows = await db
     .selectFrom("models")
     .leftJoin("creators", "creators.id", "models.creatorId")
@@ -392,6 +425,8 @@ async function trashListing(db: Kysely<DB>): Promise<{ models: TrashedModel[]; r
     .where("models.trashedAt", "is not", null)
     .orderBy("models.trashedAt", "desc")
     .orderBy("models.id", "desc")
+    .limit(pageSize)
+    .offset(window.start)
     .execute();
   const readAt = rows[0]?.readAt ?? (await databaseNow(db));
   const models = rows.map((r): TrashedModel => {
@@ -405,7 +440,14 @@ async function trashListing(db: Kysely<DB>): Promise<{ models: TrashedModel[]; r
       purgeStarted: r.purgeStartedAt !== null,
     };
   });
-  return { models, readAt: readAt.toISOString() };
+  return {
+    models,
+    readAt: readAt.toISOString(),
+    page: window.page,
+    pageSize,
+    pageCount: window.pageCount,
+    total,
+  };
 }
 
 /**
@@ -430,6 +472,7 @@ export async function registerOrganiseApi(
   const library = deps === undefined ? undefined : libraryCalls(deps.db);
 
   await appApiScope(app, (scope) => {
+    // These three lists assume a household-sized library and are not paged.
     scope.get("/creators", async () => ({ creators: await creatorCounts(need(deps).db) }));
     scope.get("/collections", async () => ({
       collections: await collectionCounts(need(deps).db),
@@ -602,7 +645,11 @@ export async function registerOrganiseApi(
       },
     );
 
-    scope.get("/trash", async () => trashListing(need(deps).db));
+    scope.get<{ Querystring: { page?: number; limit?: number } }>(
+      "/trash",
+      { schema: { querystring: TRASH_QUERY } },
+      async (request) => trashListing(need(deps).db, request.query),
+    );
 
     scope.post<{ Params: IdParams }>(
       "/trash/:id/restore",

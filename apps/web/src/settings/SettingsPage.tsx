@@ -147,7 +147,7 @@ function SettingsMain({ focusHeading }: { focusHeading: boolean }) {
       <TitleNames />
       <div className="ph-section">
         <h2>{t("shell.nav.trash")}</h2>
-        <TrashList />
+        <TrashList pageParam="trashPage" />
       </div>
     </>
   );

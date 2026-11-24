@@ -130,7 +130,7 @@ export const LIBRARY_API_PATHS: readonly string[] = Object.freeze([
 export const LIBRARY_PAGE_SIZE = 48;
 
 /** Most cards one request computes, numbered page or cursor page. */
-const MAX_PAGE_SIZE = 200;
+export const MAX_PAGE_SIZE = 200;
 
 /**
  * Most matches a numbered page request reads, ranked, to slice its page from

@@ -385,7 +385,21 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     return json(200, { sessionsEnded, tokensRevoked });
   }
   if (method === "GET" && path === "/app/api/trash") {
-    return json(200, { models: state.trash, readAt: state.now });
+    // Paged as the server pages it: newest first, 100 to a page, a page past
+    // the end served as the last page.
+    const pageSize = Number(url.searchParams.get("limit") ?? 100);
+    const total = state.trash.length;
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Math.max(Number(url.searchParams.get("page") ?? 1), 1), pageCount);
+    const newestFirst = [...state.trash].sort((a, b) => b.trashedAt.localeCompare(a.trashedAt));
+    return json(200, {
+      models: newestFirst.slice((page - 1) * pageSize, page * pageSize),
+      readAt: state.now,
+      page,
+      pageSize,
+      pageCount,
+      total,
+    });
   }
   // Empty trash purges only the models trashed at or before the cutoff it is
   // sent, as the server does: a model trashed after the page read the list
@@ -1625,6 +1639,70 @@ describe("the trash", () => {
     expect(callsTo("POST", "/app/api/trash/m-trashed-1/restore")).toHaveLength(1);
     expect(text()).not.toContain("Old benchy");
     expect(text()).toContain("Broken clip");
+  });
+
+  /** The pager's link to page n, found by the label a screen reader reads. */
+  function pageLink(n: number): HTMLAnchorElement {
+    const found = document.querySelector<HTMLAnchorElement>(
+      `nav.ph-pager a[aria-label="Page ${n}"]`,
+    );
+    if (found === null) throw new Error(`no pager link to page ${n}`);
+    return found;
+  }
+
+  /** n trashed models, model 0 the newest, each a minute older than the last. */
+  function trashOf(n: number): FakeState["trash"] {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `0190f7a2-0000-7000-8000-${String(i).padStart(12, "0")}`,
+      name: `Model ${i}`,
+      creator: null,
+      trashedAt: new Date(Date.parse("2026-11-10T12:00:00.000Z") - i * 60_000).toISOString(),
+      purgeAt: "2026-12-10T12:00:00.000Z",
+      purgeStarted: false,
+    }));
+  }
+
+  test("the trash shows a pager when there is more than one page, and page 2 lists the next models", async () => {
+    state.trash = trashOf(101);
+    await show("/trash", <TrashPage />);
+    expect(text()).toContain("Model 0");
+    expect(text()).toContain("Model 99");
+    expect(text()).not.toContain("Model 100");
+    const pager = document.querySelector("nav.ph-pager");
+    expect(pager).not.toBeNull();
+    expect(pageLink(2).getAttribute("href")).toBe("/trash?page=2");
+    await click(pageLink(2));
+    expect(callsTo("GET", "/app/api/trash?page=2")).toHaveLength(1);
+    expect(text()).toContain("Model 100");
+    expect(text()).not.toContain("Model 0");
+    expect(pageLink(1).getAttribute("href")).toBe("/trash");
+  });
+
+  test("the trash shows no pager when everything fits on one page", async () => {
+    await show("/trash", <TrashPage />);
+    expect(document.querySelector("nav.ph-pager")).toBeNull();
+  });
+
+  test("the pager in Settings keeps the settings address and uses its own parameter", async () => {
+    state.trash = trashOf(101);
+    await show("/settings", <SettingsPage />);
+    expect(pageLink(2).getAttribute("href")).toBe("/settings?trashPage=2");
+  });
+
+  test("a restore on page 2 reloads page 2, and Empty trash counts every page", async () => {
+    state.trash = trashOf(102);
+    await show("/trash?page=2", <TrashPage />);
+    expect(text()).toContain("Model 100");
+    await click(button("Restore Model 100"));
+    expect(text()).not.toContain("Model 100");
+    expect(callsTo("GET", "/app/api/trash?page=2").length).toBeGreaterThan(1);
+    expect(text()).toContain("Model 101");
+    await click(button("Empty trash"));
+    expect(dialog()?.textContent).toContain("The 101 models listed here are deleted for good");
+    await click(button("Empty trash", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
+      { cutoff: "2026-11-12T09:00:00.000Z" },
+    ]);
   });
 
   test("empty trash uses a themed dialog", async () => {

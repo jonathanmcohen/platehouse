@@ -1277,6 +1277,10 @@ describe("the trash", () => {
       expect((await call("GET", "/app/api/trash")).json()).toEqual({
         models: [expect.objectContaining({ id: failing.model.id, purgeStarted: true })],
         readAt: expect.any(String),
+        page: 1,
+        pageSize: 100,
+        pageCount: 1,
+        total: 1,
       });
     } finally {
       purgeStore = env.store;
@@ -1311,6 +1315,76 @@ describe("the trash", () => {
     expect(await env.store.listPrefix(`models/${unseen.model.id}/`)).not.toEqual([]);
     expect((await listedTrash()).ids).toEqual([unseen.model.id]);
     // It can still be restored.
+    expect((await call("POST", `/app/api/trash/${unseen.model.id}/restore`)).status).toBe(204);
+  });
+
+  /** Trashes n models with distinct, ordered trash times, oldest first: row i is trashed at minute i. */
+  async function seedTrashOf(n: number): Promise<string[]> {
+    await call("POST", "/app/api/trash/empty", { json: { cutoff: (await listedTrash()).readAt } });
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const m = await seedStoredModel(env);
+      await call("POST", `/app/api/models/${m.model.id}/trash`);
+      const at = `2026-11-10T10:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}Z`;
+      await trashedAtExactly(m.model.id, at);
+      ids.push(m.model.id);
+    }
+    return ids;
+  }
+
+  type TrashPageBody = {
+    models: Array<{ id: string }>;
+    readAt: string;
+    page: number;
+    pageSize: number;
+    pageCount: number;
+    total: number;
+  };
+
+  test("the trash answers 100 per page, newest first, with page counts", async () => {
+    const ids = await seedTrashOf(101);
+    const res = await call("GET", "/app/api/trash");
+    expect(res.status, res.text).toBe(200);
+    const body = res.json() as TrashPageBody;
+    expect(body).toMatchObject({ page: 1, pageSize: 100, pageCount: 2, total: 101 });
+    expect(body.models.map((m) => m.id)).toEqual([...ids].reverse().slice(0, 100));
+  });
+
+  test("page 2 continues where page 1 ended", async () => {
+    const ids = await seedTrashOf(3);
+    const first = (await call("GET", "/app/api/trash?limit=2")).json() as TrashPageBody;
+    expect(first.models.map((m) => m.id)).toEqual([ids[2], ids[1]]);
+    const res = await call("GET", "/app/api/trash?page=2&limit=2");
+    expect(res.status, res.text).toBe(200);
+    const body = res.json() as TrashPageBody;
+    expect(body).toMatchObject({ page: 2, pageSize: 2, pageCount: 2, total: 3 });
+    expect(body.models.map((m) => m.id)).toEqual([ids[0]]);
+    // A page past the end is served as the last page.
+    const past = (await call("GET", "/app/api/trash?page=9&limit=2")).json() as TrashPageBody;
+    expect(past.page).toBe(2);
+    expect(past.models.map((m) => m.id)).toEqual([ids[0]]);
+  });
+
+  test("an out-of-range page or limit is refused", async () => {
+    for (const q of ["page=0", "page=1000001", "page=x", "limit=0", "limit=201"]) {
+      const res = await call("GET", `/app/api/trash?${q}`);
+      expect(res.status, q).toBe(400);
+      expect(res.json()).toMatchObject({ error: "bad_request" });
+    }
+  });
+
+  test("empty trash with page 1's readAt leaves a model trashed after it, with the trash paged", async () => {
+    await seedTrashOf(3);
+    const first = (await call("GET", "/app/api/trash?limit=2")).json() as TrashPageBody;
+    expect(first.pageCount).toBe(2);
+    const unseen = await seedStoredModel(env);
+    await sleep(5);
+    await call("POST", `/app/api/models/${unseen.model.id}/trash`);
+
+    const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: first.readAt } });
+    expect(res.status, res.text).toBe(200);
+    expect((res.json() as { purged: number }).purged).toBe(3);
+    expect((await listedTrash()).ids).toEqual([unseen.model.id]);
     expect((await call("POST", `/app/api/trash/${unseen.model.id}/restore`)).status).toBe(204);
   });
 

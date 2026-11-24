@@ -80,6 +80,7 @@ export interface UsersApiDeps {
  * The user list from the sessions and api_tokens tables: live sessions
  * (within both expiries) and live tokens with a known maker, grouped by
  * subject, named by the newest named session, else the newest named token.
+ * Not paged: it assumes a household-sized list of people.
  */
 export function dbUserList(db: Kysely<DB>): (now: Date) => Promise<KnownUser[]> {
   return async (now) => {
