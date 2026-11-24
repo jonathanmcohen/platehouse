@@ -50,6 +50,7 @@ import {
   needsPolling,
   type PlateNumbers,
   POLL_MS,
+  STL_3D_THRESHOLD_BYTES,
 } from "../src/model/ModelPage";
 import { BAMBU_PROMPT_LINE, type SlicerLink } from "../src/model/OpenInSlicer";
 import {
@@ -315,6 +316,8 @@ let models: Map<string, ModelView | number>;
 let mintAnswer: (fileId: string) => Response;
 /** What a POST to the retry route answers. */
 let retryStatus: number;
+/** While set, a POST to the retry route waits for it before it answers. */
+let retryHeld: Promise<void> | null;
 /** While set, GET /app/api/models/:id waits for it before it answers. */
 let modelHeld: Promise<void> | null;
 /** What GET /app/api/plates/:id/mesh answers (issue #358). */
@@ -354,6 +357,7 @@ function stubServer() {
     const mintMatch = /^\/app\/api\/files\/([^/]+)\/slicer-link$/.exec(url.pathname);
     if (method === "POST" && mintMatch) return mintAnswer(mintMatch[1] ?? "");
     if (method === "POST" && /^\/app\/api\/estimates\/[^/]+\/retry$/.test(url.pathname)) {
+      if (retryHeld !== null) await retryHeld;
       if (retryStatus === 202) return json({ queued: true }, 202);
       // The route's own refusal (apps/server/src/app-api/model.ts); any
       // other status is a session that ended or a server that is down.
@@ -512,6 +516,7 @@ beforeEach(() => {
   navigations = [];
   loads = [];
   retryStatus = 202;
+  retryHeld = null;
   modelHeld = null;
   meshHeld = null;
   meshAnswer = (plateId) => json({ url: meshUrl(plateId) });
@@ -1329,6 +1334,110 @@ describe("failed plate shows the plain reason and a retry button", () => {
       `GET /app/api/models/${MODEL_ID}`,
     ]);
     expect(text(plateItems()[1])).toMatch(/estimating/i);
+  });
+
+  function estimatingAfterRetry(): ModelView {
+    return model([
+      threeMf([
+        plate(1, "Base", { file: fileNumbers(1) }),
+        plate(2, "Huge", { platehouse: estimate("estimating") }),
+        plate(3, "Lid", { file: fileNumbers(3) }),
+      ]),
+    ]);
+  }
+
+  test("after a successful Retry, focus is on that plate's heading, and stays on it once the reload lands", async () => {
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    const retry = button(/retry/i, plateItems()[1] as HTMLElement);
+    retry.focus();
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(retry);
+    const heading = plateTitle(plateItems()[1] as HTMLElement);
+    expect(heading?.getAttribute("tabindex")).toBe("-1");
+    expect(document.activeElement).toBe(heading);
+    expect(heading?.isConnected).toBe(true);
+  });
+
+  test("a successful Retry says the estimate is queued, naming the plate, in the page status", async () => {
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(text(pageStatus())).toBe("Estimate queued for plate 2 (Huge)");
+    // The plates' own estimating lines are not live regions.
+    expect(container.querySelector('[data-plate] [role="status"]')).toBeNull();
+  });
+
+  test("with several .3mf files the queued message names the file too", async () => {
+    models.set(
+      MODEL_ID,
+      model([
+        threeMf([
+          plate(1, "Huge", {
+            failure: {
+              estimateId: EST_FAILED,
+              reason: "bed_too_small",
+              words: WORDS,
+              detail: null,
+            },
+          }),
+        ]),
+        threeMf([plate(1, "Other", { file: fileNumbers(1) })], {
+          id: "0198f0c4-0000-7000-8000-0000000000f2",
+          name: "Second.3mf",
+        }),
+      ]),
+    );
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(button(/retry/i));
+    expect(text(pageStatus())).toMatch(/^Estimate queued for plate 1 \(Huge\) in Cube set\.3mf$/);
+  });
+
+  test("after a Retry refused with a 409, focus moves to the plate heading", async () => {
+    retryStatus = 409;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    const retry = button(/retry/i, plateItems()[1] as HTMLElement);
+    retry.focus();
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(retry);
+    expect(document.activeElement).toBe(plateTitle(plateItems()[1] as HTMLElement));
+  });
+
+  test("after a Retry that fails otherwise, focus stays on Retry and Retry is still there", async () => {
+    retryStatus = 503;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    const retry = button(/retry/i, plateItems()[1] as HTMLElement);
+    retry.focus();
+    await click(retry);
+    expect(retry.isConnected).toBe(true);
+    expect(document.activeElement).toBe(retry);
+  });
+
+  test("focus the user moved elsewhere while the Retry was in flight stays there", async () => {
+    let release: () => void = () => {};
+    retryHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    const item = plateItems()[1] as HTMLElement;
+    const retry = button(/retry/i, item);
+    retry.focus();
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(retry);
+    const other = document.createElement("button");
+    container.append(other);
+    other.focus();
+    expect(document.activeElement).toBe(other);
+    await act(async () => {
+      release();
+    });
+    await settle();
+    expect(document.activeElement).toBe(other);
   });
 
   test("a retry refused as not retryable says so, naming the plate, and reloads the model, and the words outlive the failure", async () => {
@@ -3112,5 +3221,170 @@ describe("the app's upload dialog keeps each file's target from when it was adde
       await app.unmount();
       window.history.pushState({}, "", "/");
     }
+  });
+});
+
+// Issue #469: the page does no work nobody asked for.
+describe("the model page's unasked work (issue #469)", () => {
+  const BIG_STL: ModelFile = {
+    ...STL_FILE,
+    size: STL_3D_THRESHOLD_BYTES + 1,
+    preview: "/blobs/0198f0c4-0000-7000-8000-0000000000f9",
+    previewStatus: "ok",
+    previewMessage: null,
+  };
+
+  test("a large STL opens on its picture with Show in 3D, and loads the mesh only when asked", async () => {
+    models.set(MODEL_ID, model([BIG_STL]));
+    await render(pageAt(MODEL_ID));
+    expect(container.querySelector(".studio-viewer img.studio-plate-large")).not.toBeNull();
+    expect(container.querySelector("[data-viewer3d]")).toBeNull();
+    expect(loadThree).not.toHaveBeenCalled();
+    expect(loads).toEqual([]);
+    const ask = button(/^show in 3d/i, container.querySelector(".studio-viewer") as HTMLElement);
+    expect(text(ask)).toBe("Show in 3D (52.4 MB)");
+    await click(ask);
+    expect(loads).toEqual([{ kind: "stl", url: BIG_STL.view?.url }]);
+    expect(container.querySelector("[data-viewer3d]")).not.toBeNull();
+  });
+
+  test("an STL at the threshold still opens in 3D at once", async () => {
+    models.set(MODEL_ID, model([{ ...BIG_STL, size: STL_3D_THRESHOLD_BYTES }]));
+    await render(pageAt(MODEL_ID));
+    expect(loads).toHaveLength(1);
+  });
+
+  test("a large STL with no picture yet loads nothing until Show in 3D is pressed", async () => {
+    models.set(
+      MODEL_ID,
+      model([{ ...BIG_STL, preview: null, previewStatus: "pending", previewMessage: null }]),
+    );
+    await render(pageAt(MODEL_ID));
+    expect(loads).toEqual([]);
+    expect(loadThree).not.toHaveBeenCalled();
+    expect(container.querySelector(".studio-viewer img.studio-plate-large")).toBeNull();
+    expect(container.querySelector(".studio-viewer .studio-placeholder")).not.toBeNull();
+    await click(button(/^show in 3d/i, container.querySelector(".studio-viewer") as HTMLElement));
+    expect(loads).toEqual([{ kind: "stl", url: BIG_STL.view?.url }]);
+  });
+
+  test("pressing Show in 3D moves focus to the 3D view", async () => {
+    models.set(MODEL_ID, model([BIG_STL]));
+    await render(pageAt(MODEL_ID));
+    await click(button(/^show in 3d/i, container.querySelector(".studio-viewer") as HTMLElement));
+    const view = container.querySelector("[data-viewer3d]");
+    expect(view).not.toBeNull();
+    expect(document.activeElement).toBe(view);
+  });
+
+  test("asking for 3D is forgotten when the file changes: A, then B, then A shows A's picture again", async () => {
+    const OTHER_STL = "0198f0c4-0000-7000-8000-00000000b0bb";
+    const second: ModelFile = { ...BIG_STL, id: OTHER_STL, name: "Second.stl" };
+    models.set(MODEL_ID, model([BIG_STL, second]));
+    await render(pageAt(MODEL_ID));
+    const view = (name: RegExp) => {
+      const row = [...panel().querySelectorAll("li")].find((li) => name.test(text(li)));
+      return button(/^view/i, row as HTMLElement);
+    };
+    await click(button(/^show in 3d/i, container.querySelector(".studio-viewer") as HTMLElement));
+    expect(container.querySelector("[data-viewer3d]")).not.toBeNull();
+    await click(tab("Files"));
+    await click(view(/Second\.stl/));
+    expect(container.querySelector("[data-viewer3d]")).toBeNull();
+    await click(view(/Bracket\.stl/));
+    expect(container.querySelector("[data-viewer3d]")).toBeNull();
+    expect(container.querySelector(".studio-viewer img.studio-plate-large")).not.toBeNull();
+  });
+
+  function modelRequests(id = MODEL_ID): number {
+    return requests.filter((r) => r === `GET /app/api/models/${id}`).length;
+  }
+
+  function setVisibility(state: "visible" | "hidden") {
+    Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+
+  test("the model page does not poll while the tab is hidden, and fetches once when it is shown", async () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
+    });
+    try {
+      models.set(
+        MODEL_ID,
+        model([{ ...STL_FILE, previewStatus: "pending", previewMessage: null }]),
+      );
+      await render(pageAt(MODEL_ID));
+      expect(modelRequests()).toBe(1);
+      await act(async () => {
+        setVisibility("hidden");
+      });
+      for (let i = 0; i < 3; i += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(POLL_MS);
+        });
+        await settle();
+      }
+      expect(modelRequests()).toBe(1);
+      await act(async () => {
+        setVisibility("visible");
+      });
+      await settle();
+      expect(modelRequests()).toBe(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_MS);
+      });
+      await settle();
+      expect(modelRequests()).toBe(3);
+    } finally {
+      setVisibility("visible");
+      vi.useRealTimers();
+    }
+  });
+
+  test("a polling model answered less than POLL_MS ago is not fetched again by a quick hide and show", async () => {
+    models.set(MODEL_ID, model([{ ...STL_FILE, previewStatus: "pending", previewMessage: null }]));
+    await render(pageAt(MODEL_ID));
+    const before = modelRequests();
+    await act(async () => {
+      setVisibility("hidden");
+      setVisibility("visible");
+    });
+    await settle();
+    expect(modelRequests()).toBe(before);
+  });
+
+  test("a model that needs no polling is not fetched again when the tab is shown", async () => {
+    await render(pageAt(MODEL_ID));
+    const before = modelRequests();
+    await act(async () => {
+      setVisibility("hidden");
+      setVisibility("visible");
+    });
+    await settle();
+    expect(modelRequests()).toBe(before);
+  });
+
+  test("switching files resets the plate viewer: the next .3mf opens on its picture", async () => {
+    const OTHER_3MF = "0198f0c4-0000-7000-8000-00000000b0aa";
+    models.set(
+      MODEL_ID,
+      model([
+        threeMf([plate(1, "Base", { file: fileNumbers(1) })]),
+        threeMf([plate(1, "Lid", { file: fileNumbers(1) })], { id: OTHER_3MF, name: "Other.3mf" }),
+      ]),
+    );
+    await render(pageAt(MODEL_ID));
+    await click(container.querySelector(".studio-viewer .ph-plate-view-toggle"));
+    expect(container.querySelector(".studio-viewer [data-viewer3d]")).not.toBeNull();
+    loads = [];
+    await click(tab("Files"));
+    const row = [...panel().querySelectorAll("li")].find((li) => text(li).includes("Other.3mf"));
+    await click(button(/^view/i, row as HTMLElement));
+    expect(container.querySelector(".studio-viewer [data-viewer3d]")).toBeNull();
+    expect(loads).toEqual([]);
+    expect(container.querySelector(".studio-viewer .ph-plate-view-toggle")?.textContent).toBe(
+      "Show in 3D",
+    );
   });
 });

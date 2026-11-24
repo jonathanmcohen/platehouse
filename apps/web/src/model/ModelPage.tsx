@@ -67,13 +67,14 @@
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { InlineRename } from "../collections/InlineRename";
-import { type MessageKey, useI18n } from "../i18n/I18n";
+import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { AppApiError, appApi } from "../settings/api";
 import { type PrinterChoice, printerQuery, usePrinterChoice } from "../settings/PrinterSwitch";
 import { DropZone } from "../upload/DropZone";
+import { isHidden } from "../visibility";
 import "./model.css";
 import { AboutTab, MakerWorldLink, makerWorldHref } from "./AboutTab";
-import { derivedMessageIn, FilesTab, viewable } from "./FilesTab";
+import { derivedMessageIn, FilesTab, formatSize, previewStatusWords, viewable } from "./FilesTab";
 import type { Platform } from "./OpenInSlicer";
 import { PlatesTab } from "./PlatesTab";
 import { PlateViewer } from "./PlateViewer";
@@ -217,6 +218,9 @@ export interface ModelPageProps {
 /** How often the page asks again while a plate is estimating or a file is being rendered. */
 export const POLL_MS = 5000;
 
+/** An STL over this many bytes opens on its picture, and in 3D only when asked (issue #469). */
+export const STL_3D_THRESHOLD_BYTES = 50 * 1024 * 1024;
+
 /**
  * Whether a plate is waiting on its estimate: it is estimating, or an older
  * estimate is shown while the new one is queued or slicing (stale, with the
@@ -262,6 +266,8 @@ type TabName = "plates" | "files" | "about";
 export interface RetryTarget {
   fileName: string;
   plate: Pick<ModelPlate, "index" | "name">;
+  /** Whether the model has more than one .3mf, so a message names the file. */
+  inFile: boolean;
 }
 
 /**
@@ -287,6 +293,13 @@ interface Refused {
   answers: number;
 }
 
+/** A plate in words for a message: "plate 2" or "plate 2 Huge". */
+function plateWords(target: RetryTarget, t: I18n["t"]): string {
+  return target.plate.name === null
+    ? t("activity.plate", { index: target.plate.index })
+    : t("activity.plateNamed", { index: target.plate.index, name: target.plate.name });
+}
+
 const TAB_LABEL: Record<TabName, MessageKey> = {
   plates: "model.tab.plates",
   files: "model.tab.files",
@@ -306,6 +319,8 @@ export function ModelPage({
   const [reload, setReload] = useState(0);
   /** The model id whose model is on screen, so a failed poll keeps it. */
   const shownFor = useRef<string | null>(null);
+  /** When the last answer arrived (ms), so showing the tab again within POLL_MS asks nothing. */
+  const answeredAt = useRef(0);
   /** Whether the model on screen needs polling (needsPolling), so a failed poll is asked again. */
   const polling = useRef(false);
   /** Why the model on screen could not be refreshed, for that model's id. */
@@ -314,15 +329,25 @@ export function ModelPage({
   const printer = usePrinterChoice();
   const { choice, settle: settlePrinter } = printer;
   const [refused, setRefused] = useState<Refused | null>(null);
+  /** What a successful Retry says, for that model's id; the latest of this and the refusal wins. */
+  const [queued, setQueued] = useState<{ id: string; words: string } | null>(null);
   /** Whether the last answer made the page forget its printer choice, so the next request only asks for it again. */
   const forgetting = useRef(false);
   if (refused !== null && refused.id !== id) setRefused(null);
+  if (queued !== null && queued.id !== id) setQueued(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload and refreshKey are triggers: a change of either loads the model again.
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
+    let inFlight = false;
+
+    /** Asks again in POLL_MS, unless the tab is hidden: it asks once when it is shown (onVisibility). */
+    function askLater() {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = isHidden() ? undefined : setTimeout(fetchModel, POLL_MS);
+    }
 
     /** A failed load; status is the answer's, undefined when no answer came. */
     function failed(status?: number) {
@@ -344,11 +369,13 @@ export function ModelPage({
       // be refreshed, and is asked again only while the page is polling; the
       // next successful load clears the notice.
       setNotice({ id, kind: "failed" });
-      if (polling.current) timer = setTimeout(fetchModel, POLL_MS);
+      if (polling.current) askLater();
     }
 
     async function fetchModel() {
       timer = undefined;
+      if (inFlight) return;
+      inFlight = true;
       try {
         const res = await fetch(
           `/app/api/models/${encodeURIComponent(id)}${printerQuery(choice)}`,
@@ -379,21 +406,38 @@ export function ModelPage({
         forgetting.current = choice !== null && model.printer !== "" && model.printer !== choice;
         shownFor.current = id;
         polling.current = needsPolling(model);
+        answeredAt.current = Date.now();
         setNotice(null);
         setLoad({ id, status: "ready", model });
         settlePrinter(model.printer);
-        if (polling.current) timer = setTimeout(fetchModel, POLL_MS);
+        if (polling.current) askLater();
       } catch {
         if (cancelled) return;
         failed();
+      } finally {
+        inFlight = false;
       }
     }
 
+    function onVisibility() {
+      if (isHidden()) {
+        if (timer !== undefined) clearTimeout(timer);
+        timer = undefined;
+      } else if (polling.current && !inFlight) {
+        if (timer !== undefined) clearTimeout(timer);
+        const wait = POLL_MS - (Date.now() - answeredAt.current);
+        if (wait > 0) timer = setTimeout(fetchModel, wait);
+        else void fetchModel();
+      }
+    }
+
+    document.addEventListener("visibilitychange", onVisibility);
     void fetchModel();
     return () => {
       cancelled = true;
       controller.abort();
       if (timer !== undefined) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [id, reload, refreshKey, choice]);
 
@@ -406,6 +450,7 @@ export function ModelPage({
    */
   async function retry(estimateId: string, target: RetryTarget): Promise<void> {
     setRefused(null);
+    setQueued(null);
     try {
       await appApi("POST", `/estimates/${encodeURIComponent(estimateId)}/retry`);
     } catch (failure) {
@@ -415,12 +460,20 @@ export function ModelPage({
       }
       throw failure;
     }
+    const plate = plateWords(target, t);
+    setQueued({
+      id,
+      words: target.inFile
+        ? t("model.numbers.queuedIn", { plate, file: target.fileName })
+        : t("model.numbers.queued", { plate }),
+    });
     setReload((n) => n + 1);
   }
 
   /** The user's own choice on the printer switch, which ends a refusal's notice. */
   function choosePrinter(printerId: string) {
     setRefused(null);
+    setQueued(null);
     printer.choose(printerId);
   }
 
@@ -493,16 +546,11 @@ export function ModelPage({
           <p className="studio-alert studio-alert-alert">
             {t("model.numbers.notRetryable", {
               file: refused.target.fileName,
-              plate:
-                refused.target.plate.name === null
-                  ? t("activity.plate", { index: refused.target.plate.index })
-                  : t("activity.plateNamed", {
-                      index: refused.target.plate.index,
-                      name: refused.target.plate.name,
-                    }),
+              plate: plateWords(refused.target, t),
             })}
           </p>
         )}
+        {queued === null ? null : <p className="studio-muted">{queued.words}</p>}
       </div>
       <ModelDetail
         key={model.id}
@@ -713,7 +761,11 @@ interface ViewerAreaProps {
 function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
   const i18n = useI18n();
   const { t } = i18n;
+  /** The large STL the person asked to see in 3D, by file id. */
+  const [asked, setAsked] = useState<string | null>(null);
   const derived = file === null ? null : derivedMessageIn(i18n, file);
+  // Another file shown forgets the ask: coming back to a large STL asks again.
+  if (asked !== null && asked !== (file?.id ?? null)) setAsked(null);
   if (file === null) {
     return (
       <div className="studio-viewer-frame">
@@ -721,14 +773,30 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
       </div>
     );
   }
+  const showIn3d = (
+    <button type="button" className="studio-button" onClick={() => setAsked(file.id)}>
+      {t("model.showIn3d", { size: formatSize(file.size, i18n.fmt) })}
+    </button>
+  );
   if (file.kind === "3mf") {
     return (
-      <PlateViewer file={file} selected={plateIndex} onSelect={onPlate} loadThree={loadThree} />
+      <PlateViewer
+        key={file.id}
+        file={file}
+        selected={plateIndex}
+        onSelect={onPlate}
+        loadThree={loadThree}
+      />
     );
   }
-  if (file.view !== null) {
+  // A large STL is held back by its size alone, picture or not: fetching and
+  // parsing it is the work asked of the person first.
+  const holdBack = file.kind === "stl" && file.size > STL_3D_THRESHOLD_BYTES && asked !== file.id;
+  if (file.view !== null && !holdBack) {
     return (
       <Viewer3d
+        key={file.id}
+        focusOnShow={asked === file.id}
         source={file.view}
         label={file.name}
         download={file.download}
@@ -744,6 +812,17 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
           src={file.preview}
           alt={t("model.previewOf", { name: file.name })}
         />
+        {file.view !== null ? showIn3d : null}
+      </div>
+    );
+  }
+  if (holdBack && file.view !== null) {
+    return (
+      <div className="studio-viewer-frame">
+        <p className="studio-placeholder">
+          {previewStatusWords(file, i18n) ?? t("model.noViewYet", { name: file.name })}
+        </p>
+        {showIn3d}
       </div>
     );
   }

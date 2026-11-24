@@ -22,7 +22,9 @@
 //   Clear selection. Escape leaves Select mode and clears the selection,
 //   unless another overlay that takes Escape is open: the upload dialog
 //   (mounted beside the library) or the narrow-screen menu. Escape closes
-//   that overlay only (PR #246 review).
+//   that overlay only (PR #246 review). Escape in a text field (the search
+//   box, a textarea, a select, a contenteditable element) is the field's:
+//   Select mode and the selection stay (issue #446).
 // - The selection holds only models the search and filters show (0.1.0-rc.2
 //   live check): a new search, filter or sort, or an action that takes a
 //   model out of the view, takes it out of the selection and says how many
@@ -132,7 +134,7 @@ function stubServer(all: LibraryCard[]) {
       if (url.pathname === "/app/api/library/tags") {
         if (holdingTags) await new Promise<void>((resolve) => heldTags.push(resolve));
         if (failingTags) return new Response("no", { status: 500 });
-        return json({ tags: serverTags });
+        return json({ tags: serverTags.map((name, i) => ({ name, models: 10 - i })) });
       }
       if (url.pathname === "/app/api/collections") {
         return json({ collections: [{ name: "Shelf", models: 3 }] });
@@ -236,6 +238,19 @@ function WithOverlays() {
         <Route path="/" element={<LibraryPage />} />
       </Routes>
       <UploadDialog open={open} files={[]} onClose={() => setOpen(false)} />
+    </>
+  );
+}
+
+/** The library with the upload dialog beside it, opened by a file drop as main.tsx does. */
+function DropOpensUpload() {
+  const [files, setFiles] = useState<File[] | null>(null);
+  return (
+    <>
+      <Routes>
+        <Route path="/" element={<LibraryPage onFiles={setFiles} />} />
+      </Routes>
+      <UploadDialog open={files !== null} files={files ?? []} onClose={() => setFiles(null)} />
     </>
   );
 }
@@ -595,6 +610,62 @@ describe("Select mode", () => {
     expect(statusText()).toBe("No models selected");
   });
 
+  describe("Escape in a text field is the field's, not Select mode's (issue #446)", () => {
+    const fields: Array<[string, () => HTMLElement]> = [
+      [
+        "the top bar's search box",
+        () => {
+          const input = document.createElement("input");
+          input.type = "search";
+          input.id = "ph-q";
+          return input;
+        },
+      ],
+      ["a textarea", () => document.createElement("textarea")],
+      ["a select", () => document.createElement("select")],
+      [
+        "a contenteditable element",
+        () => {
+          const div = document.createElement("div");
+          div.setAttribute("contenteditable", "true");
+          return div;
+        },
+      ],
+    ];
+    test.each(fields)("Escape in %s keeps Select mode and the selection", async (_name, make) => {
+      stubServer(cards(3));
+      await render("/");
+      await selectMode();
+      await click(checkbox("Model 001"));
+      await click(checkbox("Model 002"));
+      const field = make();
+      document.body.appendChild(field);
+      try {
+        await key(field, "Escape");
+      } finally {
+        field.remove();
+      }
+      expect(button("Select").getAttribute("aria-pressed")).toBe("true");
+      expect(statusText()).toBe("2 models selected");
+    });
+
+    test('contenteditable="false" is not a text field: Escape there leaves Select mode', async () => {
+      stubServer(cards(3));
+      await render("/");
+      await selectMode();
+      await click(checkbox("Model 001"));
+      const div = document.createElement("div");
+      div.setAttribute("contenteditable", "false");
+      document.body.appendChild(div);
+      try {
+        await key(div, "Escape");
+      } finally {
+        div.remove();
+      }
+      expect(button("Select").getAttribute("aria-pressed")).toBe("false");
+    });
+  });
+
   describe("with another overlay open, Escape is that overlay's (PR #246 review)", () => {
     test("Escape in the upload dialog closes it only; Select mode and the selection stay", async () => {
       stubServer(cards(3));
@@ -612,6 +683,35 @@ describe("Select mode", () => {
       // With the dialog closed, Escape is Select mode's again.
       await key(checkbox("Model 001"), "Escape");
       expect(button("Select").getAttribute("aria-pressed")).toBe("false");
+    });
+
+    test("a file drop on a Select dialog's backdrop does not open the upload dialog and the page is not left inert", async () => {
+      stubServer(cards(3));
+      await act(async () =>
+        root.render(
+          <MemoryRouter initialEntries={["/"]}>
+            <DropOpensUpload />
+          </MemoryRouter>,
+        ),
+      );
+      await settle();
+      await selectMode();
+      await click(checkbox("Model 001"));
+      await click(button("Add tags"));
+      const backdrop = dialog()?.parentElement as HTMLElement;
+      expect(backdrop).not.toBeNull();
+      const file = new File(["solid x"], "drop.stl");
+      const drop = new Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(drop, "dataTransfer", { value: { types: ["Files"], files: [file] } });
+      await act(async () => {
+        backdrop.dispatchEvent(drop);
+      });
+      await settle();
+      expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1);
+      expect(dialog()?.textContent).toContain("Add tags to 1 model");
+      expect(document.querySelector("[inert]")?.contains(dialog())).not.toBe(true);
+      // The browser still must not open the file.
+      expect(drop.defaultPrevented).toBe(true);
     });
 
     test("Escape with the narrow-screen menu open closes the menu only; Select mode and the selection stay", async () => {
@@ -756,6 +856,26 @@ describe("bulk actions", () => {
     expect(dialog()).toBeNull();
     expect(container.textContent).toContain("Added PLA and Kitchen to 2 models.");
     expect(libraryQueries().length).toBeGreaterThan(before);
+  });
+
+  test("Select results are in a status region that exists before any action", async () => {
+    await twoSelected();
+    const regions = () =>
+      [...container.querySelectorAll('[role="status"]')].filter(
+        (el) => el.id !== "ph-selection-count",
+      );
+    const before = regions();
+    expect(before).toHaveLength(1);
+    expect(before[0]?.textContent).toBe("");
+    await click(button("Add tags"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    await type(input, "PLA");
+    await submit(input.form);
+    await click(dialogButton("Add tags"));
+    const after = regions();
+    expect(after).toHaveLength(1);
+    expect(after[0]).toBe(before[0]);
+    expect(after[0]?.textContent).toContain("Added PLA to 2 models.");
   });
 
   test("after Add tags the new tag is in the tag filter, Remove tag and Add tags without a reload", async () => {
@@ -1019,6 +1139,23 @@ describe("bulk actions", () => {
     expect(dialog()).toBeNull();
     expect(posted).toEqual([]);
     expect(statusText()).toBe("2 models selected");
+  });
+
+  test("Move to trash isolates the page while it asks and leaves nothing inert after", async () => {
+    await twoSelected();
+    await click(button("Move to trash"));
+    expect(document.querySelectorAll("[inert]").length).toBeGreaterThan(0);
+    expect(dialog()?.closest("[inert]")).toBeNull();
+    // The count and result live regions stay readable; other siblings are inert.
+    expect(container.querySelector("#ph-selection-count")?.closest("[inert]")).toBeNull();
+    for (const region of container.querySelectorAll('.ph-select-bar [role="status"]')) {
+      expect(region.hasAttribute("inert")).toBe(false);
+    }
+    expect(document.querySelector(".ph-select-bar .studio-actions")?.hasAttribute("inert")).toBe(
+      true,
+    );
+    await click(dialogButton("Cancel"));
+    expect(document.querySelectorAll("[inert]")).toHaveLength(0);
   });
 
   test("Move to trash: confirmed, the models go and leave the selection", async () => {

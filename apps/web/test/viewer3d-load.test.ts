@@ -11,7 +11,12 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { defaultLoadThree, MeshLoadError, Viewer3d } from "../src/model/Viewer3d";
+import {
+  createRenderScheduler,
+  defaultLoadThree,
+  MeshLoadError,
+  Viewer3d,
+} from "../src/model/Viewer3d";
 
 const SOURCE = { kind: "glb", url: "/blobs/01900000-0000-7000-8000-000000000001" } as const;
 
@@ -137,6 +142,133 @@ describe("the viewer's renderer", () => {
   });
 });
 
+describe("the viewer draws on demand (issue #469)", () => {
+  /** The real defaultLoadThree over a stub renderer and stub controls, with frames run by hand. */
+  async function shown(reduced: boolean) {
+    const log = { renders: 0, controls: undefined as unknown };
+    const listeners = new Map<string, () => void>();
+    const frames: Array<() => void> = [];
+    vi.doMock("three", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("three")>();
+      class StubRenderer {
+        domElement = document.createElement("canvas");
+        setPixelRatio() {}
+        setSize() {}
+        setAnimationLoop() {
+          throw new Error("the viewer must not run an animation loop");
+        }
+        render() {
+          log.renders += 1;
+        }
+        forceContextLoss() {}
+        dispose() {}
+      }
+      return { ...actual, WebGLRenderer: StubRenderer };
+    });
+    vi.doMock("three/addons/controls/OrbitControls.js", async () => {
+      const three = await vi.importActual<typeof import("three")>("three");
+      class StubControls {
+        enableDamping = false;
+        target = new three.Vector3();
+        constructor() {
+          log.controls = this;
+        }
+        update() {
+          return false;
+        }
+        addEventListener(name: string, run: () => void) {
+          listeners.set(name, run);
+        }
+        removeEventListener(name: string) {
+          listeners.delete(name);
+        }
+        dispose() {}
+      }
+      return { OrbitControls: StubControls };
+    });
+    vi.resetModules();
+    let resizeRun: () => void = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(run: () => void) {
+          resizeRun = run;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: reduced && query.includes("reduce"),
+    }));
+    vi.stubGlobal("requestAnimationFrame", (run: () => void) => frames.push(run));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.stubGlobal("fetch", async () => new Response(STL, { status: 200 }));
+    const fresh = await import("../src/model/Viewer3d");
+    const viewer = await fresh.defaultLoadThree();
+    const el = document.createElement("div");
+    Object.defineProperty(el, "clientWidth", { value: 300 });
+    Object.defineProperty(el, "clientHeight", { value: 200 });
+    const handle = await viewer.show(el, { kind: "stl", url: SOURCE.url });
+    /** Runs the frames asked for so far; how many ran. */
+    const flush = () => {
+      const run = frames.splice(0);
+      for (const f of run) f();
+      return run.length;
+    };
+    return { handle, log, listeners, flush, resize: () => resizeRun() };
+  }
+
+  test("draws once after load and then not at all while idle", async () => {
+    const v = await shown(false);
+    expect(v.log.renders).toBe(0);
+    v.flush();
+    expect(v.log.renders).toBe(1);
+    expect(v.flush()).toBe(0);
+  });
+
+  test("a change event from the controls asks for a draw", async () => {
+    const v = await shown(false);
+    v.flush();
+    v.listeners.get("change")?.();
+    expect(v.flush()).toBe(1);
+    expect(v.log.renders).toBe(2);
+  });
+
+  test("a resize draws again", async () => {
+    const v = await shown(false);
+    v.flush();
+    v.resize();
+    v.flush();
+    expect(v.log.renders).toBe(2);
+  });
+
+  test.each(["rotate", "zoom", "reset"] as const)("%s asks for a draw", async (action) => {
+    const v = await shown(false);
+    v.flush();
+    if (action === "rotate") v.handle.rotate(0.3);
+    else if (action === "zoom") v.handle.zoom(0.8);
+    else v.handle.reset();
+    v.flush();
+    expect(v.log.renders).toBe(2);
+  });
+
+  test("a disposed view draws no more and drops the change listener", async () => {
+    const v = await shown(false);
+    v.handle.dispose();
+    expect(v.listeners.has("change")).toBe(false);
+    v.flush();
+    expect(v.log.renders).toBe(0);
+  });
+
+  test("easing is on by default and off for reduced motion", async () => {
+    const easy = await shown(false);
+    expect((easy.log.controls as { enableDamping: boolean }).enableDamping).toBe(true);
+    const still = await shown(true);
+    expect((still.log.controls as { enableDamping: boolean }).enableDamping).toBe(false);
+  });
+});
+
 describe("Viewer3d while the view loads", () => {
   test("announces the loading placeholder as a status", async () => {
     const host = document.createElement("div");
@@ -149,5 +281,107 @@ describe("Viewer3d while the view loads", () => {
     expect(placeholder?.getAttribute("role")).toBe("status");
     await act(async () => root.unmount());
     host.remove();
+  });
+});
+
+// Issue #469: the view draws only when something moves.
+describe("createRenderScheduler", () => {
+  function setup(opts: { damping: boolean; updates?: boolean[] }) {
+    const frames = new Map<number, () => void>();
+    let next = 1;
+    let renders = 0;
+    let updates = 0;
+    const queue = opts.updates ?? [];
+    const scheduler = createRenderScheduler({
+      render: () => {
+        renders += 1;
+      },
+      update: () => {
+        updates += 1;
+        return queue.shift() ?? false;
+      },
+      damping: opts.damping,
+      requestFrame: (run) => {
+        frames.set(next, run);
+        return next++;
+      },
+      cancelFrame: (id) => {
+        frames.delete(id);
+      },
+    });
+    /** Runs the one pending frame, if any; false when none was pending. */
+    function frame(): boolean {
+      const [first] = [...frames.entries()];
+      if (first === undefined) return false;
+      frames.delete(first[0]);
+      first[1]();
+      return true;
+    }
+    return {
+      scheduler,
+      frame,
+      pending: () => frames.size,
+      renders: () => renders,
+      updates: () => updates,
+    };
+  }
+
+  test("renders once after a request, and not again while idle", () => {
+    const t = setup({ damping: true });
+    t.scheduler.request();
+    expect(t.renders()).toBe(0);
+    expect(t.frame()).toBe(true);
+    expect(t.renders()).toBe(1);
+    expect(t.frame()).toBe(false);
+    expect(t.renders()).toBe(1);
+  });
+
+  test("asks for one frame however many requests come before it", () => {
+    const t = setup({ damping: false });
+    t.scheduler.request();
+    t.scheduler.request();
+    t.scheduler.request();
+    expect(t.pending()).toBe(1);
+    t.frame();
+    expect(t.renders()).toBe(1);
+  });
+
+  test("a request after a render draws again", () => {
+    const t = setup({ damping: false });
+    t.scheduler.request();
+    t.frame();
+    t.scheduler.request();
+    t.frame();
+    expect(t.renders()).toBe(2);
+  });
+
+  test("with damping it loops only while update() reports a change, then stops", () => {
+    const t = setup({ damping: true, updates: [true, true, false] });
+    t.scheduler.request();
+    let frames = 0;
+    while (t.frame()) frames += 1;
+    expect(frames).toBe(3);
+    expect(t.updates()).toBe(3);
+    expect(t.renders()).toBe(3);
+    expect(t.pending()).toBe(0);
+  });
+
+  test("without damping (reduced motion) it never calls update() and never loops", () => {
+    const t = setup({ damping: false, updates: [true, true] });
+    t.scheduler.request();
+    expect(t.frame()).toBe(true);
+    expect(t.frame()).toBe(false);
+    expect(t.updates()).toBe(0);
+    expect(t.renders()).toBe(1);
+  });
+
+  test("dispose cancels a pending frame and later requests do nothing", () => {
+    const t = setup({ damping: true });
+    t.scheduler.request();
+    t.scheduler.dispose();
+    expect(t.pending()).toBe(0);
+    t.scheduler.request();
+    expect(t.pending()).toBe(0);
+    expect(t.renders()).toBe(0);
   });
 });

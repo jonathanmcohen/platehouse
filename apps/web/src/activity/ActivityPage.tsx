@@ -17,6 +17,7 @@ import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { printerNameIn } from "../i18n/printers";
 import { serverText, serverTextWith } from "../i18n/serverText";
 import { AppApiError, appApi } from "../settings/api";
+import { isHidden } from "../visibility";
 import { Events } from "./Events";
 import { formatCount, formatDuration, formatRate, formatSize } from "./format";
 import "../settings/organise.css";
@@ -147,10 +148,6 @@ export interface ActivityView {
 // ---- Loading and refreshing ----
 
 type Problem = "failed" | "signed-out" | null;
-
-function isHidden(): boolean {
-  return typeof document !== "undefined" && document.visibilityState === "hidden";
-}
 
 /** The newest answer, why the last ask failed (if it did), and a way to ask at once. */
 function useActivity(): { view: ActivityView | undefined; problem: Problem; refresh(): void } {

@@ -111,9 +111,11 @@ export async function appApi<T = undefined>(
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
+  options: { signal?: AbortSignal } = {},
 ): Promise<T> {
   const headers: Record<string, string> = { accept: "application/json" };
   const init: RequestInit = { method, headers, credentials: "same-origin" };
+  if (options.signal !== undefined) init.signal = options.signal;
   if (body !== undefined) {
     headers["content-type"] = "application/json";
     init.body = JSON.stringify(body);

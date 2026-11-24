@@ -59,15 +59,17 @@
 //   opens the upload dialog. refreshKey reloads the grid (after an upload).
 // - Loading, an empty library, no results and a failed load each say so in
 //   words, and a failed load can be tried again.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useI18n } from "../i18n/I18n";
+import { AppApiError, appApi } from "../settings/api";
 import { type PrinterChoice, PrinterSwitch, usePrinterChoice } from "../settings/PrinterSwitch";
 import { menuIsOpen } from "../shell/MenuButton";
+import { MAX_QUERY } from "../shell/TopBar";
 import { DropZone } from "../upload/DropZone";
 import { Filters } from "./Filters";
 import { type LibraryCard, ModelCard } from "./ModelCard";
-import { Pager } from "./Pager";
+import { isPlainClick, Pager } from "./Pager";
 import {
   defaultSort,
   isViewAll,
@@ -150,7 +152,7 @@ interface Ready extends Answer {
   changed: number;
 }
 
-type Load = { state: "loading" } | { state: "failed" } | Ready;
+type Load = { state: "loading" } | { state: "failed"; signedOut: boolean } | Ready;
 
 /**
  * Where the check of the selection against the view stands: nothing to
@@ -171,24 +173,12 @@ function chunkAfter(chunk: number, answer: Answer, shown: number): number | null
   return chunk < answer.pageCount && shown < VIEW_ALL_MAX ? chunk + 1 : null;
 }
 
-async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, {
-    headers: { accept: "application/json" },
-    ...(signal === undefined ? {} : { signal }),
-  });
-  if (!res.ok) throw new Error(`${url} answered ${res.status}`);
-  return (await res.json()) as T;
+function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+  return appApi<T>("GET", path, undefined, signal === undefined ? {} : { signal });
 }
 
-async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify(body),
-    ...(signal === undefined ? {} : { signal }),
-  });
-  if (!res.ok) throw new Error(`${url} answered ${res.status}`);
-  return (await res.json()) as T;
+function postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return appApi<T>("POST", path, body, signal === undefined ? {} : { signal });
 }
 
 /**
@@ -201,11 +191,7 @@ async function stillShown(ids: string[], matchKey: string, signal: AbortSignal) 
   const found: string[] = [];
   for (let at = 0; at < ids.length; at += MAX_SELECTED) {
     const chunk = ids.slice(at, at + MAX_SELECTED);
-    const answer = await postJson<{ ids: string[] }>(
-      "/app/api/bulk/in-view",
-      { ids: chunk, view },
-      signal,
-    );
+    const answer = await postJson<{ ids: string[] }>("/bulk/in-view", { ids: chunk, view }, signal);
     found.push(...answer.ids);
   }
   return found;
@@ -228,7 +214,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const selectButton = useRef<HTMLButtonElement>(null);
   const [load, setLoad] = useState<Load>({ state: "loading" });
-  const [tags, setTags] = useState<string[]>([]);
+  const [tags, setTags] = useState<Array<{ name: string; models: number }>>([]);
+  const tagNames = useMemo(() => tags.map((tag) => tag.name), [tags]);
   /** Whether tags is the server's answer yet, or its last read failed. */
   const [tagsState, setTagsState] = useState<TagsState>("loading");
   /** Bumped after a bulk action, which can change which tags live models carry. */
@@ -239,11 +226,18 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   /** What the shown grid was asked for, so a reload for the same thing is told apart. */
   const loadedFor = useRef("");
   const generation = useRef(0);
+  /** The state of the load shown, as the last render drew it, and the one before. */
+  const shownState = useRef<Load["state"]>("loading");
+  const stateBefore = useRef<Load["state"]>("loading");
+  shownState.current = load.state;
   /** The current load's controller, so a View all retry is cancelled with it. */
   const loading = useRef<AbortController | null>(null);
   /** A pager link was followed: focus the count once the new page is in. */
   const focusCount = useRef(false);
   const count = useRef<HTMLParagraphElement>(null);
+  /** The failed block's Try again: focus lands here when a load fails. */
+  const tryAgain = useRef<HTMLButtonElement>(null);
+  const signedOutText = useRef<HTMLParagraphElement>(null);
   /** The header's printer switch: whose times and weights the cards show. */
   const printer = usePrinterChoice();
   const { choice, settle: settlePrinter } = printer;
@@ -256,7 +250,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
    */
   const matching = useCallback(() => {
     const search = new URLSearchParams();
-    if (q !== "") search.set("q", q);
+    if (q !== "") search.set("q", q.slice(0, MAX_QUERY));
     if (tag !== "") search.set("tag", tag);
     if (creator !== "") search.set("creator", creator);
     if (collection !== "") search.set("collection", collection);
@@ -319,7 +313,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       const search = matching();
       search.set("page", String(at));
       search.set("limit", String(limit));
-      return `/app/api/library?${search}`;
+      return `/library?${search}`;
     },
     [matching],
   );
@@ -359,10 +353,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     }
     const controller = new AbortController();
     setCheck({ state: "checking" });
-    getJson<{ ids: string[]; capped?: boolean }>(
-      `/app/api/library/ids?${matchKey}`,
-      controller.signal,
-    )
+    getJson<{ ids: string[]; capped?: boolean }>(`/library/ids?${matchKey}`, controller.signal)
       .then(async (answer) => {
         if (controller.signal.aborted) return;
         const shown = new Set(answer.ids);
@@ -445,6 +436,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     if (!selecting || dialogOpen) return;
     function onKey(event: KeyboardEvent) {
       if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Escape in a text field is the field's (it clears the search box).
+      if (isEditable(event.target)) return;
       if (otherOverlayOpen(event)) return;
       stopSelecting();
     }
@@ -548,8 +541,12 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     const mine = ++generation.current;
     const first = viewAll ? 1 : page;
     const url = query(first, viewAll ? VIEW_ALL_CHUNK : PAGE_SIZE);
-    const asked = `${viewAll}|${refreshKey}|${attempt}|${url}`;
+    const asked = `${viewAll}|${attempt}|${url}`;
     const quiet = asked === loadedFor.current;
+    // A quiet reload over a failed or Loading block shows its first answer at once.
+    const quietOverCards = quiet && shownState.current === "ready";
+    // A background reload is not a navigation: no earlier click's focus is owed to it.
+    if (quiet) focusCount.current = false;
     loadedFor.current = asked;
     if (!quiet) setLoad({ state: "loading" });
     else {
@@ -572,8 +569,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         };
         if (ready.nextChunk === null) setLoad(ready);
         else {
-          if (!quiet) setLoad(ready);
-          void loadRest(ready, mine, controller.signal, quiet);
+          if (!quietOverCards) setLoad(ready);
+          void loadRest(ready, mine, controller.signal, quietOverCards);
         }
         setHeader({
           printer: answer.printer,
@@ -582,8 +579,12 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         });
         settlePrinter(answer.printer);
       })
-      .catch(() => {
-        if (!controller.signal.aborted && mine === generation.current) setLoad({ state: "failed" });
+      .catch((error: unknown) => {
+        if (controller.signal.aborted || mine !== generation.current) return;
+        setLoad({
+          state: "failed",
+          signedOut: error instanceof AppApiError && error.status === 401,
+        });
       });
     return () => controller.abort();
   }, [query, page, viewAll, loadRest, refreshKey, attempt, changedKey]);
@@ -594,7 +595,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey and tagsKey only trigger a reload.
   useEffect(() => {
     const controller = new AbortController();
-    getJson<{ tags: string[] }>("/app/api/library/tags", controller.signal)
+    getJson<{ tags: Array<{ name: string; models: number }> }>("/library/tags", controller.signal)
       .then((answer) => {
         setTags(answer.tags);
         setTagsState("ready");
@@ -610,10 +611,25 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
 
   // Focus follows a pager link to the new page's count, once it is in.
   useEffect(() => {
+    // A failed load puts focus on Try again, so a keyboard user is not left on nothing;
+    // signed out has no Try again, so it goes to the sentence.
+    // Only a load the user waited on (not a quiet reload) takes focus.
+    const was = stateBefore.current;
+    stateBefore.current = load.state;
+    if (load.state === "failed" && was === "loading") {
+      (load.signedOut ? signedOutText : tryAgain).current?.focus();
+    }
     if (load.state === "loading" || !focusCount.current) return;
     focusCount.current = false;
     if (load.state === "ready") count.current?.focus();
   }, [load]);
+
+  /** A link that reloads the grid in this tab: focus goes to the count once it is in. */
+  function keepFocusOnCount(event: MouseEvent<HTMLAnchorElement>) {
+    // The chip already current changes nothing, so no reload is coming to use the flag.
+    if (event.currentTarget.hasAttribute("aria-current")) return;
+    if (isPlainClick(event)) focusCount.current = true;
+  }
 
   function retryRest() {
     const controller = loading.current;
@@ -735,7 +751,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           totalCapped={ready?.totalCapped ?? false}
           matching={matching()}
           view={notesView}
-          tags={tags}
+          tags={tagNames}
           tagsState={tagsState}
           check={check.state === "checking" || check.state === "failed" ? check.state : null}
           left={left}
@@ -755,14 +771,25 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         {load.state === "loading" ? <p className="studio-muted">{t("library.loading")}</p> : null}
         {load.state === "failed" ? (
           <div className="studio-alert studio-alert-alert" role="alert">
-            <p>{t("library.failed")}</p>
-            <button
-              type="button"
-              className="studio-button"
-              onClick={() => setAttempt((n) => n + 1)}
+            <p
+              ref={load.signedOut ? signedOutText : undefined}
+              tabIndex={load.signedOut ? -1 : undefined}
             >
-              {t("common.tryAgain")}
-            </button>
+              {load.signedOut ? t("common.signedOut") : t("library.failed")}
+            </p>
+            {load.signedOut ? null : (
+              <button
+                type="button"
+                className="studio-button"
+                ref={tryAgain}
+                onClick={() => {
+                  focusCount.current = true;
+                  setAttempt((n) => n + 1);
+                }}
+              >
+                {t("common.tryAgain")}
+              </button>
+            )}
           </div>
         ) : null}
         {ready !== null && ready.models.length === 0 ? (
@@ -771,7 +798,9 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
             {filtered ? (
               <>
                 {" "}
-                <Link to={allModels()}>{t("library.empty.showAll")}</Link>
+                <Link to={allModels()} onClick={keepFocusOnCount}>
+                  {t("library.empty.showAll")}
+                </Link>
               </>
             ) : null}
           </p>
@@ -794,6 +823,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
                 <li>
                   <Link
                     to={pageHref(params, 1)}
+                    onClick={keepFocusOnCount}
                     className="studio-chip"
                     {...(viewAll ? {} : { "aria-current": "true" as const })}
                   >
@@ -806,6 +836,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
                       next.delete("page");
                       next.set("view", "all");
                     })}
+                    onClick={keepFocusOnCount}
                     className="studio-chip"
                     {...(viewAll ? { "aria-current": "true" as const } : {})}
                   >
@@ -858,6 +889,28 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       ) : null}
     </DropZone>
   );
+}
+
+/** Inputs that take no typed text: a card's checkbox is one, and Escape there is Select mode's. */
+const NON_TEXT_INPUTS = new Set([
+  "checkbox",
+  "radio",
+  "button",
+  "submit",
+  "reset",
+  "image",
+  "file",
+  "range",
+  "color",
+]);
+
+/** A field the person types in or picks from: Escape there belongs to the field. */
+function isEditable(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target instanceof HTMLInputElement) return !NON_TEXT_INPUTS.has(target.type);
+  if (target.closest("textarea, select") !== null) return true;
+  const editable = target.closest("[contenteditable]");
+  return editable !== null && editable.getAttribute("contenteditable") !== "false";
 }
 
 /**

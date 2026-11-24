@@ -57,6 +57,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import { printerNameIn } from "../i18n/printers";
+import { useWhileVisible } from "../visibility";
 import { AppApiError, appApi, useErrorText } from "./api";
 import { ConfirmDialog } from "./Dialog";
 import type { MyPrinterView, SettingsView } from "./SettingsPage";
@@ -198,11 +199,16 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
   // printer has plates waiting. An interval, not a one-shot timer: a reload
   // leaves anyWaiting and reload unchanged, so the effect does not run again
   // to set a new timer, and a failed reload changes nothing at all.
-  useEffect(() => {
-    if (!anyWaiting) return;
-    const timer = setInterval(reload, WAITING_POLL_MS);
-    return () => clearInterval(timer);
-  }, [anyWaiting, reload]);
+  // Not while the tab is hidden: one read when it is shown again, then on.
+  useWhileVisible(
+    (resumed) => {
+      if (!anyWaiting) return () => {};
+      if (resumed) reload();
+      const timer = setInterval(reload, WAITING_POLL_MS);
+      return () => clearInterval(timer);
+    },
+    [anyWaiting, reload],
+  );
 
   // After a move the list is drawn in its new order; focus the moved button.
   // After a removal, once the row has left, focus the list rather than let

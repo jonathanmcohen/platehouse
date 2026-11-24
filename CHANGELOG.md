@@ -30,6 +30,14 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Fixed
 
+- Pressing Escape in the search box no longer ends Select mode or clears the selection ([#446](https://github.com/jonathanmcohen/platehouse/issues/446)).
+- Screen readers now hear the result of a bulk action in Select mode, and Retry on a failed plate keeps keyboard focus on that plate ([#447](https://github.com/jonathanmcohen/platehouse/issues/447)).
+- The upload dialog tells screen readers how each batch went, and Upload, Import anyway and the combine switch no longer drop keyboard focus ([#447](https://github.com/jonathanmcohen/platehouse/issues/447)).
+- The library shows the 30 most-used tags first, with a More tags button for the rest, instead of every tag above the grid ([#458](https://github.com/jonathanmcohen/platehouse/issues/458)).
+- The trash is shown 100 models at a time, with pages, instead of all at once ([#458](https://github.com/jonathanmcohen/platehouse/issues/458)).
+- The model page opens an STL over 50 MiB on its picture until you ask for 3D, the 3D view redraws only when something moves (and without easing for reduced motion), polling pauses in background tabs, and switching files no longer builds a 3D plate on its own ([#469](https://github.com/jonathanmcohen/platehouse/issues/469)).
+- Library reloads keep keyboard focus and the grid, a finished upload refreshes the library quietly, and an expired session shows that you are signed out instead of "could not be loaded" ([#470](https://github.com/jonathanmcohen/platehouse/issues/470)).
+- Dialogs keep focus and screen readers inside them even after a trip to the address bar, the top-bar search box has a visible edge, and tall dialogs fit on phones. The docs now say right-to-left languages are not supported yet ([#471](https://github.com/jonathanmcohen/platehouse/issues/471)).
 - The Manyfold importer refuses a download redirect to a private or local address unless that host is named with the new `--allow-redirect-host` option, and holds each file once in memory instead of twice ([#465](https://github.com/jonathanmcohen/platehouse/issues/465)).
 - The Manyfold importer renews its token before it expires and once after Manyfold refuses it, so an import longer than two hours carries on instead of failing every model left ([#444](https://github.com/jonathanmcohen/platehouse/issues/444)).
 - On the first start of 0.1.1, models imported with a MakerWorld licence Platehouse did not recognise (including CC BY-ND) get their licence or licence note back from their .3mf, in the background. The Activity page lists this work as "MakerWorld descriptions and licences (until they finish)". A licence or note already set is never changed ([#445](https://github.com/jonathanmcohen/platehouse/issues/445), [#430](https://github.com/jonathanmcohen/platehouse/issues/430)).

@@ -226,6 +226,23 @@ describe("palettes", () => {
   test.each([
     ["dark", DARK],
     ["light", LIGHT],
+  ])("form fields have a visible edge in %s", (name, selector) => {
+    const colours = palette(selector);
+    for (const background of ["--surface", "--bg"]) {
+      const ratio = contrast(colours["--muted"] as string, colours[background] as string);
+      expect(
+        ratio,
+        `${name}: --muted on ${background} is ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(3);
+    }
+    expect(declarationsFor('.studio-search input[type="search"]')).toMatch(
+      /border:\s*1px solid var\(--muted\)/,
+    );
+  });
+
+  test.each([
+    ["dark", DARK],
+    ["light", LIGHT],
   ])("the alert edges are at least 3:1 against surface and bg in %s", (name, selector) => {
     const colours = palette(selector);
     for (const edge of ["--accent-text", "--danger"]) {
@@ -431,6 +448,17 @@ describe("layout", () => {
   });
 });
 
+describe("button chips", () => {
+  // More tags is a button in a chip's clothes: it takes the page's font and
+  // line height, as the link chips do, and the pointer.
+  test("button.studio-chip matches the link chips", () => {
+    const rule = declarationsFor("button.studio-chip");
+    expect(rule).toMatch(/font-family:\s*inherit/);
+    expect(rule).toMatch(/line-height:\s*inherit/);
+    expect(rule).toMatch(/cursor:\s*pointer/);
+  });
+});
+
 describe("links", () => {
   // WCAG 1.4.1: a link inside running text must not differ from the text
   // around it by colour alone.
@@ -461,4 +489,16 @@ test("the CSS is ASCII only", () => {
   expect(CSS.length).toBeGreaterThan(0);
   const offending = [...CSS].findIndex((c) => (c.codePointAt(0) ?? 0) > 0x7f);
   expect(offending, `a non-ASCII character at offset ${offending}`).toBe(-1);
+});
+
+describe("the upload dialog's combine switch", () => {
+  const UPLOAD_CSS = readFileSync(new URL("../src/upload/upload.css", import.meta.url), "utf8");
+
+  test("looks unavailable while it is aria-disabled", () => {
+    const block = /\.ph-switch:has\(input\[aria-disabled="true"\]\)\s*\{([^}]*)\}/.exec(
+      UPLOAD_CSS,
+    )?.[1];
+    expect(block).toMatch(/cursor:\s*not-allowed/);
+    expect(block).toMatch(/opacity:\s*0\.6/);
+  });
 });

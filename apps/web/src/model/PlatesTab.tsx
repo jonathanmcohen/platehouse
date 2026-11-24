@@ -10,7 +10,9 @@
 // there is no file heading and the plate names are h2; with several, each
 // file's name is an h2 and its plate names h3.
 
+import { useRef } from "react";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
+import { AppApiError } from "../settings/api";
 import { PrinterSwitch } from "../settings/PrinterSwitch";
 import type { ModelFile, ModelView, RetryTarget } from "./ModelPage";
 import { PlateNumbersView } from "./Numbers";
@@ -80,6 +82,18 @@ export function PlatesTab({
   const files = model.files.filter((f) => f.kind === "3mf");
   const PlateHeading = files.length > 1 ? "h3" : "h2";
   const shown = switchPrinter(model, chosenPrinter);
+  const headings = useRef(new Map<string, HTMLHeadingElement>());
+  /**
+   * Moves focus to a plate's heading, unless the user has moved on to
+   * something outside that plate while the request was in flight.
+   */
+  function keepFocus(plateId: string) {
+    const heading = headings.current.get(plateId);
+    const active = document.activeElement;
+    const item = heading?.closest("li");
+    if (heading === undefined || item === null || item === undefined) return;
+    if (active === null || active === document.body || item.contains(active)) heading.focus();
+  }
   return (
     <>
       <PrinterSwitch
@@ -109,7 +123,14 @@ export function PlatesTab({
                       {plate.thumbnail === null ? null : (
                         <img src={plate.thumbnail} alt="" loading="lazy" />
                       )}
-                      <PlateHeading className="ph-plate-title">
+                      <PlateHeading
+                        className="ph-plate-title"
+                        tabIndex={-1}
+                        ref={(el: HTMLHeadingElement | null) => {
+                          if (el === null) headings.current.delete(plate.id);
+                          else headings.current.set(plate.id, el);
+                        }}
+                      >
                         {plateLabel(plate, i18n)}
                       </PlateHeading>
                     </div>
@@ -119,7 +140,25 @@ export function PlatesTab({
                       printerName={model.printerName}
                       projectFilaments={file.filaments}
                       pending={plate.estimatePending}
-                      onRetry={(estimateId) => onRetry(estimateId, { fileName: file.name, plate })}
+                      onRetry={async (estimateId) => {
+                        try {
+                          await onRetry(estimateId, {
+                            fileName: file.name,
+                            plate,
+                            inFile: files.length > 1,
+                          });
+                        } catch (refusal) {
+                          // A 409 reloads the model, which takes the failure
+                          // block (and its Retry) away; any other refusal
+                          // keeps the button, so focus stays on it.
+                          if (refusal instanceof AppApiError && refusal.status === 409) {
+                            keepFocus(plate.id);
+                          }
+                          throw refusal;
+                        }
+                        // The failure block goes when the model reloads.
+                        keepFocus(plate.id);
+                      }}
                     />
                   </li>
                 ))}

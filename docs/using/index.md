@@ -35,8 +35,9 @@ picture of the model instead of a thumbnail, once it has been rendered, and a fi
 then or if it could not be rendered. OpenSCAD models show a file-type icon. Pictures of prints sit
 on a neutral grey backdrop, so a black or white print stays visible in both themes.
 
-Search in the top bar matches names, captions, creators and tags, best match first. Pick a tag
-chip to filter by tag, and **All** to turn the tag filter off. The tag you are filtering by keeps
+Search in the top bar matches names, captions, creators and tags, best match first. The tag chips
+show the 30 most-used tags; **More tags** shows the rest. Pick a tag chip to filter by tag, and
+**All** to turn the tag filter off. The tag you are filtering by keeps
 its chip even when no model has that tag any more. Typing a search in the top bar turns off a tag
 filter and searches the whole library; this is deliberate, so a search always looks through every
 tag. The one exception is a creator or collection filter opened from **Show in the library**,
@@ -104,7 +105,9 @@ Space on it) and a toolbar appears above the grid with the number selected.
   matches the pages reach. A new search or filter keeps the selected models it still shows and
   drops the rest, and the toolbar says how many left. To gather models from several searches or
   tags, select them under one view that shows them all, such as the whole library with no search
-  or filter. **Select** again, or Escape, ends Select mode and clears the selection.
+  or filter. **Select** again, or Escape, ends Select mode and clears the selection. Escape does not end
+  Select mode while you are typing in a text field, such as the search box; it only leaves the
+  field.
 - While the page checks which selected models a new search or filter shows, the actions wait. If
   that check fails, the toolbar says so and offers **Try again**.
 

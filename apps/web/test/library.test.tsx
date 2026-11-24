@@ -29,7 +29,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { Filters } from "../src/library/Filters";
+import { Filters, TAG_CHIPS_SHOWN } from "../src/library/Filters";
 import { LibraryPage } from "../src/library/LibraryPage";
 import {
   formatDuration,
@@ -151,7 +151,8 @@ function stubServer(
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    if (url.pathname === "/app/api/library/tags") return json({ tags });
+    if (url.pathname === "/app/api/library/tags")
+      return json({ tags: tags.map((name, i) => ({ name, models: 10 - i })) });
     if (url.pathname === "/app/api/library") {
       const tag = url.searchParams.get("tag");
       const q = url.searchParams.get("q");
@@ -528,6 +529,11 @@ describe("the header's printer switch", () => {
   });
 });
 
+/** Tags as /app/api/library/tags answers: a name and a model count, most-used first. */
+function counted(names: string[]) {
+  return names.map((name, i) => ({ name, models: names.length - i }));
+}
+
 describe("tag filter narrows the grid", () => {
   test("choosing a tag asks for that tag and shows only its models", async () => {
     stubServer([PLATED, PARTIAL, STL, STEP]);
@@ -551,7 +557,7 @@ describe("tag filter narrows the grid", () => {
   test("a tag link keeps the search, and All drops only the tag", async () => {
     await render(
       <MemoryRouter initialEntries={["/?q=box&tag=PLA"]}>
-        <Filters tags={["Gridfinity", "PLA"]} />
+        <Filters tags={counted(["Gridfinity", "PLA"])} />
       </MemoryRouter>,
     );
     const hrefs = [...container.querySelectorAll("a.studio-chip")].map((a) =>
@@ -570,7 +576,7 @@ describe("tag filter narrows the grid", () => {
     const at = new URLSearchParams({ q: "box", creator: "Maker One", collection: "Desk & Shelf" });
     await render(
       <MemoryRouter initialEntries={[`/?${at}&tag=PLA`]}>
-        <Filters tags={["Gridfinity", "PLA"]} />
+        <Filters tags={counted(["Gridfinity", "PLA"])} />
       </MemoryRouter>,
     );
     const queries = [...container.querySelectorAll("a.studio-chip")].map(
@@ -584,6 +590,71 @@ describe("tag filter narrows the grid", () => {
     ]);
     expect(queries.map((q) => q.get("q"))).toEqual(["box", "box", "box"]);
     expect(queries.map((q) => q.get("tag"))).toEqual([null, "Gridfinity", "PLA"]);
+  });
+});
+
+describe("the tag chips show the top 30", () => {
+  const forty = counted(
+    Array.from({ length: 40 }, (_, i) => `Tag ${String(i + 1).padStart(2, "0")}`),
+  );
+  const chipTexts = () =>
+    [...container.querySelectorAll("a.studio-chip")].map((a) => a.textContent);
+  const moreButton = () =>
+    [...container.querySelectorAll("button")].find((b) => b.getAttribute("aria-expanded") !== null);
+
+  test("shows 30 tags and More tags (N) for a big list", async () => {
+    expect(TAG_CHIPS_SHOWN).toBe(30);
+    await render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Filters tags={forty} />
+      </MemoryRouter>,
+    );
+    expect(chipTexts()).toHaveLength(31);
+    expect(chipTexts()[30]).toBe("Tag 30");
+    expect(moreButton()?.textContent).toBe("More tags (10)");
+    expect(moreButton()?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  test("a list of 30 or fewer has no More tags button", async () => {
+    await render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Filters tags={forty.slice(0, 30)} />
+      </MemoryRouter>,
+    );
+    expect(chipTexts()).toHaveLength(31);
+    expect(moreButton()).toBeUndefined();
+  });
+
+  test("More tags shows them all and keeps focus", async () => {
+    await render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Filters tags={forty} />
+      </MemoryRouter>,
+    );
+    const button = moreButton();
+    button?.focus();
+    await act(async () => button?.click());
+    expect(chipTexts()).toHaveLength(41);
+    expect(moreButton()?.textContent).toBe("Fewer tags");
+    expect(moreButton()?.getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(moreButton());
+    await act(async () => moreButton()?.click());
+    expect(chipTexts()).toHaveLength(31);
+    expect(moreButton()?.textContent).toBe("More tags (10)");
+  });
+
+  test("an active tag beyond the first 30 is shown", async () => {
+    await render(
+      <MemoryRouter initialEntries={["/?tag=Tag%2037"]}>
+        <Filters tags={forty} />
+      </MemoryRouter>,
+    );
+    expect(chipTexts()).toHaveLength(32);
+    expect(chipTexts().slice(0, 3)).toEqual(["All", "Tag 37", "Tag 01"]);
+    expect(container.querySelector('a.studio-chip[aria-current="true"]')?.textContent).toBe(
+      "Tag 37",
+    );
+    expect(moreButton()?.textContent).toBe("More tags (9)");
   });
 });
 
@@ -1823,7 +1894,7 @@ describe("upload dialog shows progress per file and honours combine", () => {
       expect(onClose).toHaveBeenCalledTimes(1);
     });
 
-    test("Tab from behind the dialog goes back into it, never into the shell", async () => {
+    test("the page behind the dialog is inert, so Tab cannot reach the shell", async () => {
       const { start, fetchResult } = stubUploads();
       await render(
         <UploadDialog
@@ -1834,21 +1905,8 @@ describe("upload dialog shows progress per file and honours combine", () => {
           fetchResult={fetchResult}
         />,
       );
-      behind.focus();
-      let tab: KeyboardEvent | undefined;
-      await act(async () => {
-        tab = press(behind, "Tab");
-      });
-      expect(tab?.defaultPrevented).toBe(true);
-      expect(dialogEl().contains(document.activeElement)).toBe(true);
-      expect(document.activeElement).toBe(button(/choose files/i));
-
-      behind.focus();
-      await act(async () => {
-        tab = press(behind, "Tab", true);
-      });
-      expect(tab?.defaultPrevented).toBe(true);
-      expect(document.activeElement).toBe(button(/^upload/i));
+      expect(behind.closest("[inert]")).not.toBeNull();
+      expect(dialogEl().closest("[inert]")).toBeNull();
     });
 
     test("closed, it leaves the page's keys alone", async () => {

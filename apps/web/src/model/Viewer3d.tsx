@@ -81,6 +81,60 @@ export const ROTATE_STEP = Math.PI / 8;
 /** How much one press of Zoom moves the camera. */
 export const ZOOM_STEP = 0.8;
 
+/** Whether the person asked their system for less motion. */
+function prefersReducedMotion(): boolean {
+  return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+export interface RenderSchedulerOptions {
+  /** Draws the scene once. */
+  render(): void;
+  /** Lets the controls ease on; true while they moved, false once they have settled. */
+  update(): boolean;
+  /** Whether the controls ease (damping): only then do frames go on after a draw. */
+  damping: boolean;
+  requestFrame?: (run: () => void) => number;
+  cancelFrame?: (id: number) => void;
+}
+
+/**
+ * Draws on demand (issue #469): request() draws once, on the next frame, however
+ * many requests come before it. With damping each frame also lets the controls
+ * ease, and goes on only while they report a change, so a view nobody touches
+ * is never redrawn.
+ */
+export function createRenderScheduler(options: RenderSchedulerOptions): {
+  request(): void;
+  dispose(): void;
+} {
+  const requestFrame = options.requestFrame ?? ((run) => requestAnimationFrame(run));
+  const cancelFrame = options.cancelFrame ?? ((id) => cancelAnimationFrame(id));
+  let pending: number | undefined;
+  let disposed = false;
+
+  function frame() {
+    pending = undefined;
+    if (disposed) return;
+    const moving = options.damping ? options.update() : false;
+    options.render();
+    if (moving) request();
+  }
+
+  function request() {
+    if (disposed || pending !== undefined) return;
+    pending = requestFrame(frame);
+  }
+
+  return {
+    request,
+    dispose() {
+      disposed = true;
+      if (pending !== undefined) cancelFrame(pending);
+      pending = undefined;
+    },
+  };
+}
+
 /**
  * three.js and its STL, GLTF and orbit-control add-ons, imported only now.
  * This one function is the only code that touches them; @types/three types
@@ -181,14 +235,19 @@ export const defaultLoadThree: ThreeLoader = async () => {
       const home = new THREE.Vector3(radius * 1.1, radius * 0.8, radius * 1.5);
       camera.position.copy(home);
       const controls = new orbitModule.OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
+      // Easing keeps the view moving after a drag; a person who asked for
+      // less motion gets it to stop where they let go.
+      controls.enableDamping = !prefersReducedMotion();
       controls.target.set(0, 0, 0);
       controls.update();
 
-      renderer.setAnimationLoop(() => {
-        controls.update();
-        renderer.render(scene, camera);
+      const scheduler = createRenderScheduler({
+        render: () => renderer.render(scene, camera),
+        update: () => controls.update(),
+        damping: controls.enableDamping,
       });
+      const onChange = () => scheduler.request();
+      controls.addEventListener("change", onChange);
       const resize = new ResizeObserver(() => {
         const w = el.clientWidth;
         const h = el.clientHeight;
@@ -196,25 +255,32 @@ export const defaultLoadThree: ThreeLoader = async () => {
         renderer.setSize(w, h);
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
+        // Drawn at once: a resized canvas is blank until it is.
+        renderer.render(scene, camera);
       });
       resize.observe(el);
+      scheduler.request();
 
       return {
         rotate(radians) {
           holder.rotation.y += radians;
+          scheduler.request();
         },
         zoom(factor) {
           camera.position.sub(controls.target).multiplyScalar(factor).add(controls.target);
           controls.update();
+          scheduler.request();
         },
         reset() {
           holder.rotation.y = 0;
           controls.target.set(0, 0, 0);
           camera.position.copy(home);
           controls.update();
+          scheduler.request();
         },
         dispose() {
-          renderer.setAnimationLoop(null);
+          scheduler.dispose();
+          controls.removeEventListener("change", onChange);
           resize.disconnect();
           controls.dispose();
           // Meshes, points, lines and sprites carry a geometry and one or
@@ -260,9 +326,19 @@ export interface Viewer3dProps {
   onFailed?: ((error: unknown) => void) | undefined;
   /** The caller's buttons, between the view and its controls. */
   actions?: ReactNode;
+  /** Moves focus to the view when it is shown, for a caller whose button this view replaced. */
+  focusOnShow?: boolean | undefined;
 }
 
-export function Viewer3d({ source, label, download, loadThree, onFailed, actions }: Viewer3dProps) {
+export function Viewer3d({
+  source,
+  label,
+  download,
+  loadThree,
+  onFailed,
+  actions,
+  focusOnShow,
+}: Viewer3dProps) {
   const { t, rich } = useI18n();
   const host = useRef<HTMLDivElement>(null);
   const [handle, setHandle] = useState<ViewerHandle | null>(null);
@@ -273,6 +349,12 @@ export function Viewer3d({ source, label, download, loadThree, onFailed, actions
   failedRef.current = onFailed;
   const kind = source?.kind;
   const url = source?.url;
+
+  // The button that asked for this view has gone: focus lands on the view,
+  // whose status line says it is loading.
+  useEffect(() => {
+    if (focusOnShow) host.current?.focus();
+  }, [focusOnShow]);
 
   useEffect(() => {
     let cancelled = false;
@@ -316,6 +398,7 @@ export function Viewer3d({ source, label, download, loadThree, onFailed, actions
       <div className="studio-viewer-frame">
         <div
           ref={host}
+          tabIndex={-1}
           className="ph-viewer3d"
           data-viewer3d=""
           role="img"

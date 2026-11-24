@@ -765,20 +765,22 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
   /** Sends a skipped duplicate again, to where it was first sent, stored anyway. */
   const importAnyway = (key: string) => {
     const item = latest.current.find((i) => i.key === key);
-    if (item?.status !== "duplicate" || item.target === undefined) return;
+    if (item?.status !== "duplicate" || item.target === undefined) return false;
     running.current = true;
     update(key, { duplicates: [] });
     enqueue(item, item.target, "allow");
     pump();
+    return true;
   };
 
   /** Sends a failed row's file again, to where and how it was first sent. */
   const retry = (key: string) => {
     const item = latest.current.find((i) => i.key === key);
-    if (item?.status !== "failed" || item.target === undefined) return;
+    if (item?.status !== "failed" || item.target === undefined) return false;
     running.current = true;
     enqueue(item, item.target, item.policy ?? "skip");
     pump();
+    return true;
   };
 
   // Back online: each row that failed because the connection was lost starts

@@ -87,7 +87,10 @@ export interface TokensApiDeps {
   now?: () => Date;
 }
 
-/** The api_tokens table's live tokens, newest first; never the hash. */
+/**
+ * The api_tokens table's live tokens, newest first; never the hash. Not paged:
+ * a household has a handful of tokens.
+ */
 export function dbTokenList(db: Kysely<DB>): () => Promise<ListedToken[]> {
   return () =>
     db

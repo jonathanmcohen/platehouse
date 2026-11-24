@@ -23,6 +23,9 @@ rebuilding anything: put translation files in a folder and set `LOCALES_DIR`.
 3. Put a file in the folder for each language, named for its code: `de.json`, `it.json`,
    `pt-BR.json`. See [How a translation file looks](./index.md#how-a-translation-file-looks).
 
+Right-to-left languages, such as Arabic or Hebrew, are not supported yet: the page would still lay
+out left to right.
+
 Platehouse reads the folder when it starts, then again every 15 seconds in the background. A new
 or changed file is picked up within those 15 seconds, with no restart. Pages never wait for the
 folder: they are always shown with the languages from the last read.

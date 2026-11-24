@@ -14,13 +14,14 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, type ReactNode } from "react";
+import { act, type ReactNode, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { CollectionsPage } from "../src/collections/CollectionsPage";
 import { CreatorsPage } from "../src/creators/CreatorsPage";
 import { LibraryPage } from "../src/library/LibraryPage";
+import { ConfirmDialog, Dialog } from "../src/settings/Dialog";
 import { howLong, REREAD_SHOWS_CHANGE, WAITING_POLL_MS } from "../src/settings/PrinterMenu";
 import { SettingsPage } from "../src/settings/SettingsPage";
 import { VERSIONING_OFF_WARNING } from "../src/settings/VersioningBanner";
@@ -385,7 +386,21 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     return json(200, { sessionsEnded, tokensRevoked });
   }
   if (method === "GET" && path === "/app/api/trash") {
-    return json(200, { models: state.trash, readAt: state.now });
+    // Paged as the server pages it: newest first, 100 to a page, a page past
+    // the end served as the last page.
+    const pageSize = Number(url.searchParams.get("limit") ?? 100);
+    const total = state.trash.length;
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Math.max(Number(url.searchParams.get("page") ?? 1), 1), pageCount);
+    const newestFirst = [...state.trash].sort((a, b) => b.trashedAt.localeCompare(a.trashedAt));
+    return json(200, {
+      models: newestFirst.slice((page - 1) * pageSize, page * pageSize),
+      readAt: state.now,
+      page,
+      pageSize,
+      pageCount,
+      total,
+    });
   }
   // Empty trash purges only the models trashed at or before the cutoff it is
   // sent, as the server does: a model trashed after the page read the list
@@ -906,6 +921,44 @@ describe("the settings page", () => {
       await step();
       expect(callsTo("GET", "/app/api/settings")).toHaveLength(reads);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the printer menu's poll pauses while the tab is hidden, and reads once and resumes when it is shown", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const setVisibility = (value: "visible" | "hidden") => {
+      Object.defineProperty(document, "visibilityState", { value, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+    try {
+      state.myPrinters = [P1S, X1C];
+      state.waiting = { [X1C]: 463 };
+      await show("/settings", <SettingsPage />);
+      const reads = () => callsTo("GET", "/app/api/settings").length;
+      await act(async () => {
+        setVisibility("hidden");
+      });
+      const hiddenAt = reads();
+      for (let i = 0; i < 3; i += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(WAITING_POLL_MS);
+        });
+        await settle();
+      }
+      expect(reads()).toBe(hiddenAt);
+      await act(async () => {
+        setVisibility("visible");
+      });
+      await settle();
+      expect(reads()).toBe(hiddenAt + 1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WAITING_POLL_MS);
+      });
+      await settle();
+      expect(reads()).toBe(hiddenAt + 2);
+    } finally {
+      setVisibility("visible");
       vi.useRealTimers();
     }
   });
@@ -1627,6 +1680,99 @@ describe("the trash", () => {
     expect(text()).toContain("Broken clip");
   });
 
+  /** The pager's link to page n, found by the label a screen reader reads. */
+  function pageLink(n: number): HTMLAnchorElement {
+    const found = document.querySelector<HTMLAnchorElement>(
+      `nav.ph-pager a[aria-label="Page ${n}"]`,
+    );
+    if (found === null) throw new Error(`no pager link to page ${n}`);
+    return found;
+  }
+
+  /** n trashed models, model 0 the newest, each a minute older than the last. */
+  function trashOf(n: number): FakeState["trash"] {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `0190f7a2-0000-7000-8000-${String(i).padStart(12, "0")}`,
+      name: `Model ${i}`,
+      creator: null,
+      trashedAt: new Date(Date.parse("2026-11-10T12:00:00.000Z") - i * 60_000).toISOString(),
+      purgeAt: "2026-12-10T12:00:00.000Z",
+      purgeStarted: false,
+    }));
+  }
+
+  test("the trash shows a pager when there is more than one page, and page 2 lists the next models", async () => {
+    state.trash = trashOf(101);
+    await show("/trash", <TrashPage />);
+    expect(text()).toContain("Model 0");
+    expect(text()).toContain("Model 99");
+    expect(text()).not.toContain("Model 100");
+    const pager = document.querySelector("nav.ph-pager");
+    expect(pager).not.toBeNull();
+    expect(pageLink(2).getAttribute("href")).toBe("/trash?page=2");
+    await click(pageLink(2));
+    expect(callsTo("GET", "/app/api/trash?page=2")).toHaveLength(1);
+    expect(text()).toContain("Model 100");
+    expect(text()).not.toContain("Model 0");
+    expect(pageLink(1).getAttribute("href")).toBe("/trash");
+  });
+
+  test("after the pager loads another page, focus is on the page line, not the body", async () => {
+    state.trash = trashOf(101);
+    await show("/trash", <TrashPage />);
+    await click(pageLink(2));
+    const active = document.activeElement as HTMLElement;
+    expect(active.tabIndex).toBe(-1);
+    expect(active.getAttribute("role")).toBe("status");
+    expect(active.textContent).toBe("Page 2 of 2");
+  });
+
+  test("restoring the last model of the last page never flashes the empty trash, and the address follows the page served", async () => {
+    state.trash = trashOf(101);
+    await show("/trash?page=2", <TrashPage />);
+    expect(text()).toContain("Model 100");
+    let flashed = false;
+    const watcher = new MutationObserver(() => {
+      if (text().includes("The trash is empty.")) flashed = true;
+    });
+    watcher.observe(document.body, { childList: true, subtree: true, characterData: true });
+    await click(button("Restore Model 100"));
+    watcher.disconnect();
+    expect(flashed).toBe(false);
+    expect(text()).toContain("Model 99");
+    expect(text()).not.toContain("The trash is empty.");
+    expect(callsTo("GET", "/app/api/trash")).toHaveLength(1);
+  });
+
+  test("the trash shows no pager when everything fits on one page", async () => {
+    await show("/trash", <TrashPage />);
+    expect(document.querySelector("nav.ph-pager")).toBeNull();
+  });
+
+  test("the pager in Settings keeps the settings address and uses its own parameter", async () => {
+    state.trash = trashOf(101);
+    await show("/settings", <SettingsPage />);
+    expect(pageLink(2).getAttribute("href")).toBe("/settings?trashPage=2");
+  });
+
+  test("a restore on page 2 reloads page 2, and Empty trash counts every page", async () => {
+    state.trash = trashOf(102);
+    await show("/trash?page=2", <TrashPage />);
+    expect(text()).toContain("Model 100");
+    await click(button("Restore Model 100"));
+    expect(text()).not.toContain("Model 100");
+    expect(callsTo("GET", "/app/api/trash?page=2").length).toBeGreaterThan(1);
+    expect(text()).toContain("Model 101");
+    await click(button("Empty trash"));
+    expect(dialog()?.textContent).toContain(
+      "All 101 models in the trash, on every page, are deleted for good",
+    );
+    await click(button("Empty trash", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
+      { cutoff: "2026-11-12T09:00:00.000Z" },
+    ]);
+  });
+
   test("empty trash uses a themed dialog", async () => {
     await show("/trash", <TrashPage />);
     const empty = button("Empty trash");
@@ -1712,7 +1858,9 @@ describe("the trash", () => {
       },
     ];
     await click(button("Empty trash"));
-    expect(dialog()?.textContent).toContain("The 2 models listed here are deleted for good");
+    expect(dialog()?.textContent).toContain(
+      "All 2 models in the trash, on every page, are deleted for good",
+    );
     await click(button("Empty trash", dialog() as HTMLElement));
     // It sends the time the server read the list, not the models' ids.
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
@@ -1728,7 +1876,7 @@ describe("the trash", () => {
     await show("/trash", <TrashPage />);
     await click(button("Restore Old benchy"));
     await click(button("Empty trash"));
-    expect(dialog()?.textContent).toContain("The 1 model listed here is deleted for good");
+    expect(dialog()?.textContent).toContain("The 1 model in the trash is deleted for good");
     await click(button("Empty trash", dialog() as HTMLElement));
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
       { cutoff: "2026-11-12T09:00:00.000Z" },
@@ -1747,7 +1895,9 @@ describe("the trash", () => {
     }));
     await show("/trash", <TrashPage />);
     await click(button("Empty trash"));
-    expect(dialog()?.textContent).toContain("The 3000 models listed here are deleted for good");
+    expect(dialog()?.textContent).toContain(
+      "All 3000 models in the trash, on every page, are deleted for good",
+    );
     await click(button("Empty trash", dialog() as HTMLElement));
     const sent = callsTo("POST", "/app/api/trash/empty").map((c) => c.body);
     expect(sent).toEqual([{ cutoff: "2026-11-12T09:00:00.000Z" }]);
@@ -2767,5 +2917,203 @@ describe("the pages' stylesheet", () => {
     expect(rules).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(rules).not.toMatch(/\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i);
     expect(rules).not.toMatch(/\b(?:black|white)\b/i);
+  });
+});
+
+function Harness({ nested }: { nested: boolean }) {
+  return (
+    <div id="outside-sibling">
+      <Dialog title="Outer" onClose={() => {}}>
+        <button type="button">Outer button</button>
+        {nested ? (
+          <ConfirmDialog
+            title="Inner"
+            message="Sure?"
+            confirmLabel="Go"
+            onConfirm={async () => {}}
+            onCancel={() => {}}
+          />
+        ) : null}
+      </Dialog>
+    </div>
+  );
+}
+
+const escaped: string[] = [];
+
+function Pair({ inner }: { inner: boolean }) {
+  return (
+    <Dialog title="Outer" onClose={() => escaped.push("outer")}>
+      <button type="button">Outer button</button>
+      {inner ? (
+        <Dialog title="Inner" onClose={() => escaped.push("inner")}>
+          <button type="button">Inner button</button>
+        </Dialog>
+      ) : null}
+    </Dialog>
+  );
+}
+describe("an open dialog isolates the rest of the page", () => {
+  function inertCount(): number {
+    return document.querySelectorAll("[inert]").length;
+  }
+
+  test("an open dialog makes the rest of the page inert, and closing it restores it", async () => {
+    const before = document.createElement("div");
+    before.id = "page-before";
+    document.body.prepend(before);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    expect(container.hasAttribute("inert")).toBe(false);
+    expect(document.querySelector(".ph-dialog")?.closest("[inert]")).toBeNull();
+    await act(async () => root.render(<div id="outside-sibling" />));
+    expect(inertCount()).toBe(0);
+    before.remove();
+  });
+
+  test("an element that was already inert stays inert after the dialog closes", async () => {
+    const other = document.createElement("div");
+    other.setAttribute("inert", "");
+    document.body.prepend(other);
+    await act(async () => root.render(<Harness nested={false} />));
+    await act(async () => root.render(<div />));
+    expect(other.hasAttribute("inert")).toBe(true);
+    other.remove();
+  });
+
+  test("a dialog opened from inside another keeps the outer isolation when it closes", async () => {
+    const before = document.createElement("div");
+    document.body.prepend(before);
+    await act(async () => root.render(<Harness nested={false} />));
+    const outerButton = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Outer button",
+    ) as HTMLButtonElement;
+    await act(async () => root.render(<Harness nested />));
+    // The inner dialog is usable; the outer dialog's own content is inert behind it.
+    const dialogs = document.querySelectorAll('[role="dialog"]');
+    expect(dialogs).toHaveLength(2);
+    expect(outerButton.closest("[inert]")).not.toBeNull();
+    expect(dialogs[1]?.closest("[inert]")).toBeNull();
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    expect(outerButton.closest("[inert]")).toBeNull();
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    before.remove();
+  });
+
+  test("an inner and an outer dialog mounted in the same commit release cleanly", async () => {
+    const before = document.createElement("div");
+    document.body.prepend(before);
+    await act(async () => root.render(<Harness nested />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    before.remove();
+  });
+
+  test("under StrictMode nothing is left inert after the dialog closes", async () => {
+    const before = document.createElement("div");
+    document.body.prepend(before);
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <Harness nested={false} />
+        </StrictMode>,
+      ),
+    );
+    expect(before.hasAttribute("inert")).toBe(true);
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <div />
+        </StrictMode>,
+      ),
+    );
+    expect(inertCount()).toBe(0);
+    before.remove();
+  });
+
+  test("a live region with nothing to focus stays readable; one with a control goes inert", async () => {
+    const status = document.createElement("div");
+    status.setAttribute("role", "status");
+    const live = document.createElement("div");
+    live.setAttribute("aria-live", "polite");
+    live.append(document.createElement("button"));
+    document.body.prepend(status, live);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(status.hasAttribute("inert")).toBe(false);
+    expect(live.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    status.remove();
+    live.remove();
+  });
+
+  test("a quiet live region that gains a control while the dialog is open goes inert", async () => {
+    const status = document.createElement("div");
+    status.setAttribute("role", "status");
+    document.body.prepend(status);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(status.hasAttribute("inert")).toBe(false);
+    await act(async () => {
+      status.append(document.createElement("button"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(status.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    status.remove();
+  });
+
+  test("an element added beside the dialog while it is open is inert, and freed on close", async () => {
+    await act(async () => root.render(<Harness nested={false} />));
+    const late = document.createElement("div");
+    await act(async () => {
+      document.body.prepend(late);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(late.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(late.hasAttribute("inert")).toBe(false);
+    late.remove();
+  });
+
+  test("focus returns to the opener even when the browser blurs it as it goes inert", async () => {
+    const opener = document.createElement("button");
+    opener.textContent = "Open";
+    document.body.prepend(opener);
+    opener.focus();
+    // An engine that drops focus from an element the moment it becomes inert.
+    const set = Element.prototype.setAttribute;
+    const spy = vi.spyOn(Element.prototype, "setAttribute").mockImplementation(function (
+      this: Element,
+      name: string,
+      value: string,
+    ) {
+      set.call(this, name, value);
+      if (name === "inert" && this.contains(document.activeElement)) {
+        (document.activeElement as HTMLElement).blur();
+      }
+    });
+    await act(async () => root.render(<Harness nested={false} />));
+    spy.mockRestore();
+    await act(async () => root.render(<div />));
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  test("Escape with focus on the body closes the dialog; with two open only the inner one", async () => {
+    escaped.length = 0;
+    await act(async () => root.render(<Pair inner />));
+    (document.activeElement as HTMLElement | null)?.blur();
+    await press(document.body, "Escape");
+    expect(escaped).toEqual(["inner"]);
+    await act(async () => root.render(<Pair inner={false} />));
+    (document.activeElement as HTMLElement | null)?.blur();
+    await press(document.body, "Escape");
+    expect(escaped).toEqual(["inner", "outer"]);
   });
 });

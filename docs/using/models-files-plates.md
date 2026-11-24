@@ -52,6 +52,10 @@ and images in them show as links, so a description can never load anything from 
 STL files, STEP files and OpenSCAD files show in a 3D viewer you can rotate and zoom with the
 pointer, or with the **Rotate**, **Zoom** and **Reset** buttons.
 
+- An STL file over 50 MiB does not start the 3D view by itself. The model page opens on its
+  preview picture, or a placeholder when it has none, with a **Show in 3D** button that loads the
+  view when you ask for it.
+
 - A STEP file is converted to a mesh for the viewer.
 - An OpenSCAD file is rendered to an STL and a preview image with OpenSCAD. Both can be viewed and
   downloaded. If the render fails, the page shows OpenSCAD's own message.

@@ -17,12 +17,11 @@
 // not shown.
 //
 // It is a themed dialog in the page (role dialog, aria-modal), never a
-// native browser dialog: focus moves into it when it opens, Tab stays inside
-// it, Escape closes it, and focus goes back where it was. Escape and Tab are
-// handled on the document while it is open, so they keep working wherever
-// focus has gone, and Tab from outside it (the shell behind) goes back into
-// it; pressing the backdrop keeps focus in the dialog. Closing while
-// files are still sending only hides it: the uploads go on, and every row
+// native browser dialog: focus moves into it when it opens, the page behind
+// it is inert (useInertOutside) so Tab and a screen reader stay inside it,
+// Escape closes it (handled on the document, as focus can sit on the body),
+// and focus goes back where it was. Pressing the backdrop keeps focus in the
+// dialog. Closing while files are still sending only hides it: the uploads go on, and every row
 // still sending, failed or not yet sent is there when it is opened again (a
 // row that went in is cleared when its round ends while hidden). Files that
 // are not a supported type are listed with the reason and never sent.
@@ -63,12 +62,14 @@ import {
   type ReactNode,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
 import { Link, useInRouterContext } from "react-router";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import "../settings/organise.css";
+import { useInertOutside } from "../settings/useInertOutside";
 import "./upload.css";
 import {
   ACCEPT,
@@ -219,13 +220,23 @@ const ANNOUNCED: ReadonlySet<UploadStatus> = new Set(["done", "failed", "duplica
 /** How many recent announcements the live region keeps. */
 const ANNOUNCEMENTS_KEPT = 10;
 
+/** One line for a finished batch: "3 added, 1 skipped, 1 failed", leaving out zero parts. */
+function summaryText(batch: readonly UploadItem[], i18n: Pick<I18n, "t">): string {
+  const count = (status: UploadStatus) => batch.filter((i) => i.status === status).length;
+  const parts: string[] = [];
+  const added = count("done");
+  const skipped = count("duplicate");
+  const failed = count("failed");
+  if (added > 0) parts.push(i18n.t("upload.summary.added", { count: added }));
+  if (skipped > 0) parts.push(i18n.t("upload.summary.skipped", { count: skipped }));
+  if (failed > 0) parts.push(i18n.t("upload.summary.failed", { count: failed }));
+  return parts.join(", ");
+}
+
 /** Moves focus from a row's button, about to go, to that row's status. */
 function focusRowStatus(button: HTMLElement) {
   button.closest("li")?.querySelector<HTMLElement>(".ph-upload-status")?.focus();
 }
-
-const FOCUSABLE =
-  'button:not([disabled]), input:not([disabled]):not([hidden]), [href], [tabindex]:not([tabindex="-1"])';
 
 export function UploadDialog({
   open,
@@ -240,22 +251,31 @@ export function UploadDialog({
   const i18n = useI18n();
   const { t } = i18n;
   const titleId = useId();
+  const backdrop = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLDivElement>(null);
-  const picker = useRef<HTMLInputElement>(null);
-  const returnFocus = useRef<Element | null>(null);
   /** The current close(), for the document's key handler. */
   const closeRef = useRef<() => void>(() => {});
+  const picker = useRef<HTMLInputElement>(null);
+  const returnFocus = useRef<Element | null>(null);
   const [combine, setCombine] = useState(false);
   /** The combined batch's id, from its first Upload until close or a switch change. */
   const batch = useRef<string | null>(null);
   /** Whether the dialog is open, for a round that finishes while it is hidden. */
   const isOpen = useRef(open);
   isOpen.current = open;
+  /** The rows sent since the last summary, by key. */
+  const sentKeys = useRef(new Set<string>());
+  /** The finished batch's outcome, waiting for the effect that says it. */
+  const summaryDue = useRef<UploadItem[] | null>(null);
   const upload = useTusUpload({
     ...(start === undefined ? {} : { start }),
     ...(fetchResult === undefined ? {} : { fetchResult }),
     ...(resultDelayMs === undefined ? {} : { resultDelayMs }),
-    onFinished: () => {
+    onFinished: (finished) => {
+      if (isOpen.current) {
+        summaryDue.current = finished.filter((i) => sentKeys.current.has(i.key));
+      }
+      sentKeys.current.clear();
       // Hidden while it was sending: the user has closed it, so the batch
       // ends here, as close() would have ended it. Only the rows that went
       // in are cleared: a failed row keeps its reason and an unsent row
@@ -293,6 +313,13 @@ export function UploadDialog({
       });
     }
     seen.current = next;
+    const batch = summaryDue.current;
+    summaryDue.current = null;
+    const summary = batch === null ? "" : summaryText(batch, i18n);
+    if (summary !== "") {
+      saidCount.current += 1;
+      lines.push({ id: saidCount.current, text: summary });
+    }
     if (lines.length > 0) setSaid((list) => [...list, ...lines].slice(-ANNOUNCEMENTS_KEPT));
   }, [items, i18n, open]);
 
@@ -302,53 +329,42 @@ export function UploadDialog({
 
   useEffect(() => guardFileDrops(), []);
 
+  // Where focus was is read before the page goes inert: a browser may drop
+  // focus from an element the moment it becomes inert. Layout effects run
+  // before the passive ones, where useInertOutside sets inert.
+  useLayoutEffect(() => {
+    if (open) returnFocus.current = document.activeElement;
+  }, [open]);
+
+  // The page behind is inert while the dialog is open. Declared before the
+  // focus effect so its cleanup runs first on close: focus cannot go back to
+  // where it was while that is still inert.
+  useInertOutside(backdrop, open);
+
+  // Escape, on the document while the dialog is open: a click on the page
+  // text or the backdrop can leave focus on the body, outside the dialog,
+  // and Escape must still close it. Tab needs no trap here, the page behind
+  // is inert.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      // Another overlay that handled this Escape has marked it.
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      closeRef.current();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
   // Focus moves into the dialog when it opens and back when it closes.
   useEffect(() => {
     if (!open) return;
-    returnFocus.current = document.activeElement;
     dialog.current?.focus();
     return () => {
       const back = returnFocus.current;
       if (back instanceof HTMLElement && back.isConnected) back.focus();
     };
-  }, [open]);
-
-  // Escape and the Tab trap, on the document while the dialog is open: a
-  // click on the backdrop or elsewhere can leave focus outside the dialog,
-  // and the shell behind it is not inert.
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      const box = dialog.current;
-      if (box === null) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)];
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      const active = document.activeElement;
-      if (first === undefined || last === undefined) {
-        event.preventDefault();
-        box.focus();
-        return;
-      }
-      if (!box.contains(active)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-      } else if (event.shiftKey && (active === first || active === box)) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
   }, [open]);
 
   if (!open) return null;
@@ -364,9 +380,12 @@ export function UploadDialog({
     }
     onClose();
   }
+
   closeRef.current = close;
 
   function send() {
+    if (ready === 0) return;
+    for (const item of items) if (item.status === "ready") sentKeys.current.add(item.key);
     if (modelId === undefined && combine && batch.current === null) batch.current = newBatchId();
     const target: UploadTarget =
       modelId !== undefined
@@ -399,8 +418,9 @@ export function UploadDialog({
   }
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: dropping files and pressing the backdrop are pointer gestures only; Choose files is the keyboard route, and Escape and Tab are handled on the document.
+    // biome-ignore lint/a11y/noStaticElementInteractions: dropping files and pressing the backdrop are pointer gestures only; Choose files is the keyboard route, and Escape is handled on the document.
     <div
+      ref={backdrop}
       className="ph-dialog-backdrop"
       onDragOver={onDragOver}
       onDrop={onDrop}
@@ -420,7 +440,13 @@ export function UploadDialog({
           {t("upload.supported")}
         </p>
         <p className="studio-muted">{t("upload.duplicates")}</p>
-        <div className="studio-visually-hidden" role="status" aria-live="polite">
+        <div
+          className="studio-visually-hidden"
+          role="status"
+          aria-live="polite"
+          aria-atomic="false"
+          aria-relevant="additions"
+        >
           {said.map((line) => (
             <p key={line.id}>{line.text}</p>
           ))}
@@ -448,6 +474,7 @@ export function UploadDialog({
                   }
                   tabIndex={-1}
                 >
+                  <span className="studio-visually-hidden">{item.file.name}: </span>
                   {statusText(item, i18n)}
                 </span>
                 {item.status === "duplicate" ? (
@@ -460,7 +487,7 @@ export function UploadDialog({
                       className="studio-button"
                       aria-label={t("upload.importAnywayFile", { name: item.file.name })}
                       onClick={(event) => {
-                        upload.importAnyway(item.key);
+                        if (upload.importAnyway(item.key)) sentKeys.current.add(item.key);
                         focusRowStatus(event.currentTarget);
                       }}
                     >
@@ -475,7 +502,7 @@ export function UploadDialog({
                       className="studio-button"
                       aria-label={t("upload.retryFile", { name: item.file.name })}
                       onClick={(event) => {
-                        upload.retry(item.key);
+                        if (upload.retry(item.key)) sentKeys.current.add(item.key);
                         focusRowStatus(event.currentTarget);
                       }}
                     >
@@ -510,8 +537,9 @@ export function UploadDialog({
                 role="switch"
                 aria-checked={combine}
                 checked={combine}
-                disabled={busy}
+                aria-disabled={busy}
                 onChange={(event) => {
+                  if (busy) return;
                   batch.current = null;
                   setCombine(event.currentTarget.checked);
                 }}
@@ -528,7 +556,7 @@ export function UploadDialog({
           <button
             type="button"
             className="studio-button studio-button-primary"
-            disabled={ready === 0}
+            aria-disabled={ready === 0}
             onClick={send}
           >
             {t("upload.send", { count: ready })}
