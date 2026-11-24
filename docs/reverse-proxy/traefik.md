@@ -34,7 +34,8 @@ entryPoints:
         writeTimeout: 0s # the default: no limit, so long downloads finish
         idleTimeout: 180s
     http:
-      # Both are Traefik's defaults; shown so they are not turned off.
+      # Both are set explicitly, so this setup does not depend on Traefik's
+      # own defaults.
       sanitizePath: true
       encodedCharacters:
         allowEncodedSlash: true
@@ -77,13 +78,32 @@ To allow only your own networks, add an allowlist middleware and put it first in
 chain:
 
 ```yaml
-traefik.http.middlewares.platehouse-allowlist.ipallowlist.sourcerange: "192.168.0.0/16,172.16.0.0/12"
+traefik.http.middlewares.platehouse-allowlist.ipallowlist.sourcerange: "192.168.1.0/24,10.8.0.0/24"
 traefik.http.routers.platehouse.middlewares: platehouse-allowlist,platehouse-headers
 ```
 
 With no `ipStrategy`, Traefik matches the connection's own address, not a header a client can
 set. Keep it that way unless another proxy sits in front of Traefik; if one does, see
 [Rate limits](../security.md#rate-limits) for trusting only that proxy's address.
+
+:::warning The allowlist only works on the address Traefik really sees
+
+- **Do not allow Docker's networks.** When Traefik runs in Docker, never put Docker's bridge
+  subnets (`172.16.0.0/12` and the like) in the allowlist. A visitor whose connection Docker has
+  rewritten shows up from a bridge address, so allowing those ranges lets everyone in. The ranges
+  in this guide, `192.168.1.0/24` for a home network and `10.8.0.0/24` for a VPN, are placeholders:
+  use your own.
+- **Check the client address after setup.** Turn on Traefik's access log and look at the `ClientHost` field of a request from outside. The address must be the visitor's real one,
+  IPv6 included, not a Docker address. Test from a device outside your networks, such as a phone
+  off your Wi-Fi, over IPv4 and over IPv6 if you have it. If the log shows a Docker address, the
+  allowlist is not seeing your visitors. Fix that before relying on it.
+- **Docker's userland proxy.** Where it applies (a container with published ports, on a host that
+  has not turned it off), Docker's userland proxy can replace a visitor's address with the bridge
+  gateway's, most often for IPv6. Set `"userland-proxy": false` in `/etc/docker/daemon.json`,
+  turn on Docker's IPv6 support (`"ipv6": true` and `"ip6tables": true`), restart Docker and check
+  again.
+
+:::
 
 ## Why it looks like this
 
@@ -101,8 +121,10 @@ set. Keep it that way unless another proxy sits in front of Traefik; if one does
   512 MiB uploads go through.
 - **`readTimeout: 1h`.** Traefik v3 limits reading the whole request, body included, to 60
   seconds by default. A large upload on an ordinary connection takes longer.
-- **`sanitizePath` and `allowEncodedSlash`** are Traefik's defaults in 3.7. Path cleaning stays
-  on, and an encoded slash in an API path reaches the app. If you have set
+- **`sanitizePath` and `allowEncodedSlash`** are both set explicitly in this configuration, so it
+  does not depend on Traefik's own defaults (check Traefik's documentation for your version before
+  leaving either out). Path cleaning stays on, and an encoded slash in an API path reaches the app.
+  If you have set
   `allowEncodedSlash: false` on the entrypoint, tags and collections with a `/` in their name
   cannot be changed through the API.
 - **Forwarded headers.** Traefik sets `X-Forwarded-Proto`, `X-Forwarded-Host` and

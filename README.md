@@ -64,10 +64,12 @@ without Docker run the projects one by one as above.
 
 To run one test file, name it: `pnpm vitest run apps/server/test/config.test.ts`.
 
-CI (`.github/workflows/ci.yml`) runs Biome, the type check, the unit tests and the integration
-tests on every pull request and on every push to main or a release branch. It runs the container
-tests, in their own job, when the slicer or anything its image is built from changes. It fails a
-test job when no test ran.
+CI (`.github/workflows/ci.yml`) runs on every pull request and on every push to main or a release
+branch. It runs Biome, the type check, the unit tests, the integration tests and the end-to-end
+tests in a chain, builds the app image for amd64 and arm64 and checks that it starts healthy and
+passes the Trivy gate, and runs the Ubuntu snapshot pin check. Some jobs run only when what they
+cover changes: the container tests for the slicer image, the slicing gate tests and the gate image
+build, and the docs build. It fails a test job when no test ran.
 
 The slicing gate in `tools/slicing-gate` is not part of the pnpm workspace and Biome does not
 check it. Its tests use Node's own test runner and need no install:

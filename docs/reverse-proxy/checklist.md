@@ -148,8 +148,29 @@ curl -sS -o /dev/null -D - -H 'Accept-Encoding: gzip, br, zstd' 'https://plateho
 
 Expect `not compressed`.
 
-## 7. Clean up
+## 7. The proxy sees each visitor's real address
+
+If you use an allowlist, this one matters most. From a device outside your allowlisted networks,
+such as a phone off your Wi-Fi, open the site, then find that request in the proxy's access log
+(turn the access log on first if your proxy does not write one). The client address it shows must
+be that device's real address, over IPv4 and over IPv6 if you have it, not a Docker address such as
+`172.17.0.1`. The device should also get `403` from the allowlist.
+
+If the log shows a Docker address, the proxy is not seeing visitors' own addresses and the
+allowlist does not do its job. When the proxy runs in Docker:
+
+- Never allow Docker's bridge subnets (`172.16.0.0/12` and the like) in the allowlist; it lets in
+  everyone Docker has rewritten. Allow only your own networks, such as `192.168.1.0/24` and
+  `10.8.0.0/24` (placeholders: use yours).
+- Where Docker's userland proxy applies, it can replace a visitor's address with the bridge
+  gateway's, most often for IPv6. Set `"userland-proxy": false` in `/etc/docker/daemon.json`, turn
+  on Docker's IPv6 support (`"ipv6": true` and `"ip6tables": true`), restart Docker and check
+  again.
+
+See [Security](../security.md#the-ip-allowlist-idea).
+
+## 8. Clean up
 
 Delete `big-test.stl` and `slicer-test.3mf`, empty the test model from the trash if you like, and
 `unset PH_TOKEN`. If you made a token only for these checks, revoke it in **Settings**. The
-`proxy/check` tag from check 4 stays in the database but is not shown anywhere (see check 4).
+`proxy/check` tag from check 4 stays in the database and is listed on the **Tags** page with 0 models, where **Delete** removes it (see check 4).

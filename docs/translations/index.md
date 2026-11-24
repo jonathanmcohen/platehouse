@@ -6,7 +6,7 @@ Platehouse speaks English, Spanish and French, and you can add more languages.
   **Settings** and choose it under **Language**. The choice applies at once and is kept in that
   browser only, so each browser or device can have its own. **Browser language** goes back to
   following the browser.
-- **Spanish and French are machine translations in 0.1.0.** Nobody fluent in either language has
+- **Spanish and French are currently machine translations.** Nobody fluent in either language has
   reviewed them yet, and the Language menu says so beside their names. They are good enough to use,
   but some wording will read oddly. A review by a fluent speaker is welcome; see
   [Adding a language to Platehouse](./contributing.md).

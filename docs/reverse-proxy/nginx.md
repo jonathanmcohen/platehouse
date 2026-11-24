@@ -46,8 +46,8 @@ server {
     send_timeout            3600s;
 
     # Optional: allow only your own networks. Uncomment and change the ranges.
-    # allow 192.168.0.0/16;
-    # allow 172.16.0.0/12;
+    # allow 192.168.1.0/24;
+    # allow 10.8.0.0/24;
     # deny  all;
 
     # Settings every location below shares.
@@ -71,6 +71,25 @@ server {
     }
 }
 ```
+
+:::warning The allowlist only works on the address nginx really sees
+
+- **Do not allow Docker's networks.** When nginx runs in Docker, never put Docker's bridge
+  subnets (`172.16.0.0/12` and the like) in the allowlist. A visitor whose connection Docker has
+  rewritten shows up from a bridge address, so allowing those ranges lets everyone in. The ranges
+  in this guide, `192.168.1.0/24` for a home network and `10.8.0.0/24` for a VPN, are placeholders:
+  use your own.
+- **Check the client address after setup.** Look at the first field of a request in nginx's access log (`$remote_addr` in the default format). The address must be the visitor's real one,
+  IPv6 included, not a Docker address. Test from a device outside your networks, such as a phone
+  off your Wi-Fi, over IPv4 and over IPv6 if you have it. If the log shows a Docker address, the
+  allowlist is not seeing your visitors. Fix that before relying on it.
+- **Docker's userland proxy.** Where it applies (a container with published ports, on a host that
+  has not turned it off), Docker's userland proxy can replace a visitor's address with the bridge
+  gateway's, most often for IPv6. Set `"userland-proxy": false` in `/etc/docker/daemon.json`,
+  turn on Docker's IPv6 support (`"ipv6": true` and `"ip6tables": true`), restart Docker and check
+  again.
+
+:::
 
 ## Why it looks like this
 

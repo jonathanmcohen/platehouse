@@ -19,6 +19,22 @@ only your own address ranges get through, for example your LAN and your VPN's ra
 - Put the allowlist on the whole site. The API and slicer links do not use sign-in, so they rely
   on it most.
 
+An allowlist is only as good as the address your proxy sees for each visitor, so check it after
+setup:
+
+- Open the site from a device outside your allowlisted networks, such as a phone off your Wi-Fi,
+  and look at the client address the proxy logs for that request. It must be the visitor's real
+  address, IPv6 included, not a Docker address. The device should get `403`.
+- When the proxy runs in Docker, never allow Docker's bridge subnets (`172.16.0.0/12` and the like).
+  Docker can rewrite a visitor's address to a bridge address, so allowing those ranges lets
+  everyone in. Allow only your own networks, for example `192.168.1.0/24` for the LAN and
+  `10.8.0.0/24` for the VPN (placeholders: use yours).
+- Where Docker's userland proxy applies, it can replace a visitor's address with the bridge
+  gateway's, most often for IPv6. Set `"userland-proxy": false` in `/etc/docker/daemon.json`, turn
+  on Docker's IPv6 support (`"ipv6": true` and `"ip6tables": true`), restart Docker and check
+  again. The [proxy checklist](./reverse-proxy/checklist.md#7-the-proxy-sees-each-visitors-real-address)
+  has the same check.
+
 ## Sign-in
 
 Every page and file download needs a sign-in through your OIDC provider, limited to one group.
@@ -274,7 +290,7 @@ container, the slicer, which is locked down.
   a Linux Landlock sandbox that lets them write only to their own job folder, so none can read or
   change another job's files, and that refuses them any TCP connection. The sandbox does not block
   UDP; the slicer's internal network is what keeps that from reaching anything (see below). Each
-  may run only its own programs and the system libraries, and read only what it needs:
+  may run its own programs and the system library helpers, and read only what it needs:
   - OpenSCAD reads fonts and the graphics and language settings it renders with.
   - OrcaSlicer reads its own files, the printer and filament profiles, and fonts.
   - The STEP converter reads the slicer's own code, which holds the converter.
@@ -323,6 +339,8 @@ container, the slicer, which is locked down.
 
 Keep the slicer settings from the example Compose file: the internal network, `read_only`, the
 `/work` tmpfs with `noexec`, `cap_drop: ALL`, `no-new-privileges`, its own user and the limits.
+`noexec` on `/work` is defence in depth, not a wall: a script there can still run through `bash` or
+`node`, so the sandbox and the other settings are what hold.
 
 ## Secrets
 
