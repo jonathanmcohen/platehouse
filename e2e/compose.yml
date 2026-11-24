@@ -8,9 +8,10 @@
 # The app is the real server from this checkout, started the way the
 # integration tests start it (apps/server/test/integration/app/shutdown.test.ts):
 # node with --conditions=source and the test resolve hook, from the
-# TypeScript source, so a change is tested without building the app image
-# (the image itself is tested by docker/test-app-image.sh). The checkout,
-# after pnpm install and the web build, is mounted read-only. The slicer is
+# TypeScript source, so a change is tested without building the app image.
+# The checkout, after pnpm install and the web build, is mounted read-only.
+# With E2E_APP_IMAGE set, e2e/up.sh layers compose.image.yml over this file
+# and the app runs the shipped image instead (CI does this, #452). The slicer is
 # the contract-faithful stub the integration tests use
 # (apps/server/test/support/slicer-stub.ts), and the issuer is e2e/stubs/oidc-issuer.ts.
 #
@@ -35,6 +36,11 @@ services:
       - --entrypoints.websecure.address=:443
       - --providers.file.filename=/etc/traefik/dynamic.yml
       - --providers.file.watch=false
+      # The reverse proxy guide's two path settings, set as the Traefik guide
+      # sets them: an encoded slash in an API path (a tag named a/b) reaches
+      # the app still encoded.
+      - --entrypoints.websecure.http.sanitizePath=true
+      - --entrypoints.websecure.http.encodedCharacters.allowEncodedSlash=true
       - --log.level=INFO
     ports:
       - "127.0.0.1:443:443"
