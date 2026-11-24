@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { SandboxState } from "@platehouse/slicer-contract";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { TempFileError } from "../../../src/derived/client.js";
+import { PREVIOUS_RENDERS_SENTENCE, TempFileError } from "../../../src/derived/client.js";
 import {
   createDerived,
   DERIVED_KINDS,
@@ -660,6 +660,8 @@ describe("files a slicer with its sandbox off refused", () => {
     // only, never a render.
     expect(await derivedReporting(off(true)).requeueSandboxOff(new Date())).toBe(1);
     expect((await jobsOf(step)).map((j) => j.data.kind)).toContain(DERIVED_KINDS.convertStep);
+    // Its job has run before the next run, which waits for any still queued.
+    expect(await settledFile(env, step)).toMatchObject({ derivedStatus: "ok" });
     expect(await jobsOf(scad)).toHaveLength(0);
     expect(await env.repos.files.get(scad)).toMatchObject({
       derivedStatus: "failed",
@@ -678,15 +680,106 @@ describe("files a slicer with its sandbox off refused", () => {
     expect(await jobsOf(scad)).toHaveLength(1);
   });
 
-  test("it queues at most one batch per run", async () => {
+  /** A queue that holds each job an hour, so what is queued stays queued. */
+  function holding(): DerivedDeps["queue"] {
+    const send: PgBoss["send"] = async (...args: unknown[]) => {
+      const [name, data, options] = args as [string, object, Record<string, unknown>];
+      return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
+        ...options,
+        startAfter: 3600,
+      });
+    };
+    return { send, findJobs: env.boss.findJobs.bind(env.boss) };
+  }
+
+  test("it queues at most one batch per run, and the next only once none of the last is still queued", async () => {
     const first = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
     const second = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
-    const batched = derivedReporting(ON, 1);
+    const batched = createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue: holding(),
+      retryDelaySeconds: 1,
+      backfillBatch: 1,
+      slicerState: {
+        current: async () => ({
+          timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+          sandbox: ON,
+        }),
+      },
+    });
     expect(await batched.requeueSandboxOff(new Date())).toBe(1);
-    expect(await batched.requeueSandboxOff(new Date())).toBe(1);
-    expect(await jobsOf(first)).toHaveLength(1);
-    expect(await jobsOf(second)).toHaveLength(1);
+    // The batch is still queued, so nothing more is queued.
     expect(await batched.requeueSandboxOff(new Date())).toBe(0);
+    const queued = [...(await jobsOf(first)), ...(await jobsOf(second))];
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.data.requeue).toBe(true);
+
+    for (const j of queued) await env.boss.cancel(QUEUE.slicer, j.id);
+    expect(await batched.requeueSandboxOff(new Date())).toBe(1);
+    for (const j of [...(await jobsOf(first)), ...(await jobsOf(second))]) {
+      await env.boss.cancel(QUEUE.slicer, j.id);
+    }
+  });
+
+  test("both stored forms of the message are queued: the sentence alone, and after the previous-renders sentence", async () => {
+    const plain = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    const led = await refused(
+      "scad",
+      `${PREVIOUS_RENDERS_SENTENCE.scad} ${DERIVED_MESSAGES.sandboxOffCheck}`,
+    );
+    const stepLed = await refused(
+      "step",
+      `${PREVIOUS_RENDERS_SENTENCE.step} ${DERIVED_MESSAGES.convertSandboxOffCheck}`,
+    );
+    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(3);
+    for (const id of [plain, led, stepLed]) expect(await jobsOf(id)).toHaveLength(1);
+  });
+
+  test("a program's message that ends with a sandbox sentence is never queued", async () => {
+    const sentences = [
+      ["scad", DERIVED_MESSAGES.sandboxOffKernel],
+      ["scad", DERIVED_MESSAGES.sandboxOffCheck],
+      ["step", DERIVED_MESSAGES.convertSandboxOffKernel],
+      ["step", DERIVED_MESSAGES.convertSandboxOffCheck],
+    ] as const;
+    const ids: string[] = [];
+    for (const [kind, sentence] of sentences) {
+      const lead = kind === "scad" ? "OpenSCAD said:" : "The converter said:";
+      const previous =
+        kind === "scad" ? PREVIOUS_RENDERS_SENTENCE.scad : PREVIOUS_RENDERS_SENTENCE.step;
+      for (const message of [
+        `${lead} ${sentence}`,
+        `${lead} ERROR: x\n${sentence}`,
+        `${previous} ${lead} ${sentence}`,
+        `${previous} ${lead} ERROR: x\n${sentence}`,
+        `ERROR: x ${sentence}`,
+      ]) {
+        ids.push(await refused(kind, message));
+      }
+    }
+    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(0);
+    for (const id of ids) expect(await jobsOf(id)).toHaveLength(0);
+  });
+
+  test("a file that has a live job, or is no longer failed, is not queued again", async () => {
+    const busy = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    const file = await env.repos.files.get(busy);
+    if (!file) throw new Error("no file");
+    const held: DerivedJob = {
+      kind: DERIVED_KINDS.renderScad,
+      fileId: busy,
+      sourceBlobId: file.blobId,
+    };
+    const id = await (env.boss.send as (...a: unknown[]) => Promise<string | null>)(
+      QUEUE.slicer,
+      held,
+      { ...SLICER_RETRY, startAfter: 3600 },
+    );
+    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(0);
+    expect(await jobsOf(busy)).toHaveLength(1);
+    if (id !== null) await env.boss.cancel(QUEUE.slicer, id);
   });
 
   test("a render refused for another reason is left alone", async () => {

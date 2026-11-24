@@ -336,6 +336,11 @@ export interface DerivedJob {
    * to wait for the slicer or the store.
    */
   backfill?: boolean;
+  /**
+   * True on a render or conversion queued again by requeueSandboxOff, so the
+   * next run can tell that its batch is still waiting.
+   */
+  requeue?: boolean;
 }
 
 /** What a job ends with, kept by pg-boss as its output. */
@@ -848,15 +853,52 @@ export function createDerived(deps: DerivedDeps) {
    * crash cannot leave the file pending with no job.
    */
   async function queueFor(fileId: string, kind: DerivableKind): Promise<string> {
+    return (await queueJob(fileId, kind)) as string;
+  }
+
+  /**
+   * queueFor's work. With requeue (requeueSandboxOff), the file's row is
+   * locked first and the file is queued only if it still holds one of the
+   * exact messages in requeue and has no live job; otherwise nothing is
+   * queued and null is returned.
+   */
+  async function queueJob(
+    fileId: string,
+    kind: DerivableKind,
+    requeue?: readonly string[],
+  ): Promise<string | null> {
     const file = isUuid(fileId) ? await repos.files.get(fileId) : undefined;
     if (file === undefined || (await repos.models.get(file.modelId)) === undefined) {
       throw new DerivedError("not_found", NOT_FOUND_MESSAGE);
     }
     if (file.kind !== kind) throw new DerivedError("not_derivable", NOT_DERIVABLE_MESSAGE);
-    const job: DerivedJob = { kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: file.blobId };
+    const job: DerivedJob = {
+      kind: JOB_KIND_OF[kind],
+      fileId: file.id,
+      sourceBlobId: file.blobId,
+      ...(requeue === undefined ? {} : { requeue: true }),
+    };
     const expiry = await convertExpiry(job.kind);
     try {
       return await db.transaction().execute(async (trx) => {
+        if (requeue !== undefined) {
+          const locked = await trx
+            .selectFrom("files")
+            .select(["derivedStatus", "derivedMessage", "blobId"])
+            .where("id", "=", file.id)
+            .forUpdate()
+            .executeTakeFirst();
+          if (
+            locked === undefined ||
+            locked.derivedStatus !== "failed" ||
+            locked.blobId !== file.blobId ||
+            locked.derivedMessage === null ||
+            !requeue.includes(locked.derivedMessage)
+          ) {
+            return null;
+          }
+          if ((await jobsOfFile(trx, file.id)).some((j) => LIVE_STATES.has(j.state))) return null;
+        }
         // A file that still shows renders of an earlier source keeps saying
         // so while it is pending (issue #146).
         const row = await lockedRenders(trx, file.id);
@@ -2422,7 +2464,8 @@ export function createDerived(deps: DerivedDeps) {
    * (no health answer, an older contract) or still being checked queues
    * nothing. At most one batch (backfillBatch, BACKFILL_BATCH by default) per
    * run, oldest first, each through queueFor, which marks the file pending,
-   * so a second run finds nothing until a job is refused again. Pictures
+   * so a second run finds nothing until a job is refused again, and a run
+   * waits while any job of its last batch is still queued. Pictures
    * are the preview backfill's (backfillPreviews). Returns how many it queued.
    */
   async function requeueSandboxOff(_now: Date): Promise<number> {
@@ -2431,23 +2474,29 @@ export function createDerived(deps: DerivedDeps) {
     const scad = sandbox.state === "on";
     const step = scad || (sandbox.state === "off" && sandbox.allowUnsandboxed);
     if (!scad && !step) return 0;
-    const ends = (messages: readonly string[]) =>
-      sql.join(
-        messages.map((m) => sql`right(f.derived_message, ${m.length}) = ${m}`),
-        sql` or `,
-      );
-    const kinds = [
-      ...(scad
-        ? [
-            sql`(f.kind = 'scad' and (${ends([DERIVED_MESSAGES.sandboxOffKernel, DERIVED_MESSAGES.sandboxOffCheck])}))`,
-          ]
-        : []),
-      ...(step
-        ? [
-            sql`(f.kind = 'step' and (${ends([DERIVED_MESSAGES.convertSandboxOffKernel, DERIVED_MESSAGES.convertSandboxOffCheck])}))`,
-          ]
-        : []),
+    // The exact forms commitSlicerError stores: the sentence alone, or after
+    // the sentence saying the file still shows renders of an earlier source.
+    // A program's own message, which a file can shape, never matches.
+    const storedForms = (kind: "scad" | "step"): string[] => {
+      const [kernel, check] =
+        kind === "scad"
+          ? [DERIVED_MESSAGES.sandboxOffKernel, DERIVED_MESSAGES.sandboxOffCheck]
+          : [DERIVED_MESSAGES.convertSandboxOffKernel, DERIVED_MESSAGES.convertSandboxOffCheck];
+      const lead = PREVIOUS_RENDERS_SENTENCE[kind];
+      return [kernel, check, `${lead} ${kernel}`, `${lead} ${check}`];
+    };
+    const wanted: ("scad" | "step")[] = [
+      ...(scad ? (["scad"] as const) : []),
+      ...(step ? (["step"] as const) : []),
     ];
+    const waiting = await deps.queue.findJobs<DerivedJob>(QUEUE.slicer, {
+      data: { requeue: true },
+      queued: true,
+    });
+    if (waiting.length > 0) return 0;
+    const kinds = wanted.map(
+      (kind) => sql`(f.kind = ${kind} and f.derived_message in (${sql.join(storedForms(kind))}))`,
+    );
     const { rows } = await sql<{ id: string; kind: DerivableKind }>`
       select f.id, f.kind
         from files f
@@ -2461,8 +2510,9 @@ export function createDerived(deps: DerivedDeps) {
     let queued = 0;
     for (const f of rows) {
       try {
-        await queueFor(f.id, f.kind);
-        queued += 1;
+        if ((await queueJob(f.id, f.kind, storedForms(f.kind as "scad" | "step"))) !== null) {
+          queued += 1;
+        }
       } catch (error) {
         console.error(`sandbox requeue: file ${f.id} left for the next run: ${describe(error)}`);
       }

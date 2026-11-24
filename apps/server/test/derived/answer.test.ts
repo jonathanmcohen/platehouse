@@ -335,7 +335,7 @@ describe("a slicer whose sandbox is off", () => {
     }
   });
 
-  test("a 422 whose message starts with the old sandbox sentence is the program's verdict", async () => {
+  test("a 422 render_failed is always RenderFailed, whatever its message", async () => {
     const message = "OpenSCAD renders are off: the sandbox self-test failed.";
     const { target } = await slicer((res) => {
       res.writeHead(422, { "content-type": "application/json" });

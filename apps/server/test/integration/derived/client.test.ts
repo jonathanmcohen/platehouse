@@ -277,7 +277,7 @@ describe("a slicer that cannot render right now", () => {
     expect(isRetryable(error)).toBe(false);
   });
 
-  test("a 422 that starts with the old sandbox sentence is OpenSCAD's verdict now: RenderFailed", async () => {
+  test("a 422 render_failed is always RenderFailed, whatever its message", async () => {
     const message =
       "OpenSCAD renders are off: the sandbox self-test failed (the probe was readable).";
     const baseUrl = await answering(422, { error: "render_failed", message });
