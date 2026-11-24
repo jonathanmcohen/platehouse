@@ -24,6 +24,7 @@ import {
   MAX_MY_PRINTERS,
   PrinterListRefused,
   PrintersChanged,
+  recentSliceRateQuery,
   SANDBOX_OFF_CHECK_DETAIL,
   SANDBOX_OFF_KERNEL_DETAIL,
   SLICE_PRIORITY,
@@ -1630,5 +1631,28 @@ describe("My printers", () => {
     ).toMatchObject({ removed: [], added: [{ printerId: X1C }] });
     await estimates.pollOrca();
     await drain();
+  });
+});
+
+describe("the time-left rate query", () => {
+  test("the time-left rate query uses its index", async () => {
+    // Migration 0016's estimates_rate index is partial and ordered, so it only
+    // serves recentSliceRate while the query keeps its conditions and order.
+    // Sequential scans are turned off so the query names the index whenever it can
+    // serve the query, even on an almost empty table.
+    const compiled = recentSliceRateQuery(env.db).compile();
+    const literal = (value: unknown) =>
+      typeof value === "number" ? String(value) : `'${String(value)}'`;
+    const text = compiled.sql.replace(/\$(\d+)/g, (_, n) =>
+      literal(compiled.parameters[Number(n) - 1]),
+    );
+    const plan = await env.db.transaction().execute(async (trx) => {
+      await sql`set local enable_seqscan = off`.execute(trx);
+      const result = await sql<{
+        "QUERY PLAN": unknown;
+      }>`${sql.raw(`explain (format json) ${text}`)}`.execute(trx);
+      return JSON.stringify(result.rows);
+    });
+    expect(plan).toContain("estimates_rate");
   });
 });

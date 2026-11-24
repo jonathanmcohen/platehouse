@@ -550,6 +550,25 @@ function libraryPlatesWhere(printer: Printer, orca: string) {
   `;
 }
 
+/**
+ * The newest successful slices' start and finish times, for the time-left
+ * rate. Successful slices only (a burst of quick failures, the store down say,
+ * would read as a fast slicer), and only those with a start time: ones
+ * finished before migration 0011 have none. Migration 0016's estimates_rate
+ * index is cut to exactly these conditions; a test holds the two together.
+ */
+export function recentSliceRateQuery(db: Kysely<DB>) {
+  return db
+    .selectFrom("estimates")
+    .select(["startedAt", "finishedAt"])
+    .where("source", "=", "platehouse")
+    .where("status", "=", "ok")
+    .where("startedAt", "is not", null)
+    .where("finishedAt", "is not", null)
+    .orderBy("finishedAt", "desc")
+    .limit(RATE_SAMPLE);
+}
+
 export function createEstimates(deps: EstimatesDeps): Estimates {
   const { db, boss, slicer, store } = deps;
   const slicerDown = deps.slicerDown ?? SLICER_DOWN_WAIT;
@@ -1439,19 +1458,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   }
 
   async function recentSliceRate(): Promise<number | null> {
-    // Successful slices only (a burst of quick failures, the store down say,
-    // would read as a fast slicer), and only those with a start time: ones
-    // finished before migration 0011 have none.
-    const rows = await db
-      .selectFrom("estimates")
-      .select(["startedAt", "finishedAt"])
-      .where("source", "=", "platehouse")
-      .where("status", "=", "ok")
-      .where("startedAt", "is not", null)
-      .where("finishedAt", "is not", null)
-      .orderBy("finishedAt", "desc")
-      .limit(RATE_SAMPLE)
-      .execute();
+    const rows = await recentSliceRateQuery(db).execute();
     return sliceRate(
       rows.flatMap((r) =>
         r.startedAt === null || r.finishedAt === null
