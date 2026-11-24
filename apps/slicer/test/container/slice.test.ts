@@ -47,10 +47,14 @@ describe("slicing in the image", () => {
     },
   );
 
-  // Orca's own refusal, mapped by reasons.ts: -52 is "objects partly outside
-  // the bed". The slab is flat on purpose (300 x 300 x 10 mm, well under the
-  // print height), so the bed check is the only one it fails.
-  test("an object larger than the bed is refused with code -52 and reason bed_too_small", async () => {
+  // Orca's own refusal, which pins a known return code and its mapping, so a
+  // renumbered code fails here (#440). The slab is flat on purpose (300 x 300
+  // x 10 mm, well under the print height), so the bed is the only thing it
+  // does not fit. OrcaSlicer's command line answers -50 ("the plate has
+  // nothing to slice") for it, not -52 ("objects partly outside the bed"):
+  // CI run 45323577150. reasons.ts maps -50 to slicer_error with Orca's
+  // message (the maintainer's decision, 2026-11-08).
+  test("an object larger than the bed is refused with Orca's code -50, as slicer_error", async () => {
     const tooBig = buildSliceable({ plates: 1, filaments: 1, footprint: 300, height: 10 });
     const res = await fetch(
       `${slicer.base}/v1/slice?printer=${encodeURIComponent(PRINTERS[0]?.printer ?? "")}&plate=1`,
@@ -60,7 +64,8 @@ describe("slicing in the image", () => {
     const body = slicerContract.sliceResult.parse(await res.json());
     expect(body.status).toBe("failed");
     if (body.status !== "failed") return;
-    expect(body.code).toBe(-52);
-    expect(body.reason).toBe("bed_too_small");
+    expect(body.code).toBe(-50);
+    expect(body.reason).toBe("slicer_error");
+    expect(body.detail).toContain("the plate has nothing to slice");
   });
 });

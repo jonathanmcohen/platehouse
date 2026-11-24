@@ -351,6 +351,9 @@ describe("an empty library", () => {
       openscad: OPENSCAD,
       printerId: P1S,
       printerName: "Bambu Lab P1S, 0.4 mm nozzle",
+      sandbox: "on",
+      sandboxReason: null,
+      unsandboxed: false,
     });
   });
 });
@@ -622,6 +625,9 @@ describe("the slicer's health", () => {
       openscad: null,
       printerId: P1S,
       printerName: "Bambu Lab P1S, 0.4 mm nozzle",
+      sandbox: null,
+      sandboxReason: null,
+      unsandboxed: null,
     });
   });
 

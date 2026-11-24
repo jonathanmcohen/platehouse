@@ -679,6 +679,13 @@ describe("files a slicer with its sandbox off refused", () => {
       (f) => f?.previewStatus === "failed" && f.updatedAt.getTime() > old.getTime(),
     );
     expect(again).toMatchObject({ previewMessage: DERIVED_MESSAGES.sandboxOffKernel });
+    // The handler writes the row before pg-boss completes its job, and a file
+    // with a live job is never queued, so wait for the job too: the next two
+    // passes then test the grace period, not the job (CI run 45323577150).
+    await until(
+      () => previewJobs(stl.fileId),
+      (js) => js.length === 1 && js.every((j) => j.state === "completed"),
+    );
     expect((await on.backfillPreviews(new Date())).queued).not.toContain(stl.fileId);
     expect(await previewJobs(stl.fileId)).toHaveLength(1);
 
