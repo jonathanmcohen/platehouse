@@ -217,12 +217,14 @@ export function shouldRetryUpload(error: Error): boolean {
 /**
  * Whether an error is a refusal that asking again will not change: a 4xx the
  * server answered, other than the 429 (too many unfinished uploads, which
- * passes once some finish). A lost connection, a 5xx and a 507 are not final.
+ * passes once some finish), the 409 and the 423, which tus-js-client sends
+ * again itself (shouldRetryUpload) and which may then resume. A lost
+ * connection, a 5xx and a 507 are not final either.
  */
 export function isFinalRefusal(error: Error): boolean {
   const response = (error as Error & { originalResponse?: HttpResponse | null }).originalResponse;
   const status = response?.getStatus() ?? 0;
-  return status >= 400 && status < 500 && status !== 429;
+  return status >= 400 && status < 500 && status !== 429 && status !== 409 && status !== 423;
 }
 
 /**

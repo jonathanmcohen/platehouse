@@ -304,9 +304,12 @@ export function UploadDialog({
     for (const item of items) {
       next.set(item.key, item.status);
       const was = before.get(item.key);
-      if (was === undefined || was === item.status || !ANNOUNCED.has(item.status) || !open) {
-        continue;
-      }
+      // A row refused as it is added (a folder, an unsupported or too large
+      // file) never changes status, so it is said when first seen; any other
+      // outcome is said when it changes.
+      const refusedOnAdd = was === undefined && item.status === "unsupported";
+      const changed = was !== undefined && was !== item.status && ANNOUNCED.has(item.status);
+      if (!(refusedOnAdd || changed) || !open) continue;
       saidCount.current += 1;
       lines.push({
         id: saidCount.current,

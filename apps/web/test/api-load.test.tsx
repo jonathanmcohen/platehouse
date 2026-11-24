@@ -97,6 +97,27 @@ describe("useAppApi", () => {
     expect(shown("error")).toBe("");
   });
 
+  test("a failed refresh keeps the last data and says it could not refresh", async () => {
+    await render();
+    await answer(0, json({ items: ["kept"] }));
+    let reloaded: Promise<boolean> | undefined;
+    await act(async () => {
+      reloaded = loaded?.reload();
+    });
+    await answer(1, json({ error: "unavailable" }, 503));
+    expect(await reloaded).toBe(false);
+    expect(shown("data")).toBe("kept");
+    expect(shown("error")).toMatch(/^Could not refresh\. This is the last list that loaded\. /);
+    expect(shown("error")).toContain("unavailable right now");
+  });
+
+  test("a first load that fails with nothing to show keeps the plain error", async () => {
+    await render();
+    await answer(0, json({ error: "unavailable" }, 503));
+    expect(shown("data")).toBe("none");
+    expect(shown("error")).toBe("This is unavailable right now. Try again in a moment.");
+  });
+
   test("a later success clears an earlier failure's error", async () => {
     await render();
     await answer(0, json({ error: "unavailable" }, 503));

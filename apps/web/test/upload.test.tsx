@@ -731,7 +731,7 @@ describe("many files, slow imports and failures", () => {
       }
     });
 
-    test("a lost connection, a 429, a 507 and a 503 keep it, so the upload can resume", () => {
+    test("a lost connection, a 409, a 423, a 429, a 507 and a 503 keep it, so the upload can resume", () => {
       for (const error of [
         connectionLost(),
         refusedWith(429),

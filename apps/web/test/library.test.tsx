@@ -1064,6 +1064,10 @@ describe("dropping files on the open upload dialog", () => {
     const row = container.querySelector('[data-upload="Benchy.stl"]');
     expect(row?.textContent).toContain("Folders can't be uploaded. Drop the files inside it.");
     expect(row?.textContent).not.toContain("Not a supported file type");
+    // A screen reader hears it: a refused row never changes, so it is said when added.
+    const said = container.querySelector('[role="status"]')?.textContent ?? "";
+    expect(said).toContain("Benchy.stl");
+    expect(said).toContain("Folders can't be uploaded. Drop the files inside it.");
     expect(container.querySelector('[data-upload="plain.stl"]')?.textContent).not.toContain(
       "Folders can't be uploaded",
     );

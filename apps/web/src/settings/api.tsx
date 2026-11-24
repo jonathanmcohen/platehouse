@@ -265,7 +265,14 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
       setError(undefined);
       return true;
     } catch (failure) {
-      if (current.current === path) setError(errorText(failure, words.current));
+      if (current.current === path) {
+        // The last good data stays on a failed refresh: blanking a list because
+        // one poll failed is worse than a list a moment old. So the words must
+        // not claim nothing loaded: with data on screen they say the refresh
+        // failed (and why); with none, the plain reason is the whole story.
+        const reason = errorText(failure, words.current);
+        setError(loaded.current ? words.current.t("api.refreshFailed", { reason }) : reason);
+      }
       return false;
     }
   }, [path]);

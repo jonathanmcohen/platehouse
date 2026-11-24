@@ -125,6 +125,7 @@
   "api.printersChanged": "Mes imprimantes ou l'imprimante par d\u00e9faut ont \u00e9t\u00e9 modifi\u00e9es ailleurs apr\u00e8s la lecture de cette page, rien n'a donc \u00e9t\u00e9 enregistr\u00e9.",
   "api.purgeStarted": "La suppression d\u00e9finitive de ce mod\u00e8le a d\u00e9j\u00e0 commenc\u00e9, il ne peut donc plus \u00eatre restaur\u00e9.",
   "api.rateLimited": "Trop de tentatives depuis cette connexion. Patientez quelques minutes, puis r\u00e9essayez.",
+  "api.refreshFailed": "Actualisation impossible. Voici la derni\u00e8re liste charg\u00e9e. {reason}",
   "api.refused": "Ce n'a pas \u00e9t\u00e9 accept\u00e9. V\u00e9rifiez et r\u00e9essayez.",
   "api.slicerUnavailable": "Impossible de joindre le trancheur, aucune imprimante ne peut donc \u00eatre ajout\u00e9e pour le moment.",
   "api.staleTrash": "La liste de la corbeille n'est plus \u00e0 jour. Rechargez la page et r\u00e9essayez.",

@@ -118,6 +118,7 @@
   "api.printersChanged": "My printers or the default printer were changed somewhere else after this page read them, so nothing was saved.",
   "api.purgeStarted": "Deleting this model for good has already begun, so it cannot be restored.",
   "api.rateLimited": "Too many tries from this sign-in. Wait a few minutes, then try again.",
+  "api.refreshFailed": "Could not refresh. This is the last list that loaded. {reason}",
   "api.refused": "That was not accepted. Check it and try again.",
   "api.slicerUnavailable": "The slicer cannot be reached, so a printer cannot be added right now.",
   "api.staleTrash": "The trash list is out of date. Reload the page and try again.",

@@ -227,10 +227,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const loadedFor = useRef("");
   const generation = useRef(0);
   /** The state of the load shown, as the last render drew it, and the one before. */
-  /** Set when a stored printer is forgotten, so the read that follows is quiet. */
-  const forgotPrinter = useRef(false);
   const shownState = useRef<Load["state"]>("loading");
   const stateBefore = useRef<Load["state"]>("loading");
+  /** Set when a stored printer is forgotten, so the read that follows is quiet. */
+  const forgotPrinter = useRef(false);
   shownState.current = load.state;
   /** The current load's controller, so a View all retry is cancelled with it. */
   const loading = useRef<AbortController | null>(null);
