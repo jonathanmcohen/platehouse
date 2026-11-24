@@ -650,6 +650,9 @@ async function jobsOf(fileId: string) {
 describe("files a slicer with its sandbox off refused", () => {
   test("a picture refused for the sandbox is a backfill candidate only while health says it is on, and not again right after a new refusal", async () => {
     const stl = await legacyStl("Sandbox bracket");
+    // Stored long ago as well as refused long ago: a candidate must have been
+    // created before the cutoff too, so the passes at new Date() below test
+    // the refusal's own grace period (updatedAt), not the file's age.
     const old = new Date(Date.now() - 2 * RENDER_CHECK_GRACE_MS);
     await env.db
       .updateTable("files")
@@ -658,6 +661,7 @@ describe("files a slicer with its sandbox off refused", () => {
         previewFailureMessage: DERIVED_MESSAGES.sandboxOffKernel,
         previewStatus: "failed",
         previewMessage: DERIVED_MESSAGES.sandboxOffKernel,
+        createdAt: old,
         updatedAt: old,
       }))
       .where("id", "=", stl.fileId)
