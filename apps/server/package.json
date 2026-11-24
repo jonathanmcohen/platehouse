@@ -7,11 +7,11 @@
     "test": "vitest run --root ../.. --project unit apps/server"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.1164.0",
-    "@aws-sdk/lib-storage": "3.1164.0",
+    "@aws-sdk/client-s3": "3.1172.0",
+    "@aws-sdk/lib-storage": "3.1172.0",
     "@fastify/cookie": "11.1.5",
-    "@fastify/static": "10.1.10",
-    "@fastify/swagger": "9.9.3",
+    "@fastify/static": "10.1.11",
+    "@fastify/swagger": "9.9.5",
     "@platehouse/i18n": "workspace:*",
     "@platehouse/makerworld": "workspace:*",
     "@platehouse/slicer-contract": "workspace:*",
@@ -19,16 +19,16 @@
     "@tus/file-store": "2.1.2",
     "@tus/server": "2.4.7",
     "fastify": "5.12.8",
-    "kysely": "0.29.8",
-    "openid-client": "6.8.9",
+    "kysely": "0.29.9",
+    "openid-client": "6.9.0",
     "pg": "8.23.1",
-    "pg-boss": "12.38.1",
+    "pg-boss": "12.38.2",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "12.2.1",
     "@types/pg": "8.23.1",
-    "jose": "6.2.17",
+    "jose": "6.2.18",
     "testcontainers": "12.2.1",
     "tus-js-client": "4.3.1"
   }
