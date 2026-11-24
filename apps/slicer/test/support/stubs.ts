@@ -32,27 +32,7 @@ export type OrcaMode =
   | { kind: "noStats" }
   /** Leaves a FIFO named result.json, as code inside Orca could. */
   | { kind: "fifoResult" }
-  | { kind: "sleep" }
-  /**
-   * Orca answers -50 (the plate overhangs the bed) unless it was given
-   * --arrange 1. With it, it either slices (arrangeFixes) or answers -50
-   * again. firstStats leaves a statistics file in the first run's folder
-   * even though it refused; retryStats false makes a successful retry
-   * leave none; sleepMs makes every run take that long.
-   */
-  | {
-      kind: "arrange";
-      arrangeFixes: boolean;
-      firstStats?: boolean;
-      retryStats?: boolean;
-      /** With arrangeFixes false: the retry writes -50, then exits with this status. */
-      retryExit?: number;
-      /** With arrangeFixes false: the retry writes -50, then dies of SIGSEGV. */
-      retrySegfault?: boolean;
-      /** The first run leaves a folder (with a file in it) where the retry's output folder goes. */
-      firstLeavesArranged?: boolean;
-      sleepMs?: number;
-    };
+  | { kind: "sleep" };
 
 /**
  * A fake orca-slicer. It writes every argument, one per line, to args.log in
@@ -70,12 +50,11 @@ export function fakeOrca(
 : > '${argsLog}'
 for a in "$@"; do printf '%s\\n' "$a" >> '${argsLog}'; done
 printf '%s\\n' "$*" >> '${runsLog}'
-out=""; plate=""; arranged=no
+out=""; plate=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --outputdir) out="$2"; shift ;;
     --slice) plate="$2"; shift ;;
-    --arrange) arranged=yes; shift ;;
   esac
   shift
 done
@@ -112,27 +91,6 @@ exit 0
 exit 0
 `;
       break;
-    case "arrange": {
-      const stats = `printf '{"version":1,"summary":{"time":77,"weight":7,"filaments":[{"id":1,"weight":7,"volume":1}]}}' > "$out/plate_$plate.statistics.json"`;
-      const refusal = `printf '{"return_code":-50,"error_string":"Nothing to slice on the bed."}' > "$out/result.json"`;
-      const nap = mode.sleepMs ? `sleep ${mode.sleepMs / 1000}\n` : "";
-      body = `${nap}if [ "$arranged" = no ]; then
-  ${refusal}
-  ${mode.firstStats ? stats : ":"}
-  ${mode.firstLeavesArranged ? `mkdir -p "$out/../out-arranged" && : > "$out/../out-arranged/stale.txt"` : ":"}
-  exit 206
-fi
-${
-  mode.arrangeFixes
-    ? `printf '{"return_code":0,"error_string":"Success."}' > "$out/result.json"
-${mode.retryStats === false ? ":" : stats}
-exit 0`
-    : `${refusal}
-${mode.retrySegfault ? "kill -SEGV $$" : `exit ${mode.retryExit ?? 206}`}`
-}
-`;
-      break;
-    }
     case "sleep":
       body = `sleep 30 &
 child=$!

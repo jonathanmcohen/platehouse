@@ -68,7 +68,6 @@ import { readProject } from "@platehouse/threemf";
 import { z } from "zod";
 import { closeLingering, guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
 import {
-  ARRANGED_OUT,
   bedTooSmall,
   isCleanOffBed,
   ORCA_FOLDER,
@@ -893,7 +892,17 @@ export function createSlicer(config: SlicerConfig): Slicer {
 
       const slots = [...project.projectFilaments].sort((a, b) => a.slot - b.slot);
       const picks = slots.map((f) => profiles.filamentFor(printer, f.type));
-      const filamentFiles = picks.map((p) => p?.file ?? "");
+      const outDir = join(box, "out");
+      const timeFile = join(dir, "time.txt");
+      const args = orcaArgs({
+        plate,
+        mstpp: config.slicePlateSeconds,
+        dataDir: join(box, "data"),
+        outDir,
+        machineFile,
+        filamentFiles: picks.map((p) => p?.file ?? ""),
+        input,
+      });
       // prlimit, then GNU time, outside the sandbox so it can write its
       // report to the job folder, then landrun with Orca's rules, then Orca
       // (prlimitCommand). Unsandboxed, landrun is left out. Orca's
@@ -903,78 +912,42 @@ export function createSlicer(config: SlicerConfig): Slicer {
       // which the AppImage never bundles (Orca's appimage_lib_policy.sh),
       // and prlimit also util-linux's libsmartcols; landrun is static.
       const rules = sandboxRules("orca", sandboxPaths(config, box));
-      const runOrca = (where: { outDir: string; timeFile: string; arrange: boolean; ms: number }) =>
-        runGroup(
-          config.prlimitBin,
-          prlimitCommand({
-            program: "orca",
-            timeoutSeconds: Math.ceil(where.ms / 1000),
-            outside: [config.timeBin, "-v", "-o", where.timeFile],
-            landrun: gate === "run" ? { bin: config.landrunBin, rules } : null,
-            command: [
-              config.orcaBin,
-              ...orcaArgs({
-                plate,
-                mstpp: config.slicePlateSeconds,
-                dataDir: join(box, "data"),
-                outDir: where.outDir,
-                machineFile,
-                filamentFiles,
-                input,
-                arrange: where.arrange,
-              }),
-            ],
-          }),
-          { cwd: box, env: rules.env, timeoutMs: where.ms, track: job.track },
-        );
-      const ctx = {
-        orcaVersion: config.orcaVersion,
-        plate,
-        printer,
-        process: project.processName ?? null,
-        filamentProfiles: picks.map((p) => p?.profile ?? null),
-        projectFilaments: slots.map((f) => ({ slot: f.slot, type: f.type, colour: f.colour })),
+      const command = prlimitCommand({
+        program: "orca",
         timeoutSeconds: config.sliceTimeoutSeconds,
-      };
-      const budgetMs = config.sliceTimeoutSeconds * 1000;
-      const outDir = join(box, "out");
-      const timeFile = join(dir, "time.txt");
-      const started = Date.now();
-      let run = await runOrca({ outDir, timeFile, arrange: false, ms: budgetMs });
-      let result = sliceOutcome(ctx, run, { outDir, timeFile });
-      let retried = false;
-      if (isCleanOffBed(result, run) && !res.destroyed) {
-        // The plate's objects are off this printer's bed. Slice it once
-        // more with Orca arranging them, in its own folder so none of the
-        // first run's files is read, and in what is left of the budget.
-        const left = budgetMs - (Date.now() - started);
-        const files = {
-          outDir: join(box, ARRANGED_OUT),
-          timeFile: join(dir, "time-arranged.txt"),
-        };
-        if (left <= 0) {
-          result = sliceOutcome(ctx, { ...run, timedOut: true }, files);
-        } else {
-          // Orca can write anywhere in the box, so the first run may have
-          // left something here; clear it (the box is the job's own).
-          rmSync(files.outDir, { recursive: true, force: true });
-          mkdirSync(files.outDir);
-          retried = true;
-          run = await runOrca({ ...files, arrange: true, ms: left });
-          result = sliceOutcome(ctx, run, files);
-          if (
-            isCleanOffBed(result, run) &&
-            (project.plates.find((p) => p.index === plate)?.objectCount ?? 0) > 0
-          ) {
-            result = bedTooSmall(result);
-          }
-          log(
-            `slice plate ${plate} on ${printer}: re-arranged ${result.status === "ok" ? "and sliced" : `and still ${result.reason} (${result.code})`}`,
-          );
-        }
+        outside: [config.timeBin, "-v", "-o", timeFile],
+        landrun: gate === "run" ? { bin: config.landrunBin, rules } : null,
+        command: [config.orcaBin, ...args],
+      });
+      const run = await runGroup(config.prlimitBin, command, {
+        cwd: box,
+        env: rules.env,
+        timeoutMs: config.sliceTimeoutSeconds * 1000,
+        track: job.track,
+      });
+      let result = sliceOutcome(
+        {
+          orcaVersion: config.orcaVersion,
+          plate,
+          printer,
+          process: project.processName ?? null,
+          filamentProfiles: picks.map((p) => p?.profile ?? null),
+          projectFilaments: slots.map((f) => ({ slot: f.slot, type: f.type, colour: f.colour })),
+          timeoutSeconds: config.sliceTimeoutSeconds,
+        },
+        run,
+        { outDir, timeFile },
+      );
+      // A clean -50 on a plate that has objects: they sit off this printer's
+      // bed (a project laid out for a bigger one), so say the plate is too big.
+      if (
+        isCleanOffBed(result, run) &&
+        (project.plates.find((p) => p.index === plate)?.objectCount ?? 0) > 0
+      ) {
+        result = bedTooSmall(result);
       }
       log(
-        `slice plate ${plate} on ${printer}: ${result.status === "ok" ? `ok ${result.timeSeconds} s ${result.weightGrams} g` : `${result.reason} (${result.code})`} in ${retried ? `${Date.now() - started} ms, both runs` : `${run.wallMs} ms`}`,
+        `slice plate ${plate} on ${printer}: ${result.status === "ok" ? `ok ${result.timeSeconds} s ${result.weightGrams} g` : `${result.reason} (${result.code})`} in ${run.wallMs} ms`,
       );
       return send(res, 200, result);
     } finally {

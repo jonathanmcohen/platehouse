@@ -8,11 +8,9 @@
 //        <job>/input.3mf
 //
 // A plate whose objects sit off the printer's bed (a project saved for a
-// bigger one) makes Orca answer -50. The server then slices it once more with
-// --arrange 1 in front of the input, into ARRANGED_OUT: Orca lays the objects
-// out on the loaded machine's bed without rotating them (rotation needs
-// --allow-rotations, and the server never passes it). A plate with objects
-// that is still -50 does not fit the bed at all (bedTooSmall).
+// bigger one) makes Orca answer -50. By code -50 is still slicer_error here
+// (sliceOutcome), but slice() answers bed_too_small when the run was a clean
+// refusal and the plate has objects (isCleanOffBed, bedTooSmall).
 //
 // Only the machine preset goes in --load-settings, so the file's own process
 // is kept unless Orca refuses the switch (gate item c). The numbers come from
@@ -41,8 +39,6 @@ export interface OrcaJob {
   /** One entry per project filament slot; "" keeps the file's own filament. */
   filamentFiles: string[];
   input: string;
-  /** Adds --arrange 1: Orca lays the plate's objects out on the machine's bed before it slices. */
-  arrange?: boolean;
 }
 
 export function orcaArgs(job: OrcaJob): string[] {
@@ -63,7 +59,6 @@ export function orcaArgs(job: OrcaJob): string[] {
   if (job.filamentFiles.some((f) => f !== "")) {
     args.push("--load-filaments", job.filamentFiles.join(";"));
   }
-  if (job.arrange) args.push("--arrange", "1");
   args.push(job.input);
   return args;
 }
@@ -74,11 +69,7 @@ export function orcaArgs(job: OrcaJob): string[] {
  */
 export const OFF_BED_CODE = -50;
 
-/** The folder, inside ORCA_FOLDER, of the re-arranged retry's output. */
-export const ARRANGED_OUT = "out-arranged";
-
-export const TOO_BIG_DETAIL =
-  "No object on this plate fits the printer's bed, even after OrcaSlicer re-arranged it.";
+export const TOO_BIG_DETAIL = "No object on this plate fits the printer's bed.";
 
 type Failed = Extract<SliceResult, { status: "failed" }>;
 
@@ -94,9 +85,13 @@ export function isCleanOffBed(result: SliceResult, run: GroupResult): result is 
   );
 }
 
-/** The retry's -50 for a plate with objects: it is too big for the bed. */
-export function bedTooSmall(retry: Failed): SliceResult {
-  return { ...retry, reason: "bed_too_small", detail: cut(`${TOO_BIG_DETAIL} ${retry.detail}`) };
+/** A clean -50 for a plate with objects: none of them fits the bed. */
+export function bedTooSmall(refusal: Failed): SliceResult {
+  return {
+    ...refusal,
+    reason: "bed_too_small",
+    detail: cut(`${TOO_BIG_DETAIL} ${refusal.detail}`),
+  };
 }
 
 /**

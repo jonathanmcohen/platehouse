@@ -48,46 +48,48 @@ describe("slicing in the image", () => {
     },
   );
 
-  // A plate designed for a bigger printer (#480). The cube's centre is at
+  // A plate laid out for a bigger printer (#480). The cube's centre is at
   // (220, 220): inside the P1S's 256 mm bed, but off the A1 mini's 180 mm bed.
-  // OrcaSlicer's CLI answers -50 for it on the first run. The slicer then runs
-  // it once more with --arrange 1, which re-places the plate's objects on the
-  // loaded machine's bed (arranging never rotates without --allow-rotations),
-  // and the slice succeeds. The P1S is the control: it fits as designed, so
-  // it is sliced the first time with no retry.
-  test("a plate that overhangs a smaller bed is re-arranged and sliced", async () => {
+  // OrcaSlicer answers -50 for it, and the plate has an object, so the slicer
+  // says the plate is too big for the bed. (Orca's --arrange 1 does not help:
+  // it arranges on the bed saved in the 3MF, not the loaded printer's.
+  // Re-centring a plate onto the user's bed is planned for 0.2.0.) The P1S is
+  // the control: the cube fits as designed, so it is sliced.
+  test("a plate laid out off a smaller printer's bed says it is too big", async () => {
     const overhang = buildSliceable({
       plates: 1,
       filaments: 1,
       cubeSize: 20,
       at: { x: 220, y: 220 },
     });
-    for (const printer of ["Bambu Lab A1 mini 0.4 nozzle", PRINTERS[0]?.printer ?? ""]) {
-      const logsBefore = slicer.logs();
-      const res = await fetch(
-        `${slicer.base}/v1/slice?printer=${encodeURIComponent(printer)}&plate=1`,
-        { method: "POST", headers: { "content-type": "application/octet-stream" }, body: overhang },
-      );
-      expect(res.status).toBe(200);
-      const raw = await res.json();
-      const body = slicerContract.sliceResult.parse(raw);
-      if (body.status !== "ok") throw new Error(`${printer} failed: ${JSON.stringify(raw)}`);
-      expect(body.printer).toBe(printer);
-      expect(body.timeSeconds).toBeGreaterThan(0);
-      expect(body.weightGrams).toBeGreaterThan(0);
-      // The retry's log line proves which path ran: the A1 mini was re-arranged,
-      // the P1S control was sliced the first time.
-      const added = slicer.logs().slice(logsBefore.length);
-      const line = `slice plate 1 on ${printer}: re-arranged and sliced`;
-      if (printer.includes("A1 mini")) expect(added).toContain(line);
-      else expect(added).not.toContain("re-arranged");
-    }
+    const post = (printer: string) =>
+      fetch(`${slicer.base}/v1/slice?printer=${encodeURIComponent(printer)}&plate=1`, {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: overhang,
+      });
+    const small = await post("Bambu Lab A1 mini 0.4 nozzle");
+    expect(small.status).toBe(200);
+    const refused = slicerContract.sliceResult.parse(await small.json());
+    expect(refused.status).toBe("failed");
+    if (refused.status !== "failed") return;
+    expect(refused.code).toBe(-50);
+    expect(refused.reason).toBe("bed_too_small");
+    expect(refused.detail?.startsWith(TOO_BIG_DETAIL)).toBe(true);
+
+    const control = await post(PRINTERS[0]?.printer ?? "");
+    expect(control.status).toBe(200);
+    const raw = await control.json();
+    const body = slicerContract.sliceResult.parse(raw);
+    if (body.status !== "ok") throw new Error(`P1S failed: ${JSON.stringify(raw)}`);
+    expect(body.timeSeconds).toBeGreaterThan(0);
+    expect(body.weightGrams).toBeGreaterThan(0);
   });
 
   // A plate where only some objects fit. The A1 mini's bed is 180 mm: the
-  // 20 mm cube fits it, the 200 mm slab (10 mm high) cannot, even after
-  // --arrange 1. The answer must be a refusal, so a plate where only some
-  // objects fit is never estimated as if it were whole. OrcaSlicer 2.5.2 may
+  // 20 mm cube fits it, the 200 mm slab (10 mm high) cannot. The answer must
+  // be a refusal, so a plate where only some objects fit is never estimated
+  // as if it were whole. OrcaSlicer 2.5.2 may
   // answer -50 or -52 for it; both map to bed_too_small. Only "ok" fails.
   test("a plate where only some objects fit the bed is refused, never estimated", async () => {
     const partly = buildSliceable({
@@ -113,12 +115,10 @@ describe("slicing in the image", () => {
   // x 10 mm, well under the print height), so the bed is the only thing it
   // does not fit. OrcaSlicer's command line answers -50 ("the plate has
   // nothing to slice") for it, not -52 ("objects partly outside the bed"):
-  // CI run 45323577150. A slab wider than the bed stays -50 even after the
-  // --arrange 1 retry (nothing fits to be placed), and the plate has objects,
-  // so the slicer answers bed_too_small with its own sentence ahead of Orca's.
-  test("an object larger than the bed is bed_too_small after re-arranging", async () => {
+  // CI run 45323577150. The plate has an object, so the slicer answers
+  // bed_too_small with its own sentence ahead of Orca's.
+  test("an object larger than the bed is bed_too_small", async () => {
     const tooBig = buildSliceable({ plates: 1, filaments: 1, footprint: 300, height: 10 });
-    const logsBefore = slicer.logs();
     const res = await fetch(
       `${slicer.base}/v1/slice?printer=${encodeURIComponent(PRINTERS[0]?.printer ?? "")}&plate=1`,
       { method: "POST", headers: { "content-type": "application/octet-stream" }, body: tooBig },
@@ -133,9 +133,5 @@ describe("slicing in the image", () => {
     // Orca's own sentence follows: "The plate has nothing to slice: it is empty,
     // or no object on it is both printable and fully inside the print volume."
     expect(body.detail).toContain("The plate has nothing to slice");
-    // The retry ran and was refused again.
-    expect(slicer.logs().slice(logsBefore.length)).toContain(
-      `slice plate 1 on ${PRINTERS[0]?.printer}: re-arranged and still bed_too_small (-50)`,
-    );
   });
 });

@@ -10,9 +10,9 @@
 // contract's "anything else" and are slicer_error, with Orca's message as
 // the detail.
 //
-// -50 stays slicer_error by code. slice() (server.ts) slices a plate that
-// answers it once more with --arrange 1, and answers bed_too_small only when
-// that retry is still -50 and the plate has objects.
+// -50 stays slicer_error by code. slice() (server.ts) answers bed_too_small
+// for a clean -50 when the plate has objects; an empty or unknown-count plate
+// keeps slicer_error.
 import type { Reason } from "@platehouse/slicer-contract";
 
 export const ORCA_MESSAGES: Readonly<Record<number, string>> = Object.freeze({

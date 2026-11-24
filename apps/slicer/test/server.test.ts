@@ -5,7 +5,6 @@
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
-  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -621,54 +620,26 @@ describe("slicing", () => {
 // Anything but a pass (the import works, the probe file is missing, or the
 // render fails for another reason such as a timeout) is a check_failed and
 // is tried again after a back-off; a kernel too old is final until restart.
-describe("a plate that overhangs the bed", () => {
+describe("a plate whose objects sit off the bed", () => {
   const runsOf = (s: ReturnType<typeof setup>) =>
     readFileSync(s.fake.runsLog, "utf8").trimEnd().split("\n");
   const post = async (base: string, body: Buffer = sliceable()) =>
     slicerContract.sliceResult.parse(await (await postSlice(base, body)).json());
 
-  test("is sliced after arranging: two runs, the second with --arrange 1 and no rotation", async () => {
-    const s = setup({}, { kind: "arrange", arrangeFixes: true });
-    const base = await start(s.config);
-    const res = await postSlice(base, sliceable());
-    expect(res.status).toBe(200);
-    expect(slicerContract.sliceResult.parse(await res.json())).toMatchObject({
-      status: "ok",
-      plate: 1,
-      timeSeconds: 77,
-      weightGrams: 7,
-    });
-    const runs = runsOf(s);
-    expect(runs).toHaveLength(2);
-    expect(runs[0]).not.toContain("--arrange");
-    expect(runs[1]).toContain("--arrange 1 ");
-    expect(runs[1]).not.toContain("--orient");
-    expect(runs[1]).not.toContain("--allow-rotations");
-    expect(runs[1]).toContain("/out-arranged ");
-    expect(runs[0]).toMatch(/--outputdir \S+\/out --/);
-    expect(readdirSync(s.workDir)).toEqual([]);
-  });
-
-  test("an out-arranged entry the first run left behind does not stop the retry", async () => {
-    const s = setup({}, { kind: "arrange", arrangeFixes: true, firstLeavesArranged: true });
-    const base = await start(s.config);
-    const body = await post(base);
-    expect(body).toMatchObject({ status: "ok", timeSeconds: 77, weightGrams: 7 });
-    expect(runsOf(s)).toHaveLength(2);
-  });
-
-  test("still refused after arranging is bed_too_small when the plate has objects", async () => {
-    const s = setup({}, { kind: "arrange", arrangeFixes: false });
+  test("a clean -50 on a plate with objects is bed_too_small, from one run", async () => {
+    const s = setup({}, { kind: "result", code: -50, error: "Nothing to slice on the bed." });
     const base = await start(s.config);
     const body = await post(base);
     expect(body).toMatchObject({ status: "failed", code: -50, reason: "bed_too_small" });
     if (body.status !== "failed") throw new Error("expected a failure");
     expect(body.detail).toBe(`${TOO_BIG_DETAIL} Nothing to slice on the bed.`);
-    expect(runsOf(s)).toHaveLength(2);
+    expect(TOO_BIG_DETAIL).toBe("No object on this plate fits the printer's bed.");
+    expect(runsOf(s)).toHaveLength(1);
+    expect(readFileSync(s.fake.argsLog, "utf8")).not.toContain("--arrange");
   });
 
-  test("a plate with no known objects keeps slicer_error after a second -50", async () => {
-    const s = setup({}, { kind: "arrange", arrangeFixes: false });
+  test("a plate with no known objects keeps slicer_error", async () => {
+    const s = setup({}, { kind: "result", code: -50, error: "Nothing to slice on the bed." });
     const base = await start(s.config);
     const body = await post(base, buildSliceable({ plates: 2, filaments: 2, noInstances: true }));
     expect(body).toMatchObject({
@@ -677,24 +648,6 @@ describe("a plate that overhangs the bed", () => {
       reason: "slicer_error",
       detail: "Nothing to slice on the bed.",
     });
-    expect(runsOf(s)).toHaveLength(2);
-  });
-
-  test.each([
-    ["a refusal other than -50", { kind: "result", code: -52, error: "no fit" } as OrcaMode],
-    ["a success", { kind: "ok", time: 1, weight: 1, grams: [1] } as OrcaMode],
-    [
-      "a -50 followed by a crash exit",
-      { kind: "result", code: -50, error: "x", exit: 1 } as OrcaMode,
-    ],
-    [
-      "a -50 followed by a segfault",
-      { kind: "result", code: -50, error: "x", segfault: true } as OrcaMode,
-    ],
-  ])("%s is never retried", async (_name, mode) => {
-    const s = setup({}, mode);
-    const base = await start(s.config);
-    await post(base);
     expect(runsOf(s)).toHaveLength(1);
   });
 
@@ -704,88 +657,26 @@ describe("a plate that overhangs the bed", () => {
     const body = await post(base);
     expect(body).toMatchObject({ status: "failed", code: -50, reason: "slicer_error" });
     if (body.status !== "failed") throw new Error("expected a failure");
-    expect(body.detail).toMatch(/^Orca wrote return code -50/);
-  });
-
-  test("a crash on the retry is reported as a crash, not as bed_too_small", async () => {
-    const s = setup({}, { kind: "arrange", arrangeFixes: false, retryExit: 1 });
-    const base = await start(s.config);
-    const body = await post(base);
-    expect(body).toMatchObject({ status: "failed", code: -50, reason: "slicer_error" });
-    if (body.status !== "failed") throw new Error("expected a failure");
     expect(body.detail).toMatch(/^Orca wrote return code -50 .*then exited with 1/);
-    expect(body.detail.startsWith(TOO_BIG_DETAIL)).toBe(false);
-    expect(runsOf(s)).toHaveLength(2);
+    expect(runsOf(s)).toHaveLength(1);
   });
 
-  test("a signal on the retry is reported as a crash, not as bed_too_small", async () => {
-    const s = setup({}, { kind: "arrange", arrangeFixes: false, retrySegfault: true });
+  test("a -50 followed by a segfault stays a slicer_error naming the crash", async () => {
+    const s = setup({}, { kind: "result", code: -50, error: "x", segfault: true });
     const base = await start(s.config);
     const body = await post(base);
     expect(body).toMatchObject({ status: "failed", code: -50, reason: "slicer_error" });
     if (body.status !== "failed") throw new Error("expected a failure");
     expect(body.detail).toMatch(/^Orca wrote return code -50 .*then exited with 139/);
-    expect(runsOf(s)).toHaveLength(2);
-  });
-
-  test("a first run that used the whole budget gets no retry and is answered timeout", async () => {
-    const s = setup({ sliceTimeoutSeconds: 30 }, { kind: "arrange", arrangeFixes: true });
-    const base = await start(s.config);
-    const realNow = Date.now.bind(Date);
-    // The clock jumps by the whole budget once the first run has started.
-    const spy = vi
-      .spyOn(Date, "now")
-      .mockImplementation(() => realNow() + (existsSync(s.fake.runsLog) ? 30_000 : 0));
-    try {
-      const body = await post(base);
-      expect(body).toMatchObject({ status: "failed", code: null, reason: "timeout" });
-    } finally {
-      spy.mockRestore();
-    }
     expect(runsOf(s)).toHaveLength(1);
   });
 
-  test("the retry reads its own output, never the first run's files", async () => {
-    const s = setup(
-      {},
-      { kind: "arrange", arrangeFixes: true, firstStats: true, retryStats: false },
-    );
+  test("a -52 is unchanged", async () => {
+    const s = setup({}, { kind: "result", code: -52, error: "no fit" });
     const base = await start(s.config);
     const body = await post(base);
-    expect(body).toMatchObject({
-      status: "failed",
-      code: 0,
-      reason: "slicer_error",
-      detail: "Orca reported success without a time and a weight above zero",
-    });
-  });
-
-  test("the retry gets only the time that is left", async () => {
-    const s = setup(
-      { sliceTimeoutSeconds: 20 },
-      { kind: "arrange", arrangeFixes: true, sleepMs: 2000 },
-    );
-    const base = await start(s.config);
-    const started = Date.now();
-    const body = await post(base);
-    expect(body.status).toBe("ok");
-    expect(Date.now() - started).toBeLessThan(20_000);
-    const cpu = readFileSync(s.prlimit.argsLog, "utf8").match(/--cpu=(\d+)/)?.[1];
-    // The first run's limit is 20 * 4 + 60 = 140 s of CPU; the retry's is sized from what is left.
-    expect(Number(cpu)).toBeLessThan(140);
-  });
-
-  test("a retry that outlasts the time that is left is killed and answered timeout", async () => {
-    const s = setup(
-      { sliceTimeoutSeconds: 2 },
-      { kind: "arrange", arrangeFixes: true, sleepMs: 1200 },
-    );
-    const base = await start(s.config);
-    const started = Date.now();
-    const body = await post(base);
-    expect(body).toMatchObject({ status: "failed", code: null, reason: "timeout" });
-    expect(Date.now() - started).toBeLessThan(3500);
-    expect(runsOf(s)).toHaveLength(2);
+    expect(body).toMatchObject({ status: "failed", code: -52, reason: "bed_too_small" });
+    expect(runsOf(s)).toHaveLength(1);
   });
 });
 
