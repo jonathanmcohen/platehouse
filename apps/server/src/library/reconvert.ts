@@ -64,6 +64,7 @@ import {
   CONVERTER_VERSION,
   earlierConversions,
   extractMakerWorld,
+  type MakerWorldDetails,
   mapLicense,
 } from "@platehouse/makerworld";
 import { ReadUnavailable, readMakerWorldXml } from "@platehouse/threemf";
@@ -123,7 +124,7 @@ export class SourceOutage extends Error {
 }
 
 /** True for what a read gives when its signal aborted: the run was told to stop. */
-function stopped(err: unknown, signal: AbortSignal | undefined): boolean {
+export function stopped(err: unknown, signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true || (err instanceof Error && err.name === "AbortError");
 }
 
@@ -324,35 +325,54 @@ const OBJECT_CODES: ReadonlySet<string> = new Set(["InvalidRange", "NoBody", "No
  * reason (any other StoreError) is SourceOutage, which stops the run until
  * the store is back. A read stopped by the signal stops the run too.
  */
-export function storeTextReader(store: {
+export function storeTextReader(store: DetailsStore): ReadText {
+  return async (file, signal) => {
+    const read = await readDetails(store, file, signal);
+    if (read === null) return null;
+    const { details } = read;
+    if (details === null) return { html: null, note: null };
+    return { html: details.descriptionHtml, note: mapLicense(details.license).footer ?? null };
+  };
+}
+
+/** The ranged reads of one stored object. */
+export interface DetailsStore {
   getBlobRange(
     key: string,
     start: number,
     end: number,
     opts?: { signal?: AbortSignal },
   ): Promise<Readable>;
-}): ReadText {
-  return async (file, signal) => {
-    let xml: string | null;
-    try {
-      xml = await readMakerWorldXml(
-        (start, end) => store.getBlobRange(file.key, start, end, signal ? { signal } : undefined),
-        file.size,
-      );
-    } catch (err) {
-      const cause = err instanceof ReadUnavailable ? err.cause : err;
-      if (stopped(cause, signal)) throw cause;
-      if (objectRefused(cause)) return null;
-      if (cause instanceof StoreUnavailable || cause instanceof StoreError) {
-        throw new SourceOutage(cause);
-      }
-      return null;
+}
+
+/**
+ * A file's MakerWorld details, read in ranges from the store, with the error
+ * mapping every reader shares: null when the file cannot be read, details
+ * null when it has none, SourceOutage when the store is down, and the abort
+ * rethrown when the signal stopped the read.
+ */
+export async function readDetails(
+  store: DetailsStore,
+  file: SourceFile,
+  signal?: AbortSignal,
+): Promise<{ details: MakerWorldDetails | null } | null> {
+  let xml: string | null;
+  try {
+    xml = await readMakerWorldXml(
+      (start, end) => store.getBlobRange(file.key, start, end, signal ? { signal } : undefined),
+      file.size,
+    );
+  } catch (err) {
+    const cause = err instanceof ReadUnavailable ? err.cause : err;
+    if (stopped(cause, signal)) throw cause;
+    if (objectRefused(cause)) return null;
+    if (cause instanceof StoreUnavailable || cause instanceof StoreError) {
+      throw new SourceOutage(cause);
     }
-    if (xml === null) return null;
-    const details = extractMakerWorld(xml);
-    if (details === null) return { html: null, note: null };
-    return { html: details.descriptionHtml, note: mapLicense(details.license).footer ?? null };
-  };
+    return null;
+  }
+  if (xml === null) return null;
+  return { details: extractMakerWorld(xml) };
 }
 
 export interface DescriptionReconvert {

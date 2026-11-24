@@ -9,6 +9,8 @@
 // What it does beyond the document, from how Manyfold behaves:
 // - POST /oauth/token, the document's clientCredentials tokenUrl, answers a
 //   Doorkeeper-shaped token for the client id and secret it was given.
+// - Each token request issues a new random token (the first is accessToken),
+//   and only the newest is accepted; every one issued is in tokens.
 // - Absolute links come back as http://, as they may behind a reverse proxy
 //   that terminates TLS, list members carry relative @id links, and lists
 //   page through view.next.
@@ -79,6 +81,18 @@ export interface ManyfoldStubOptions {
   data: StubData;
   /** Members per list page; 2 so that paging is always exercised. */
   pageSize?: number;
+  /** How the token endpoint behaves; see the header. */
+  token?: {
+    /** The expires_in answered, in seconds; 7200 when not set. */
+    expiresIn?: number;
+    /**
+     * After this many authorised API requests the first token answers 401,
+     * until a new one is issued. Later tokens do not expire.
+     */
+    expireAfterRequests?: number;
+    /** The scope answered on the second and later token requests. */
+    renewScope?: string;
+  };
 }
 
 export interface TokenRequest {
@@ -109,14 +123,24 @@ export function createManyfoldStub(options: ManyfoldStubOptions) {
   const host = new URL(origin).host;
   /** Links as Manyfold may send them behind a TLS-terminating proxy: http://, on its own host. */
   const link = (path: string) => `http://${host}${path}`;
-  const accessToken = `mf-access-${randomBytes(12).toString("hex")}`;
+  const newToken = () => `mf-access-${randomBytes(12).toString("hex")}`;
+  /** The first token issued; tests that answer the token request themselves hand this out. */
+  const accessToken = newToken();
+  const tokens: string[] = [accessToken];
+  let current = accessToken;
+  let usedByCurrent = 0;
   const tokenRequests: TokenRequest[] = [];
   const objectRequests: ObjectRequest[] = [];
   const signedQueries: string[] = [];
   const writes: string[] = [];
 
-  const authorised = (request: Request) =>
-    request.headers.get("authorization") === `Bearer ${accessToken}`;
+  const authorised = (request: Request) => {
+    if (request.headers.get("authorization") !== `Bearer ${current}`) return false;
+    const limit = options.token?.expireAfterRequests;
+    if (limit !== undefined && current === accessToken && usedByCurrent >= limit) return false;
+    usedByCurrent++;
+    return true;
+  };
   const unauthorised = () => new HttpResponse(null, { status: 401 });
 
   function json(path: string, body: unknown) {
@@ -190,11 +214,17 @@ export function createManyfoldStub(options: ManyfoldStubOptions) {
       if (!basicOk || form.get("grant_type") !== "client_credentials") {
         return HttpResponse.json({ error: "invalid_client" }, { status: 401 });
       }
+      const first = tokenRequests.length === 1;
+      if (!first) {
+        current = newToken();
+        tokens.push(current);
+        usedByCurrent = 0;
+      }
       return HttpResponse.json({
-        access_token: accessToken,
+        access_token: current,
         token_type: "Bearer",
-        expires_in: 7200,
-        scope: form.get("scope") ?? "public",
+        expires_in: options.token?.expiresIn ?? 7200,
+        scope: (first ? undefined : options.token?.renewScope) ?? form.get("scope") ?? "public",
         created_at: 1_794_000_000,
       });
     }),
@@ -345,6 +375,7 @@ export function createManyfoldStub(options: ManyfoldStubOptions) {
   return {
     handlers,
     accessToken,
+    tokens,
     tokenRequests,
     objectRequests,
     signedQueries,

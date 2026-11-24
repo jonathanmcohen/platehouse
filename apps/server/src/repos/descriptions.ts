@@ -14,10 +14,9 @@ import { type Kysely, sql } from "kysely";
 import { uuidv7 } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB } from "../db/types.js";
+import type { LicenceStore, StepOutcome } from "../library/licence-fill.js";
 import {
   descriptionSha256,
-  type Outcome,
-  type ReconvertResult,
   type ReconvertStore,
   type SourceFile,
   type StoredDescription,
@@ -33,10 +32,28 @@ export function progressName(name: string): string {
   return `progress-${name}`;
 }
 
-const OUTCOMES: readonly Outcome[] = ["changed", "unchanged", "kept", "unreadable"];
+const OUTCOMES: readonly StepOutcome[] = [
+  "changed",
+  "unchanged",
+  "kept",
+  "unreadable",
+  "filled",
+  "none",
+];
 
-/** The counts in a progress row's result; a count missing or not a whole number of 0 or more is 0. */
-function countsOf(result: unknown): ReconvertResult {
+/** The outcomes a step counts: the licence fill's own, or the description re-conversion's. */
+function outcomesOf(name: string): readonly StepOutcome[] {
+  return name.startsWith("licences-from-makerworld-")
+    ? ["filled", "none", "kept", "unreadable"]
+    : ["changed", "unchanged", "kept", "unreadable"];
+}
+
+/**
+ * The counts in a progress row's result, only those of the step's outcomes
+ * (so a step's totals hold no other step's keys); a count missing or not a
+ * whole number of 0 or more is 0.
+ */
+function countsOf(name: string, result: unknown): Record<string, number> {
   const r = (typeof result === "object" && result !== null ? result : {}) as Record<
     string,
     unknown
@@ -45,13 +62,7 @@ function countsOf(result: unknown): ReconvertResult {
     const v = r[key];
     return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : 0;
   };
-  return {
-    checked: n("checked"),
-    changed: n("changed"),
-    unchanged: n("unchanged"),
-    kept: n("kept"),
-    unreadable: n("unreadable"),
-  };
+  return Object.fromEntries(["checked", ...outcomesOf(name)].map((key) => [key, n(key)] as const));
 }
 
 /**
@@ -62,9 +73,9 @@ async function addCount(
   db: Kysely<DB>,
   name: string,
   modelId: string,
-  outcome: Outcome,
+  outcome: StepOutcome,
 ): Promise<void> {
-  // The outcome becomes a JSON key, so only the four the result has are taken.
+  // The outcome becomes a JSON key, so only the ones a step's result has are taken.
   if (!OUTCOMES.includes(outcome)) {
     throw new Error(`Unknown outcome: ${String(outcome).slice(0, 32)}`);
   }
@@ -91,10 +102,11 @@ export interface UpgradeStep {
   result: unknown;
 }
 
-export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
-  /** Finished upgrade steps whose name starts with prefix, newest first, at most limit. */
-  finishedSteps(prefix: string, limit: number): Promise<UpgradeStep[]>;
-} {
+export function descriptionsRepo(db: Kysely<DB>): ReconvertStore &
+  LicenceStore & {
+    /** Finished upgrade steps whose name starts with prefix, newest first, at most limit. */
+    finishedSteps(prefix: string, limit: number): Promise<UpgradeStep[]>;
+  } {
   return {
     async stepFinished(name) {
       const row = await db
@@ -183,19 +195,21 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
       return typeof after === "string" ? after : null;
     },
 
-    async count(name, modelId, outcome) {
+    async count(name: string, modelId: string, outcome: StepOutcome) {
       await addCount(db, name, modelId, outcome);
     },
 
-    async finishStep(name) {
-      return inTransaction(db, async (trx) => {
+    // The totals hold the counts of the step's own outcomes (countsOf), so
+    // each of the two interfaces gets the shape it names.
+    finishStep: (async (name: string) =>
+      inTransaction(db, async (trx) => {
         const progress = await trx
           .selectFrom("upgradeSteps")
           .select("result")
           .where("name", "=", progressName(name))
           .forUpdate()
           .executeTakeFirst();
-        const totals = countsOf(progress?.result);
+        const totals = countsOf(name, progress?.result);
         // A step already recorded keeps its record.
         await trx
           .insertInto("upgradeSteps")
@@ -204,8 +218,7 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
           .execute();
         await trx.deleteFrom("upgradeSteps").where("name", "=", progressName(name)).execute();
         return totals;
-      });
-    },
+      })) as unknown as ReconvertStore["finishStep"] & LicenceStore["finishStep"],
 
     async finishedSteps(prefix, limit) {
       const rows = await db
@@ -284,6 +297,45 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
         .orderBy("files.id")
         .execute();
       return rows.map((r): SourceFile => ({ fileId: r.fileId, key: r.key, size: r.size ?? 0 }));
+    },
+
+    // Models with no licence and no licence note, with a stored .3mf, in id
+    // order; the filter is the same one the write holds to.
+    async licenceCandidates(after, limit) {
+      let q = db
+        .selectFrom("models")
+        .select("id")
+        .where("purgeStartedAt", "is", null)
+        .where(sql<boolean>`coalesce(license_spdx, '') = ''`)
+        .where(sql<boolean>`coalesce(license_note, '') = ''`)
+        .where(
+          sql<boolean>`exists (
+            select 1 from files f
+            join blobs b on b.id = f.blob_id
+            where f.model_id = models.id and f.kind = '3mf' and b.state = 'stored'
+          )`,
+        );
+      if (after !== null) q = q.where("id", ">", after);
+      const rows = await q.orderBy("id").limit(limit).execute();
+      return rows.map((r) => ({ modelId: r.id }));
+    },
+
+    // Compare-and-set: only a model that still has no licence and no note,
+    // and is not being purged. The count commits with it.
+    async writeLicence(modelId, set, count) {
+      return inTransaction(db, async (trx) => {
+        const result = await trx
+          .updateTable("models")
+          .set({ licenseSpdx: set.spdx, licenseNote: set.note, updatedAt: sql<Date>`now()` })
+          .where("id", "=", modelId)
+          .where("purgeStartedAt", "is", null)
+          .where(sql<boolean>`coalesce(license_spdx, '') = ''`)
+          .where(sql<boolean>`coalesce(license_note, '') = ''`)
+          .executeTakeFirst();
+        if (result.numUpdatedRows === 0n) return false;
+        await addCount(trx, count.name, modelId, "filled");
+        return true;
+      });
     },
 
     async markUnproven(row, newestFileId) {

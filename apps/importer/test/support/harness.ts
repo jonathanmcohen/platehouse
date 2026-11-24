@@ -85,6 +85,8 @@ export function setup(
   options: {
     manyfold?: Partial<ManyfoldStubOptions>;
     platehouse?: Partial<PlatehouseStubOptions>;
+    /** The clock the importer reads, in ms; the real one when not given. */
+    now?: () => number;
   } = {},
 ): Setup {
   const manyfold = createManyfoldStub({
@@ -117,6 +119,7 @@ export function setup(
         sleep: async (ms) => {
           waits.push(ms);
         },
+        ...(options.now === undefined ? {} : { now: options.now }),
       });
       return { ...result, stdout, stderr, output: [...stdout, ...stderr].join("\n") };
     },

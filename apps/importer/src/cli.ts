@@ -25,6 +25,12 @@
 // nothing for 120 s, or for --upload-idle-timeout <seconds> (else
 // PLATEHOUSE_UPLOAD_IDLE_TIMEOUT), from 1 to 86400.
 //
+// A download redirect to a private, loopback or link-local address, or to a
+// name that only resolves on a local network, is refused. A Manyfold whose
+// object store is on the LAN names it with --allow-redirect-host <host>
+// (repeatable), else MANYFOLD_ALLOW_REDIRECT_HOSTS (comma-separated); only
+// that privacy check is skipped for it, never the https, token or hop rules.
+//
 // It reads Manyfold with one read-scoped token and writes to Platehouse only
 // through the Public API v1, with a Platehouse API token. A dry run is the
 // default: it reads both sides, plans each model, downloads nothing and
@@ -65,6 +71,7 @@ import {
   DEFAULT_DOWNLOAD_IDLE_MS,
   type Manyfold,
   type ManyfoldModel,
+  TokenRenewalError,
 } from "./manyfold.js";
 import { externalRefFor, type ModelPlan, planModel, type SourceModel } from "./plan.js";
 import {
@@ -73,6 +80,7 @@ import {
   type Platehouse,
   type PlatehouseModel,
 } from "./platehouse.js";
+import { normaliseAllowedHost } from "./private-host.js";
 import { cleanText, createRedactor, type Redactor } from "./redact.js";
 import {
   exitCode,
@@ -101,12 +109,16 @@ const CREDENTIALS = ["MANYFOLD_CLIENT_ID", "MANYFOLD_CLIENT_SECRET", "PLATEHOUSE
 export const USAGE = [
   "usage: platehouse-import --manyfold <url> --platehouse <url> [--apply] [--model <id>]",
   "         [--download-idle-timeout <seconds>] [--upload-idle-timeout <seconds>]",
+  "         [--allow-redirect-host <host>]...",
   "  --manyfold and --platehouse are the https addresses of Manyfold and Platehouse;",
   "  without a flag, MANYFOLD_BASE or PLATEHOUSE_BASE is read. Neither has a default.",
   "  Set MANYFOLD_CLIENT_ID, MANYFOLD_CLIENT_SECRET and PLATEHOUSE_TOKEN in the environment.",
   "  A dry run is the default; --apply writes to Platehouse. --model <id> runs one model.",
   "  --download-idle-timeout <seconds>, or MANYFOLD_DOWNLOAD_IDLE_TIMEOUT, fails a file download",
   `  that receives nothing for that long (default ${DEFAULT_DOWNLOAD_IDLE_MS / 1000}); a slow download that keeps receiving never times out.`,
+  "  A download redirect to a private, loopback or link-local address, to a name without a dot, or",
+  "  to one ending .local, .localhost, .home.arpa, .internal or .localdomain is refused. --allow-redirect-host <host> (repeatable), or MANYFOLD_ALLOW_REDIRECT_HOSTS",
+  "  (comma-separated), allows one such host, e.g. a MinIO on your network.",
   "  --upload-idle-timeout <seconds>, or PLATEHOUSE_UPLOAD_IDLE_TIMEOUT, fails a file upload",
   `  that Platehouse takes nothing of for that long (default ${DEFAULT_UPLOAD_IDLE_MS / 1000}); a slow upload that keeps going never times out.`,
 ].join("\n");
@@ -160,6 +172,8 @@ export interface RunOptions {
   stderr: (line: string) => void;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  /** The clock the Manyfold token's expiry is read from, in ms; for tests. */
+  now?: () => number;
   /**
    * The redactor every line goes through; the command passes the one its
    * process-level handlers use (onFatal), so they know the credentials too.
@@ -309,6 +323,7 @@ async function importModel(
     source = await sourceOf(ctx.manyfold, model, ctx.nameOf);
     existing = await ctx.platehouse.findByExternalRef(externalRefFor(source.id));
   } catch (error) {
+    if (error instanceof TokenRenewalError) throw error;
     return { ...fallback, outcome: "failed", reason: message(error) };
   }
   if (source.name.trim() === "") {
@@ -398,6 +413,7 @@ async function importModel(
       // A SizeMismatch's message starts with SIZE_MISMATCH.
       bytes = await ctx.manyfold.download(f.file.contentUrl, contentSize);
     } catch (error) {
+      if (error instanceof TokenRenewalError) throw error;
       files.push(row(filename, contentSize, "failed", { reason: message(error) }));
       continue;
     }
@@ -444,6 +460,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
       platehouse: string | undefined;
       downloadIdle: string | undefined;
       uploadIdle: string | undefined;
+      allowRedirect: string[];
     };
     try {
       const { values } = parseArgs({
@@ -455,6 +472,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
           platehouse: { type: "string" },
           [IDLE_LIMITS.download.flag]: { type: "string" },
           [IDLE_LIMITS.upload.flag]: { type: "string" },
+          "allow-redirect-host": { type: "string", multiple: true },
         },
         strict: true,
         allowPositionals: false,
@@ -466,6 +484,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
         platehouse: values.platehouse,
         downloadIdle: values[IDLE_LIMITS.download.flag],
         uploadIdle: values[IDLE_LIMITS.upload.flag],
+        allowRedirect: values["allow-redirect-host"] ?? [],
       };
     } catch (error) {
       err(message(error));
@@ -497,6 +516,35 @@ export async function run(options: RunOptions): Promise<RunResult> {
     const downloadTimeoutMs = idleLimit("download", args.downloadIdle);
     const uploadTimeoutMs = idleLimit("upload", args.uploadIdle);
     if (downloadTimeoutMs === null || uploadTimeoutMs === null) {
+      usage();
+      return { code: 2, report: null };
+    }
+
+    // Hosts a download redirect may go to though they are private: every
+    // flag and every entry of the variable.
+    const allowRedirectHosts: string[] = [];
+    const fromEnvHosts = (options.env.MANYFOLD_ALLOW_REDIRECT_HOSTS ?? "").trim();
+    const redirectEntries = [
+      ...args.allowRedirect.map((value) => ({ value, source: "--allow-redirect-host" })),
+      ...fromEnvHosts
+        .split(",")
+        .filter((v) => v.trim() !== "")
+        .map((value) => ({
+          value,
+          source: "MANYFOLD_ALLOW_REDIRECT_HOSTS",
+        })),
+    ];
+    let badHost = false;
+    for (const { value, source } of redirectEntries) {
+      const host = normaliseAllowedHost(value);
+      if (host === null) {
+        err(`${source} takes a host name or address, with no scheme, port or path`);
+        badHost = true;
+      } else {
+        allowRedirectHosts.push(host);
+      }
+    }
+    if (badHost) {
       usage();
       return { code: 2, report: null };
     }
@@ -567,7 +615,9 @@ export async function run(options: RunOptions): Promise<RunResult> {
       clientId,
       clientKey,
       sensitive: (value) => redactor.add(value),
+      ...(options.now === undefined ? {} : { now: options.now }),
       downloadTimeoutMs,
+      allowRedirectHosts,
     });
     const platehouse = createPlatehouse({
       ...common,
@@ -602,11 +652,16 @@ export async function run(options: RunOptions): Promise<RunResult> {
 
     report = { mode, found: entries.length, models: [] };
     const ctx: Context = { mode, manyfold, platehouse, nameOf: nameBook(manyfold, known) };
+    let stopped: string | null = null;
     for (const [i, entry] of entries.entries()) {
       let result: ModelResult;
+      let stop = false;
       try {
         result = await importModel(ctx, entry);
       } catch (error) {
+        // A token that cannot be renewed ends the run: every model left
+        // would fail the same way. This model is reported, then the summary.
+        stop = error instanceof TokenRenewalError;
         result = {
           manyfoldId: entry.id,
           name: entry.name,
@@ -615,12 +670,17 @@ export async function run(options: RunOptions): Promise<RunResult> {
           newModel: false,
           files: [],
         };
+        if (stop) stopped = message(error);
       }
       report.models.push(result);
       for (const line of modelLines(result, i, entries.length)) out(line);
+      if (stop) break;
     }
     out("");
     for (const line of summaryLines(report)) out(line);
+    if (stopped !== null) {
+      out(`stopped: ${stopped}; ${report.found - report.models.length} models not attempted`);
+    }
     return { code: exitCode(report), report };
   } catch (error) {
     err(`platehouse-import: unexpected error: ${message(error)}`);

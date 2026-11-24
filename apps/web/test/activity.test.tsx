@@ -987,7 +987,7 @@ describe("an unfinished description re-conversion", () => {
       v.schedules = [
         {
           key: "reconvert-descriptions",
-          label: "MakerWorld description re-conversion (until it finishes)",
+          label: "MakerWorld descriptions and licences (until they finish)",
           schedule: "Every 5 minutes (UTC)",
           lastRunAt: null,
           lastState: null,
@@ -996,6 +996,6 @@ describe("an unfinished description re-conversion", () => {
       return v;
     };
     await render();
-    expect(text(container)).toContain("MakerWorld description re-conversion (until it finishes)");
+    expect(text(container)).toContain("MakerWorld descriptions and licences (until they finish)");
   });
 });

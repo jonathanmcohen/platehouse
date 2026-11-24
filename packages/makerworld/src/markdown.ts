@@ -659,6 +659,8 @@ export function earlierConversions(
   ];
 }
 
+// Versions 2 and 3 share this live convert (with their own blocks and
+// unknownIsBlock), and test/legacy-frozen.test.ts guards their output.
 // blocks: the elements that end a paragraph. unknownIsBlock: whether every
 // element HTML_ELEMENTS does not name ends one too (version 4 on).
 function convert(
@@ -1220,6 +1222,8 @@ function convert(
       // the table (PR #24 review). An element HTML does not define (a
       // MakerWorld box, a custom element, a malformed name) is the same
       // (HTML_ELEMENTS says why).
+      // Decision: version 4 keeps treating unknown elements as blocks; changing
+      // that needs a new CONVERTER_VERSION.
       if (lists.length === 0 && !inCell && tables.length === 0) breakBlock();
       else space();
     }

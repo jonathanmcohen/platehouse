@@ -98,8 +98,10 @@ import { createIngest, type IngestResult } from "./ingest/ingest.js";
 import { createOrphanSweep } from "./ingest/orphans.js";
 import { createBoss } from "./jobs/boss.js";
 import { type ServerQueueDeps, startQueues } from "./jobs/queues.js";
+import { createLicenceFill, storeLicenceReader } from "./library/licence-fill.js";
 import { createDescriptionReconvert, storeTextReader } from "./library/reconvert.js";
 import { createTrash } from "./library/trash.js";
+import { chainUpgradeSteps } from "./library/upgrade-steps.js";
 import { createLocales } from "./locales/locales.js";
 import { createPlateMeshes } from "./plate-mesh/plate-mesh.js";
 import { descriptionsRepo } from "./repos/descriptions.js";
@@ -447,13 +449,15 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     const trash = createTrash({ db, store });
     const orphans = createOrphanSweep({ db, store });
     const onIngested = (result: IngestResult) => estimates.enqueueFile(result.fileId);
-    // The description re-conversion on upgrade (#357): sent to the
-    // upgrade queue by startQueues while it has not finished, and run a
-    // slice per job (queues.ts RECONVERT_SLICE_SECONDS).
-    const reconvert = createDescriptionReconvert({
-      store: descriptionsRepo(db),
-      readText: storeTextReader(store),
-    });
+    // The upgrade steps: the description re-conversion (#357) and the licence
+    // fill (#445) after it, as one chain, sent to the upgrade queue by
+    // startQueues while it has not finished and run a slice per job
+    // (queues.ts RECONVERT_SLICE_SECONDS).
+    const descriptions = descriptionsRepo(db);
+    const upgradeSteps = chainUpgradeSteps([
+      createDescriptionReconvert({ store: descriptions, readText: storeTextReader(store) }),
+      createLicenceFill({ store: descriptions, readLicence: storeLicenceReader(store) }),
+    ]);
 
     // Every handler a pg-boss worker runs is counted (jobs), so stopping
     // pg-boss can tell a job cut off at its timeout from a clean stop. The
@@ -471,8 +475,8 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       requeueSandboxOff: (now: Date) => derived.requeueSandboxOff(now),
       purgeSessions: (now: Date) => repos.sessions.deleteExpired(now),
       reconvertDescriptions: (stop: () => boolean, signal: AbortSignal) =>
-        reconvert.run(stop, signal),
-      reconvertPending: () => reconvert.pending(),
+        upgradeSteps.run(stop, signal),
+      reconvertPending: () => upgradeSteps.pending(),
       shutdown: shutdownSignal.signal,
     } satisfies ServerQueueDeps);
     await startQueues(startedBoss, queueDeps);

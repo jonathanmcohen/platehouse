@@ -11,11 +11,11 @@
 // commit's converter, not by this file.
 //
 // The code below is that file's, byte for byte, but for this header, the
-// import of extract.js from one folder up, the render half (createMarkdownIt,
+// entity helpers now imported from ./entities.js, the render half (createMarkdownIt,
 // sanitizeHtml and renderMarkdown) left out, and htmlToMarkdown renamed
 // htmlToMarkdownRc.
 
-import { decodeEntities, mapEntities } from "../extract.js";
+import { decodeEntities, mapEntities } from "./entities.js";
 
 const BLOCK: ReadonlySet<string> = new Set([
   "p",

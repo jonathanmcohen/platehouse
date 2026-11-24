@@ -28,8 +28,9 @@
 //   with all of them; the worker runs one maintenance job at a time in any
 //   case, and a backfill run is a quick query when there is nothing to do;
 // - upgrade: the one-time upgrade steps (UPGRADE_TASKS), the description
-//   re-conversion today, on a stately queue of their own, one job at a time,
-//   so duplicate jobs collapse and maintenance tasks never wait behind it.
+//   re-conversion and then the licence fill today, on a stately queue of
+//   their own, one job at a time, so duplicate jobs collapse and maintenance
+//   tasks never wait behind it.
 // The server (main.ts) passes a ServerQueueDeps, which requires
 // slicerJobs, pollOrca, onIngested, checkRenders and backfillPreviews, so it
 // cannot leave a queue without its worker or those schedules without their handlers. The
@@ -138,8 +139,10 @@ export const MAINTENANCE_TASKS = {
 
 /**
  * The upgrade queue's one-time steps: the description re-conversion (#357,
- * library/reconvert.ts). Its lifecycle is built so that whatever happens to
- * the process or what it depends on, a stop is clean, no description is
+ * library/reconvert.ts) and then the licence fill (#445,
+ * library/licence-fill.ts), as one task that runs them in that order and is
+ * pending until both have finished. Its lifecycle is built so that whatever
+ * happens to the process or what it depends on, a stop is clean, no description is
  * written wrongly or twice, and the step finishes once things are healthy,
  * without anyone restarting the server (#381, #382):
  *
@@ -302,7 +305,8 @@ export interface QueueDeps {
    */
   purgeSessions?(now: Date): Promise<unknown>;
   /**
-   * The description re-conversion (#357, library/reconvert.ts's run), when
+   * The upgrade task (UPGRADE_TASKS): the description re-conversion (#357,
+   * library/reconvert.ts's run) and then the licence fill (#445), when
    * given with reconvertPending: driven while reconvertPending says it has
    * not finished (UPGRADE_TASKS says how). It stops after a model once stop
    * says true (its slice used) and at once when signal aborts (the server
@@ -469,7 +473,7 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
       reconvertRetryAt = Date.now() + wait;
       const message = error instanceof Error ? error.message : String(error);
       console.error(
-        `queues: the description re-conversion stopped (${message.slice(0, 200)}); ` +
+        `queues: the MakerWorld upgrade work stopped (${message.slice(0, 200)}); ` +
           `it goes on in ${wait / 60_000} minutes or at the next start`,
       );
     };

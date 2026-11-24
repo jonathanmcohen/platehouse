@@ -15,10 +15,14 @@ happy with the result.
   servers. The importer is not part of the app image.
 - Both servers on **https**. The importer refuses a plain http address, and it sends its tokens only
   to the two addresses you give it (a file download that Manyfold redirects to its object store is
-  fetched with no token at all).
+  fetched with no token at all). A redirect to a private, loopback or link-local address, or to a name
+  without a dot or ending in `.local`, `.localhost`, `.home.arpa`, `.internal` or `.localdomain`, is
+  refused unless you name it with `--allow-redirect-host` (see the options below). Names are not
+  looked up for this check.
 - A Manyfold OAuth application that allows the client credentials grant with the `read` scope. Its
   client id and client secret are what the importer signs in with. The importer stops before reading
-  anything if Manyfold grants it more than `read`.
+  anything if Manyfold grants it more than `read`. The token is renewed during a long import, shortly
+  before it expires and once after Manyfold refuses it, and a renewal must also be `read` only.
 - A Platehouse API token, made in **Settings > API tokens**. It is shown once; keep it in your
   password manager.
 
@@ -65,6 +69,11 @@ Other options:
   arriving.
 - `--upload-idle-timeout <seconds>` (or `PLATEHOUSE_UPLOAD_IDLE_TIMEOUT`) is the same limit for an
   upload that Platehouse stops taking.
+- `--allow-redirect-host <host>` (repeatable, or `MANYFOLD_ALLOW_REDIRECT_HOSTS`, comma-separated)
+  lets a file download be redirected to that private host, for a Manyfold whose object store is on
+  your own network, such as `--allow-redirect-host minio.lan` or `--allow-redirect-host 192.168.1.20`.
+  Give the host only, with no scheme, port or path. The redirect is still https only, still
+  fetched with no token, and still counts toward the 3-redirect limit.
 
 ## Running it again
 
@@ -89,8 +98,8 @@ through a filter that removes them.
 
 ## Exit codes
 
-| Code | Meaning                                                                                                                                                                                                |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | Every model was handled.                                                                                                                                                                               |
-| 1    | At least one model failed; the report says which and why. Running again finishes what is missing.                                                                                                      |
-| 2    | The run could not start: a bad argument or address, missing credentials, either server refusing the token or not answering, Manyfold granting more than `read`, or Manyfold's lists could not be read. |
+| Code | Meaning                                                                                                                                                                                                                                                                                     |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Every model was handled.                                                                                                                                                                                                                                                                    |
+| 1    | At least one model failed; the report says which and why. Running again finishes what is missing. One failed token renewal fails only the request that needed it; a renewal that grants more than `read`, or a second failure in a row, stops the import after its summary, with this exit. |
+| 2    | The run could not start: a bad argument or address, missing credentials, either server refusing the token or not answering, Manyfold granting more than `read`, or Manyfold's lists could not be read.                                                                                      |

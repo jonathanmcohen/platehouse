@@ -277,6 +277,12 @@ function metadataOf(project: Project | null, fileId: string): FoundMetadata {
   const details = xml ? extractMakerWorld(xml) : null;
   if (!xml || details === null) return {};
   const license = mapLicense(details.license);
+  // The value is not logged: the licence note holds it.
+  if (license.unknown) {
+    console.info(
+      `ingest: file ${fileId} names a MakerWorld licence Platehouse does not know; kept as a licence note`,
+    );
+  }
   const markdown = convertedDescription(details.descriptionHtml);
   // A footer licence sets no SPDX id. fillMetadata stores it as the licence
   // note whenever the model has none, and adds it at the foot of the

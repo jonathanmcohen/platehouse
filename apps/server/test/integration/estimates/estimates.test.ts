@@ -146,6 +146,14 @@ async function platehouseRows(id: string) {
     .execute();
 }
 
+// Which printer's estimate is created first depends on whether the background
+// poll or the upload queues it, so compare by printer, not creation order.
+const byPrinter = (a: string[], b: string[]) => (a[0] ?? "").localeCompare(b[0] ?? "");
+
+async function statusByPrinter(id: string) {
+  return (await platehouseRows(id)).map((r) => [r.printerId, r.status]).sort(byPrinter);
+}
+
 beforeAll(async () => {
   env = await startIngestEnv();
   stub = await startSlicerStub();
@@ -1452,10 +1460,12 @@ describe("My printers", () => {
     const done = await upload({ plates: 1 });
     await drain();
     const doneId = plateId(done.plates, 1);
-    expect((await platehouseRows(doneId)).map((r) => [r.printerId, r.status])).toEqual([
-      [P1S, "ok"],
-      [A1, "ok"],
-    ]);
+    expect(await statusByPrinter(doneId)).toEqual(
+      [
+        [P1S, "ok"],
+        [A1, "ok"],
+      ].sort(byPrinter),
+    );
 
     const held = stub.hold();
     // The stub's call log holds every earlier test's calls too.
@@ -1493,10 +1503,12 @@ describe("My printers", () => {
       expect(rows.find((r) => r.printerId === P1S)).toMatchObject({ status: "ok" });
     }
     // A plate the A1 had already estimated keeps those numbers.
-    expect((await platehouseRows(doneId)).map((r) => [r.printerId, r.status])).toEqual([
-      [P1S, "ok"],
-      [A1, "ok"],
-    ]);
+    expect(await statusByPrinter(doneId)).toEqual(
+      [
+        [P1S, "ok"],
+        [A1, "ok"],
+      ].sort(byPrinter),
+    );
   });
 
   test("reading another printer's numbers, or reordering, never starts a slice", async () => {

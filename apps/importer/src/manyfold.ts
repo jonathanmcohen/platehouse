@@ -3,12 +3,18 @@
 // prints. It has no method that
 // writes: the only request that is not a GET is the one token request.
 //
-// - One token per run: POST /oauth/token with grant_type=client_credentials
-//   and scope=read, never repeated, not even after a failure (Manyfold allows
-//   10 token requests per 3 minutes). The scope Manyfold grants must be read
-//   and nothing else: a token answer with another scope, or none, stops the
-//   run before anything is read, in case the OAuth app's settings changed. The token never leaves this module; it
-//   is handed to the sensitive callback so the CLI's redactor knows it.
+// - One token request at start-up: POST /oauth/token with
+//   grant_type=client_credentials and scope=read, never repeated after a
+//   refusal (Manyfold allows 10 token requests per 3 minutes). After that a
+//   token is renewed only before it expires (when expires_in is given) and
+//   once after a 401 from Manyfold's own origin, never for a 401 from
+//   another host. A renewal makes the same request and the same checks. A
+//   failed renewal fails the request that needed it, and a second one in a
+//   row, or one granted more than read, stops the run. The scope Manyfold
+//   grants must be read and nothing else: a token answer with another scope,
+//   or none, stops the run before anything is read, in case the OAuth app's
+//   settings changed. A token never leaves this module; each one is handed to
+//   the sensitive callback so the CLI's redactor knows it, the old ones too.
 // - Every URL Manyfold hands back is rewritten from http: to https: (behind
 //   a reverse proxy that terminates TLS it may send http:// links) and must
 //   stay on the base origin, so the
@@ -20,7 +26,11 @@
 //   Authorization header, since the presigned URL's signature is its
 //   credential, and that query string is handed to the sensitive callback and
 //   never logged), or to anything that is not https, its own host included
-//   (refused, not upgraded). At most 3 redirects. Every redirect's query,
+//   (refused, not upgraded). A redirect to another host is also refused when
+//   that host is a private, loopback or link-local address (IPv4-mapped IPv6
+//   included) or a name with no dot or ending .localhost, .local,
+//   .home.arpa, .internal or .localdomain; names are not looked up for this
+//   (private-host.ts), unless the host was named with --allow-redirect-host. At most 3 redirects. Every redirect's query,
 //   one back to Manyfold's own host included, goes to the sensitive callback
 //   before the redirect is followed or refused, and each sensitive value of
 //   such a query (a signature, a credential, a session token) is handed to
@@ -46,7 +56,8 @@
 //   Doorkeeper's error code.
 
 import { type IdleWatch, idleReason, idleWatch } from "./idle.js";
-import { fileNameFor } from "./plan.js";
+import { fileNameFor, MAX_UPLOAD_BYTES } from "./plan.js";
+import { isPrivateHost } from "./private-host.js";
 import { quoteBody } from "./redact.js";
 
 /** The media type of Manyfold's JSON API (v0). */
@@ -60,6 +71,27 @@ export class ManyfoldError extends Error {
     this.status = status;
   }
 }
+
+/** A 401 within this long of a token being issued is not an expiry: no renewal. */
+const MIN_RENEW_GAP_MS = 60_000;
+/** After a failed early renewal, the wait before trying again. */
+const RENEW_RETRY_MS = 30_000;
+/** A token that lives less than this is not renewed ahead of time. */
+const MIN_PROACTIVE_LIFETIME_MS = 60_000;
+
+/**
+ * A failure that must end the run, not just fail one model: a renewed token
+ * granted more than read, or two renewals in a row that failed.
+ */
+export class TokenRenewalError extends ManyfoldError {
+  constructor(message: string) {
+    super(message);
+    this.name = "TokenRenewalError";
+  }
+}
+
+/** A token answer whose scope is not exactly read. */
+class ScopeError extends ManyfoldError {}
 
 /** A download whose byte count is not Manyfold's contentSize. */
 export class SizeMismatch extends ManyfoldError {
@@ -80,6 +112,8 @@ export interface ManyfoldOptions {
   clientKey: string;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  /** The clock for token expiry, in ms; Date.now when not given. */
+  now?: () => number;
   log?: (line: string) => void;
   /** Called with every value the output must never show: the token, a signed query. */
   sensitive?: (value: string) => void;
@@ -98,6 +132,12 @@ export interface ManyfoldOptions {
    * (0.1.0 release review). DEFAULT_DOWNLOAD_IDLE_MS when not given.
    */
   downloadTimeoutMs?: number;
+  /**
+   * Hostnames (as normaliseAllowedHost writes them) a download redirect may
+   * go to even though they are private, for a Manyfold whose object store is
+   * on the same network. Every other redirect check still applies.
+   */
+  allowRedirectHosts?: readonly string[];
 }
 
 /** A download's idle limit when none is given: 2 minutes without a byte. */
@@ -256,8 +296,18 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
   const attempts = options.retries ?? 4;
   const timeoutMs = options.timeoutMs ?? 30_000;
   const downloadIdleMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_IDLE_MS;
+  const allowedRedirectHosts = new Set(options.allowRedirectHosts ?? []);
+  const now = options.now ?? Date.now;
   let token: string | null = null;
   let asked = false;
+  /** When the token expires and how long it lives, in ms; null without an expires_in. */
+  let expiresAt: number | null = null;
+  let lifetimeMs = 0;
+  let renewing: Promise<void> | null = null;
+  let renewalsFailed = 0;
+  /** When the current token was issued, and the earliest time an early renewal may be tried. */
+  let issuedAt = 0;
+  let nextEarlyTryAt = 0;
 
   /** A URL Manyfold gave, as https on the base origin; refuses any other origin. */
   function safeUrl(link: string): URL {
@@ -296,9 +346,13 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     watch?: IdleWatch,
   ): Promise<Response> {
     const onManyfold = url.origin === origin;
+    let renewedOn401 = false;
     for (let attempt = 1; ; attempt++) {
+      if (onManyfold && expiresDue()) await renew(true);
       const headers: Record<string, string> = { Accept: accept };
+      let sent: string | null = null;
       if (onManyfold) {
+        sent = token;
         if (token === null) throw new ManyfoldError("no token: authenticate first");
         headers.Authorization = `Bearer ${token}`;
       }
@@ -318,6 +372,19 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
           continue;
         }
         throw new ManyfoldError(`GET ${named(url)}: ${reason}`);
+      }
+      if (res.status === 401 && onManyfold && !renewedOn401) {
+        // Once per request: a renewal, then the same request again. A token
+        // already renewed since this one was sent is just retried with. One
+        // issued under a minute ago was not refused for expiry, so Manyfold
+        // cannot make this client spend its token requests on 401s.
+        if (token !== sent || now() - issuedAt >= MIN_RENEW_GAP_MS) {
+          renewedOn401 = true;
+          await res.body?.cancel();
+          if (token === sent) await renew(false);
+          attempt--;
+          continue;
+        }
       }
       if (res.status === 429 && attempt < attempts) {
         const wait = retryAfter(res.headers.get("retry-after"), attempt);
@@ -369,12 +436,8 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     return body;
   }
 
-  async function authenticate(): Promise<void> {
-    if (asked) {
-      if (token !== null) return;
-      throw new ManyfoldError("the token request already failed in this run");
-    }
-    asked = true;
+  /** The token request and its checks, shared by start-up and renewal. */
+  async function requestToken(renewal = false): Promise<{ value: string; expiresIn: unknown }> {
     const url = new URL("/oauth/token", origin);
     const basic = Buffer.from(`${options.clientId}:${options.clientKey}`).toString("base64");
     sensitive(basic);
@@ -409,7 +472,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     sensitive(value);
     const scope = isObject(body) ? body.scope : undefined;
     if (typeof scope !== "string") {
-      throw new ManyfoldError(
+      throw new ScopeError(
         "the token answer names no scope, so it cannot be shown to be read only",
       );
     }
@@ -418,9 +481,80 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
       // Quoted only when it is plain scope words, so nothing else Manyfold
       // put in the field is printed.
       const what = /^[a-z_: ]{0,60}$/.test(scope) ? `scope "${scope}",` : "a scope that is";
-      throw new ManyfoldError(`Manyfold granted ${what} not read only; nothing was read`);
+      // Nothing was read yet at start-up; a renewal comes mid-run.
+      const then = renewal ? "the import stops here" : "nothing was read";
+      throw new ScopeError(`Manyfold granted ${what} not read only; ${then}`);
     }
-    token = value;
+    return { value, expiresIn: isObject(body) ? body.expires_in : undefined };
+  }
+
+  /** Keeps a token, and when it runs out if the answer said so. */
+  function keep(granted: { value: string; expiresIn: unknown }): void {
+    token = granted.value;
+    const seconds = granted.expiresIn;
+    issuedAt = now();
+    nextEarlyTryAt = 0;
+    if (
+      typeof seconds === "number" &&
+      Number.isFinite(seconds) &&
+      seconds * 1000 >= MIN_PROACTIVE_LIFETIME_MS
+    ) {
+      lifetimeMs = seconds * 1000;
+      expiresAt = issuedAt + lifetimeMs;
+    } else {
+      lifetimeMs = 0;
+      expiresAt = null;
+    }
+  }
+
+  async function authenticate(): Promise<void> {
+    if (asked) {
+      if (token !== null) return;
+      throw new ManyfoldError("the token request already failed in this run");
+    }
+    asked = true;
+    keep(await requestToken());
+  }
+
+  /** Whether the token is within its last tenth, or last 5 minutes, whichever is shorter. */
+  function expiresDue(): boolean {
+    if (expiresAt === null || renewing !== null || now() < nextEarlyTryAt) return false;
+    return expiresAt - now() < Math.min(300_000, 0.1 * lifetimeMs);
+  }
+
+  /**
+   * A new token, by the start-up request's shape and checks. A renewal never
+   * triggers another (it does not go through request()), and callers that
+   * arrive during one wait for it. One failure fails the request that needed
+   * the renewal; a scope that is not read, or a second failure in a row,
+   * stops the run. An early renewal (early) that fails while the current
+   * token is still valid is not a failure: the current token is used and
+   * the next try waits RENEW_RETRY_MS.
+   */
+  function renew(early: boolean): Promise<void> {
+    if (renewing !== null) return renewing;
+    const attempt = (async () => {
+      try {
+        keep(await requestToken(true));
+        renewalsFailed = 0;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const text = `the Manyfold token could not be renewed: ${reason}`;
+        if (error instanceof ScopeError) throw new TokenRenewalError(text);
+        if (early && expiresAt !== null && expiresAt > now()) {
+          nextEarlyTryAt = now() + RENEW_RETRY_MS;
+          log(`  ${text}; using the current token, trying again later`);
+          return;
+        }
+        renewalsFailed++;
+        if (renewalsFailed >= 2) throw new TokenRenewalError(text);
+        throw new ManyfoldError(text, error instanceof ManyfoldError ? error.status : null);
+      } finally {
+        renewing = null;
+      }
+    })();
+    renewing = attempt;
+    return attempt;
   }
 
   /** Every member of a paged list, following view.next, checked against totalItems. */
@@ -558,6 +692,13 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
 
   /** download(), under one idle watch for every hop and attempt. */
   async function downloadWith(watch: IdleWatch, link: string, expectedSize: number) {
+    if (
+      !Number.isSafeInteger(expectedSize) ||
+      expectedSize < 0 ||
+      expectedSize > MAX_UPLOAD_BYTES
+    ) {
+      throw new ManyfoldError(`refusing to download a file of ${expectedSize} bytes`);
+    }
     let url = safeUrl(link);
     for (let hop = 0; ; hop++) {
       const res = await request(url, "*/*", downloadIdleMs, downloadPath, watch);
@@ -577,6 +718,16 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
         for (const value of signedQueryValues(next.search, { requireSigned: sameHost })) {
           sensitive(value);
         }
+        if (
+          !sameHost &&
+          isPrivateHost(next.hostname) &&
+          !allowedRedirectHosts.has(next.hostname.toLowerCase().replace(/\.+$/, ""))
+        ) {
+          throw new ManyfoldError(
+            `GET ${downloadPath(url)}: refusing a redirect to a private address, to ${next.host}; ` +
+              "if this is your object store, allow it with --allow-redirect-host",
+          );
+        }
         if (next.protocol !== "https:") {
           // Refused on Manyfold's own host too, not upgraded: a non-https
           // redirect is always refused.
@@ -588,7 +739,9 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
         continue;
       }
       if (res.status !== 200) throw await failure(url, res, downloadPath);
-      const chunks: Buffer[] = [];
+      // One buffer of the size Manyfold promised, filled as chunks arrive, so
+      // a file is held once in memory rather than as chunks and again joined.
+      const body = Buffer.allocUnsafe(expectedSize);
       let got = 0;
       if (res.body !== null) {
         const reader = res.body.getReader();
@@ -615,7 +768,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
                 got,
               );
             }
-            chunks.push(Buffer.from(next.value));
+            body.set(next.value, got - next.value.byteLength);
           }
         } catch (error) {
           await reader.cancel().catch(() => {});
@@ -633,7 +786,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
           got,
         );
       }
-      return Buffer.concat(chunks);
+      return body;
     }
   }
 

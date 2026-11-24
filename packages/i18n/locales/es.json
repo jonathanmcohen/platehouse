@@ -89,7 +89,7 @@
   "activity.schedule.pollOrca": "Comprobaci\u00f3n de la versi\u00f3n del laminador",
   "activity.schedule.purgeExpired": "Purga de la papelera (modelos movidos all\u00ed hace m\u00e1s de 30 d\u00edas)",
   "activity.schedule.purgeSessions": "Limpieza de inicios de sesi\u00f3n caducados",
-  "activity.schedule.reconvertDescriptions": "Nueva conversi\u00f3n de las descripciones de MakerWorld (hasta que termine)",
+  "activity.schedule.reconvertDescriptions": "Descripciones y licencias de MakerWorld (hasta que terminen)",
   "activity.schedule.sweepOrphans": "Limpieza de objetos almacenados sin registro",
   "activity.schedule.sweepUploads": "Limpieza de subidas sin terminar",
   "activity.schedules.lastFailed": "\u00daltima ejecuci\u00f3n el {at}, fallida",

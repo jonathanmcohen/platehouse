@@ -554,7 +554,7 @@ export const SCHEDULE_LABELS: Readonly<Record<string, string>> = {
   [MAINTENANCE_TASKS.backfillPreviews]: "Preview pictures for older STL and STEP files",
   // Listed only while the step is pending (#382), so an unfinished
   // re-conversion shows on the page, not only in the server log.
-  [UPGRADE_TASKS.reconvertDescriptions]: "MakerWorld description re-conversion (until it finishes)",
+  [UPGRADE_TASKS.reconvertDescriptions]: "MakerWorld descriptions and licences (until they finish)",
 };
 
 const SCHEDULE_ORDER: readonly string[] = [

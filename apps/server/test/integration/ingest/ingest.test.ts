@@ -11,7 +11,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { access } from "node:fs/promises";
 import { CreateBucketCommand } from "@aws-sdk/client-s3";
 import type { Kysely, Transaction } from "kysely";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
 import type { DB } from "../../../src/db/types.js";
 import {
@@ -367,6 +367,33 @@ describe("what a stored file records", () => {
     expect(model.descriptionMd).toBe(
       "Print it.\n\nLicense on MakerWorld: Standard Digital File License",
     );
+  });
+
+  test("a licence Platehouse does not know is kept as the licence note and logged without its value", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const r = await env.ingest.ingestFile({
+        tmpPath: await writeUpload(
+          env,
+          build3mf({
+            plates: 1,
+            makerWorld: { designer: "Synthetic Designer", license: "Some New Licence" },
+          }),
+        ),
+        originalName: "Unknown licence.3mf",
+        target: "new",
+      });
+      const model = await modelRow(r.modelId);
+      expect(model.licenseSpdx).toBeNull();
+      expect(model.licenseNote).toBe("License on MakerWorld: Some New Licence");
+      const lines = info.mock.calls.map((call) => String(call[0]));
+      expect(lines).toContain(
+        `ingest: file ${r.fileId} names a MakerWorld licence Platehouse does not know; kept as a licence note`,
+      );
+      expect(lines.join("\n")).not.toContain("Some New Licence");
+    } finally {
+      info.mockRestore();
+    }
   });
 });
 

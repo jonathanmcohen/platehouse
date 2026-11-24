@@ -929,7 +929,7 @@ describe("a description re-conversion on the Activity page", () => {
     expect(asked.sort()).toEqual([QUEUE.maintenance, QUEUE.upgrade].sort());
     expect(view.schedules.map((r) => r.key)).toEqual([UPGRADE_TASKS.reconvertDescriptions]);
     expect(view.schedules[0]).toMatchObject({
-      label: "MakerWorld description re-conversion (until it finishes)",
+      label: "MakerWorld descriptions and licences (until they finish)",
     });
   });
 
