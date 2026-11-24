@@ -156,7 +156,8 @@ test("the app's CSP: a tus upload through the upload dialog reports no violation
   await dialog.getByRole("button", { name: "Upload 1 file" }).click();
   expect((await created).status()).toBe(201);
   expect((await sent).status()).toBe(204);
-  await expect(dialog.getByText("Skipped", { exact: true })).toBeVisible();
+  // The status also carries the file name for a screen reader, so match the visible end of it.
+  await expect(dialog.locator(".ph-upload-status").filter({ hasText: /Skipped$/ })).toBeVisible();
 
   expect(await violations()).toEqual([]);
 });
