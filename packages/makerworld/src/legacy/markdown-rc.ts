@@ -15,7 +15,7 @@
 // sanitizeHtml and renderMarkdown) left out, and htmlToMarkdown renamed
 // htmlToMarkdownRc.
 
-import { decodeEntities, mapEntities } from "../extract.js";
+import { decodeEntities, mapEntities } from "./entities.js";
 
 const BLOCK: ReadonlySet<string> = new Set([
   "p",
