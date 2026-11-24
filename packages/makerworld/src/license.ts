@@ -30,6 +30,9 @@ export interface LicenseMapping {
   unknown?: true;
 }
 
+// The note's text (FOOTER_PREFIX and what cleanUnknown gives) is stored data:
+// the description re-conversion compares stored descriptions against it later,
+// so neither may change.
 const FOOTER_PREFIX = "License on MakerWorld: ";
 const MAX_UNKNOWN_CODE_POINTS = 120;
 

@@ -14,7 +14,7 @@ did not turn out as expected.
 - **Scheduled jobs**: the daily and regular jobs, such as the trash purge, the cleanup and
   "Preview pictures for older STL and STEP files", with their last runs. After an upgrade from a version before 0.1.1, "MakerWorld descriptions
   and licences (until they finish)" is listed too while stored MakerWorld descriptions and missing licences are being
-  read again; it goes once that has finished.
+  read again; it goes once that has finished. On a new install the row can appear briefly.
 - **Slicer**: whether the slicer is healthy, and its OrcaSlicer and OpenSCAD versions.
 - **Recent events**: the newest 50 events: models added, inbox files that failed, estimates that
   failed (with the same **Retry** as on the model page), renders and STEP conversions that

@@ -114,7 +114,17 @@ async function find(
 ): Promise<Found> {
   let unreadable = false;
   for (const file of files) {
-    const read = await readLicence(file, signal);
+    // Anything that goes wrong with one file, other than an outage or a stop,
+    // is that file being unreadable: a crafted .3mf must never stop the run,
+    // or it would stop at the same model every time. A newer file's licence
+    // is used when an older one cannot be read; that is intended.
+    let read: Awaited<ReturnType<ReadLicence>>;
+    try {
+      read = await readLicence(file, signal);
+    } catch (err) {
+      if (err instanceof SourceOutage || stopped(err, signal)) throw err;
+      read = null;
+    }
     if (read === null) {
       unreadable = true;
       continue;

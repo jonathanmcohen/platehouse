@@ -163,6 +163,22 @@ describe("createLicenceFill", () => {
     expect(mem.written.get(model(1))).toEqual({ spdx: "CC0-1.0", note: null });
   });
 
+  test("counts a model the reader throws on as could not be read, and goes on", async () => {
+    const mem = memoryStore([model(1), model(2)], {
+      [model(1)]: [file("a")],
+      [model(2)]: [file("b")],
+    });
+    // The reader has no entry for "a", so it throws on it.
+    const { run } = fill(mem, reader({ b: "BY" }).readLicence);
+    expect(await run.run()).toEqual({ ...ZERO, checked: 2, filled: 1, unreadable: 1 });
+  });
+
+  test("uses a later file's licence when the reader throws on an earlier one", async () => {
+    const mem = memoryStore([model(1)], { [model(1)]: [file("a"), file("b")] });
+    const { run } = fill(mem, reader({ b: "CC0" }).readLicence);
+    expect(await run.run()).toEqual({ ...ZERO, checked: 1, filled: 1 });
+  });
+
   test("counts kept when the model gained a licence while it ran", async () => {
     const mem = memoryStore([model(1)], { [model(1)]: [file("a")] });
     mem.taken.add(model(1));

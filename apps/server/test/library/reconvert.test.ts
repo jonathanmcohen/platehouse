@@ -113,6 +113,32 @@ describe("decide, for a description with no record of where it came from", () =>
     expect(decision).toEqual({ kind: "changed", fileId: FILE_A, description: `${NOW}\n\n${NOTE}` });
   });
 
+  test("never adds the footer of a licence MakerWorld names that is not recognised", async () => {
+    const unknown = "License on MakerWorld: Some New Licence";
+    const { readText } = reader({ [FILE_A]: { html: HTML, note: unknown } });
+    expect(await decide(stored({ description: BY_RC }), [file(FILE_A)], readText)).toEqual({
+      kind: "changed",
+      fileId: FILE_A,
+      description: NOW,
+    });
+  });
+
+  test("never adds that footer to a description with a recorded hash either", async () => {
+    const unknown = "License on MakerWorld: Some New Licence";
+    const { readText } = reader({ [FILE_A]: { html: HTML, note: unknown } });
+    const decision = await decide(
+      stored({
+        description: BY_RC,
+        sha256: descriptionSha256(BY_RC),
+        converter: 1,
+        fileId: FILE_A,
+      }),
+      [file(FILE_A)],
+      readText,
+    );
+    expect(decision).toEqual({ kind: "changed", fileId: FILE_A, description: NOW });
+  });
+
   test("leaves alone a description no converter wrote from any of its files", async () => {
     const { readText } = reader({ [FILE_A]: { html: HTML, note: null } });
     const decision = await decide(

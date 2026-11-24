@@ -93,13 +93,10 @@ export function isPrivateHost(hostname: string): boolean {
     if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0) {
       if ((g4 === 0 && (g5 === 0xffff || g5 === 0)) || (g4 === 0xffff && g5 === 0)) return low;
     }
-    // 64:ff9b::/96 and 64:ff9b:1::/48 (NAT64) carry it in the last 32 bits.
-    if (
-      g0 === 0x64 &&
-      g1 === 0xff9b &&
-      (g2 === 1 || (g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0))
-    )
-      return low;
+    // 64:ff9b:1::/48 is local-use NAT64: refused whole, whatever it carries.
+    if (g0 === 0x64 && g1 === 0xff9b && g2 === 1) return true;
+    // 64:ff9b::/96 (NAT64) carries its IPv4 in the last 32 bits.
+    if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) return low;
     return false;
   }
   if (host.split(".").some((label) => label === "")) return true;

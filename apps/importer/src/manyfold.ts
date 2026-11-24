@@ -28,9 +28,9 @@
 //   never logged), or to anything that is not https, its own host included
 //   (refused, not upgraded). A redirect to another host is also refused when
 //   that host is a private, loopback or link-local address (IPv4-mapped IPv6
-//   included) or a name with no dot or ending .localhost; names are not
-//   looked up for this (private-host.ts), unless the host was named with
-//   --allow-redirect-host. At most 3 redirects. Every redirect's query,
+//   included) or a name with no dot or ending .localhost, .local,
+//   .home.arpa, .internal or .localdomain; names are not looked up for this
+//   (private-host.ts), unless the host was named with --allow-redirect-host. At most 3 redirects. Every redirect's query,
 //   one back to Manyfold's own host included, goes to the sensitive callback
 //   before the redirect is followed or refused, and each sensitive value of
 //   such a query (a signature, a credential, a session token) is handed to
@@ -437,7 +437,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
   }
 
   /** The token request and its checks, shared by start-up and renewal. */
-  async function requestToken(): Promise<{ value: string; expiresIn: unknown }> {
+  async function requestToken(renewal = false): Promise<{ value: string; expiresIn: unknown }> {
     const url = new URL("/oauth/token", origin);
     const basic = Buffer.from(`${options.clientId}:${options.clientKey}`).toString("base64");
     sensitive(basic);
@@ -472,7 +472,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     sensitive(value);
     const scope = isObject(body) ? body.scope : undefined;
     if (typeof scope !== "string") {
-      throw new ManyfoldError(
+      throw new ScopeError(
         "the token answer names no scope, so it cannot be shown to be read only",
       );
     }
@@ -481,7 +481,9 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
       // Quoted only when it is plain scope words, so nothing else Manyfold
       // put in the field is printed.
       const what = /^[a-z_: ]{0,60}$/.test(scope) ? `scope "${scope}",` : "a scope that is";
-      throw new ScopeError(`Manyfold granted ${what} not read only; nothing was read`);
+      // Nothing was read yet at start-up; a renewal comes mid-run.
+      const then = renewal ? "the import stops here" : "nothing was read";
+      throw new ScopeError(`Manyfold granted ${what} not read only; ${then}`);
     }
     return { value, expiresIn: isObject(body) ? body.expires_in : undefined };
   }
@@ -533,7 +535,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     if (renewing !== null) return renewing;
     const attempt = (async () => {
       try {
-        keep(await requestToken());
+        keep(await requestToken(true));
         renewalsFailed = 0;
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
@@ -722,8 +724,8 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
           !allowedRedirectHosts.has(next.hostname.toLowerCase().replace(/\.+$/, ""))
         ) {
           throw new ManyfoldError(
-            `GET ${downloadPath(url)}: refusing a redirect to a private address, to ${next.host} ` +
-              `(allow it with --allow-redirect-host ${next.hostname})`,
+            `GET ${downloadPath(url)}: refusing a redirect to a private address, to ${next.host}; ` +
+              "if this is your object store, allow it with --allow-redirect-host",
           );
         }
         if (next.protocol !== "https:") {

@@ -449,10 +449,10 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     const trash = createTrash({ db, store });
     const orphans = createOrphanSweep({ db, store });
     const onIngested = (result: IngestResult) => estimates.enqueueFile(result.fileId);
-    // The description re-conversion on upgrade (#357): sent to the
-    // upgrade queue by startQueues while it has not finished, and run a
-    // slice per job (queues.ts RECONVERT_SLICE_SECONDS).
-    // and the licence fill (#445) after it, as one chain of steps.
+    // The upgrade steps: the description re-conversion (#357) and the licence
+    // fill (#445) after it, as one chain, sent to the upgrade queue by
+    // startQueues while it has not finished and run a slice per job
+    // (queues.ts RECONVERT_SLICE_SECONDS).
     const descriptions = descriptionsRepo(db);
     const upgradeSteps = chainUpgradeSteps([
       createDescriptionReconvert({ store: descriptions, readText: storeTextReader(store) }),

@@ -228,7 +228,9 @@ describe("the Manyfold token", () => {
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(1);
     expect(r.stdout.join("\n")).toContain("the Manyfold token could not be renewed:");
-    expect(r.stdout.join("\n")).toContain('scope "read write", not read only');
+    expect(r.stdout.join("\n")).toContain(
+      'scope "read write", not read only; the import stops here',
+    );
     expect(r.stdout.join("\n")).toMatch(/stopped: .*; 2 models not attempted/);
     expect(r.stdout.join("\n")).toContain("apply done: found 3");
     expect(r.stderr.join("\n")).not.toContain("unexpected error");
@@ -237,6 +239,30 @@ describe("the Manyfold token", () => {
     const lastToken = seen.findLastIndex((x) => x.url.endsWith("/oauth/token"));
     expect(seen.slice(lastToken + 1).filter((x) => x.url.startsWith(MANYFOLD))).toEqual([]);
     expect(s.manyfold.tokenRequests).toHaveLength(2);
+  });
+
+  it("a renewal that names no scope stops the run at once", async () => {
+    const s = setup(library(), {
+      manyfold: { token: { expireAfterRequests: 8 } },
+      now: jumped(120_000),
+    });
+    let asked = 0;
+    server.use(
+      http.post(`${MANYFOLD}/oauth/token`, () => {
+        asked++;
+        return HttpResponse.json({
+          access_token: s.manyfold.accessToken,
+          expires_in: 7200,
+          ...(asked === 1 ? { scope: "read" } : {}),
+        });
+      }),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expect(r.stdout.join("\n")).toContain("the Manyfold token could not be renewed:");
+    expect(r.stdout.join("\n")).toContain("names no scope");
+    expect(r.stdout.join("\n")).toMatch(/stopped: .*; 2 models not attempted/);
+    expect(asked).toBe(2);
   });
 
   it("two failed renewals in a row stop the run", async () => {
@@ -286,10 +312,13 @@ describe("the Manyfold token", () => {
   });
 
   it("is not renewed early when expires_in is under a minute", async () => {
-    const s = setup(library(), { manyfold: { token: { expiresIn: 1 } } });
+    const s = setup(library(), {
+      manyfold: { token: { expiresIn: 59 } },
+      now: jumped(55_000),
+    });
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(0);
-    expect(s.manyfold.tokenRequests.length).toBeLessThanOrEqual(2);
+    expect(s.manyfold.tokenRequests).toHaveLength(1);
   });
 
   it.each([
@@ -591,7 +620,11 @@ describe("file downloads", () => {
       server.use(lan("https://192.168.1.99/x"));
       const r = await s.run(["--apply", "--allow-redirect-host", "192.168.1.20"]);
       const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
-      expect(m3?.files[0]?.reason).toContain("(allow it with --allow-redirect-host 192.168.1.99)");
+      expect(m3?.files[0]?.reason).toContain(
+        "refusing a redirect to a private address, to 192.168.1.99; " +
+          "if this is your object store, allow it with --allow-redirect-host",
+      );
+      expect(m3?.files[0]?.reason).not.toContain("--allow-redirect-host 192.168.1.99");
       expect(seen.some((x) => x.url.includes("192.168.1.99"))).toBe(false);
     });
 
