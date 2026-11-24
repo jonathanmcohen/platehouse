@@ -1,4 +1,4 @@
-// Orca return codes -> contract reasons (Slicer HTTP contract v1's reason
+// Orca return codes -> contract reasons (Slicer HTTP contract 2's reason
 // map, as amended). The codes and messages are OrcaSlicer v2.5.0's own:
 // src/libslic3r/Utils.hpp and src/OrcaSlicer.cpp cli_errors, read for the
 // slicing gate (tools/slicing-gate/lib/classify.mjs) at commit 40ecc66.

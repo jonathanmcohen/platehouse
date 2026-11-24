@@ -657,6 +657,11 @@ export function leftoverProcesses(procDir: string, selfPid: number): number[] {
  * first. To keep the gap between looking at a process and signalling it
  * short, each one is read again just before its signal, and is signalled
  * only if it is still there, still live and still outside the spared set.
+ *
+ * When the last pass still finds processes it has not signalled before, the
+ * clean-up has not finished, and onOutrun runs: by default it logs one line
+ * and exits the server with code 1, so tini exits and the container's
+ * restart policy starts a fresh container.
  */
 export function reapLeftovers(
   opts: {
@@ -664,18 +669,22 @@ export function reapLeftovers(
     selfPid?: number;
     kill?: (pid: number, signal: NodeJS.Signals) => void;
     maxPasses?: number;
+    onOutrun?: () => void;
   } = {},
 ): number[] {
   const procDir = opts.procDir ?? "/proc";
   const kill = opts.kill ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal));
   const maxPasses = opts.maxPasses ?? 20;
   const selfPid = opts.selfPid ?? process.pid;
+  const onOutrun = opts.onOutrun ?? exitAfterUnfinishedReap;
   const tried = new Set<number>();
   const killed: number[] = [];
+  let outrun = false;
   for (let pass = 0; pass < maxPasses; pass++) {
     const { found, spared } = scan(procDir, selfPid);
     const fresh = found.filter((pid) => !tried.has(pid));
     if (fresh.length === 0) break;
+    if (pass === maxPasses - 1) outrun = true;
     for (const pid of fresh) {
       tried.add(pid);
       const now = readStat(procDir, pid);
@@ -688,7 +697,20 @@ export function reapLeftovers(
       }
     }
   }
+  if (outrun) onOutrun();
   return killed;
+}
+
+/**
+ * reapLeftovers' default onOutrun: one plain line, then exit 1. The server
+ * runs under tini as PID 1 wherever it reaps, so the container stops and its
+ * restart policy brings up a fresh one.
+ */
+function exitAfterUnfinishedReap(): never {
+  process.stdout.write(
+    `${new Date().toISOString()} processes left behind by a job were still appearing after the last clean-up pass; exiting so the container restarts\n`,
+  );
+  process.exit(1);
 }
 
 /**

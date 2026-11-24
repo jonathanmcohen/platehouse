@@ -73,8 +73,8 @@
 // naming the printer; a printer and type with neither is not listed, and a
 // slice keeps the file's own filament there. A slice reports the preset used
 // for each project slot in filamentProfiles (null where the file's own was
-// kept). The filament entries carry only the fields contract v1
-// names: where a preset came from is not part of contract v1.
+// kept). The filament entries carry only the fields contract 2
+// names: where a preset came from is not part of contract 2.
 import { z } from "zod";
 
 export const CONTRACT_VERSION = 2;

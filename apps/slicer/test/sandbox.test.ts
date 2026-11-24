@@ -128,9 +128,9 @@ describe("runGroup and a detached helper that keeps the pipes", () => {
 
 // Issue #153 item 3: a program that calls setsid() leaves its job's process
 // group, so the kill at the time cap misses it, and it is re-parented to
-// tini (PID 1). After each job the server kills every process except PID 1,
-// itself and whatever docker exec started (the health check included, and
-// anything that command's processes start): those have parent 0.
+// tini (PID 1). After each job the server kills the processes left behind,
+// sparing PID 1, itself and whatever docker exec started (the health check
+// included, and anything that command's processes start): those have parent 0.
 describe("processes left behind by a job", () => {
   /** A fake /proc holding one stat file per [pid, comm, ppid]. */
   function proc(
@@ -166,7 +166,7 @@ describe("processes left behind by a job", () => {
     [60, "orca-slicer", 7], // a job's own program, still the server's child
   ];
 
-  test("lists every process except PID 1, the server and the subtree of a docker exec process", () => {
+  test("lists the processes left behind, sparing PID 1, the server and the subtree of a docker exec process", () => {
     expect(leftoverProcesses(proc(TREE), 7)).toEqual([42, 43, 44, 60]);
   });
 
@@ -268,15 +268,57 @@ describe("processes left behind by a job", () => {
   test("reapLeftovers stops after maxPasses", () => {
     const calls: number[] = [];
     const dir = proc(SMALL);
-    reapLeftovers({ procDir: dir, selfPid: 7, kill: spawning(dir, calls), maxPasses: 3 });
+    reapLeftovers({
+      procDir: dir,
+      selfPid: 7,
+      kill: spawning(dir, calls),
+      maxPasses: 3,
+      onOutrun: () => {},
+    });
     expect(calls).toHaveLength(3);
   });
 
   test("reapLeftovers defaults to 20 passes", () => {
     const calls: number[] = [];
     const dir = proc(SMALL);
-    reapLeftovers({ procDir: dir, selfPid: 7, kill: spawning(dir, calls) });
+    reapLeftovers({ procDir: dir, selfPid: 7, kill: spawning(dir, calls), onOutrun: () => {} });
     expect(calls).toHaveLength(20);
+  });
+
+  // When the last pass still finds processes it has not signalled, the
+  // clean-up did not finish: onOutrun runs (by default it logs one line and
+  // exits the server, so the container restarts).
+  test("reapLeftovers calls onOutrun once when its last pass still finds new processes", () => {
+    const calls: number[] = [];
+    const dir = proc(SMALL);
+    let outruns = 0;
+    reapLeftovers({
+      procDir: dir,
+      selfPid: 7,
+      kill: spawning(dir, calls),
+      maxPasses: 3,
+      onOutrun: () => {
+        outruns += 1;
+      },
+    });
+    expect(outruns).toBe(1);
+  });
+
+  test("reapLeftovers that ends with nothing new found does not call onOutrun", () => {
+    const dir = proc(TREE);
+    const killed: number[] = [];
+    let outruns = 0;
+    reapLeftovers({
+      procDir: dir,
+      selfPid: 7,
+      kill: killing(dir, killed),
+      maxPasses: 2,
+      onOutrun: () => {
+        outruns += 1;
+      },
+    });
+    expect(killed).toEqual([42, 43, 44, 60]);
+    expect(outruns).toBe(0);
   });
 
   test("reapLeftovers looks again only while a pass finds a process it has not signalled", () => {

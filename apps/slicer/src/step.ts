@@ -8,7 +8,7 @@
 // on an untrusted file cannot take the server down, and the server can kill
 // it at STEP_TIMEOUT_SECONDS. It runs under prlimit and landrun with the
 // STEP worker's own rules (sandbox.ts): it may read the app and write only
-// its job folder, with no network. It exits 0 with the GLB written, or 1
+// its job folder, with no TCP. It exits 0 with the GLB written, or 1
 // with the reason on stderr.
 import { lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";

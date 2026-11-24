@@ -136,15 +136,17 @@ export interface SlicerConfig {
   /** The start-up check's retry delays; tests shorten them. Default SANDBOX_RETRY. */
   sandboxRetry?: SandboxRetry;
   /**
-   * Kill every leftover process once a job is released
-   * (reapLeftovers in sandbox.ts, issue #153). loadConfig turns it on only
-   * where the server runs under tini as in the image (runsUnderTini), never
-   * on a host where PID 1 has children of its own.
+   * Kill the processes left behind once a job is released, and on a health
+   * check while no job holds the lock (reapLeftovers in sandbox.ts, issue
+   * #153). loadConfig turns it on only where the server runs under tini as
+   * in the image (runsUnderTini), never on a host where PID 1 has children
+   * of its own.
    */
   reapOrphans?: boolean;
   /**
-   * What release() runs to clean up leftover processes; tests pass a spy.
-   * Default: reapLeftovers when reapOrphans is on, nothing otherwise.
+   * What release() and an idle health check run to clean up processes left
+   * behind; tests pass a spy. Default: reapLeftovers when reapOrphans is on,
+   * nothing otherwise.
    */
   reap?: () => number[];
 }
@@ -631,6 +633,21 @@ export function createSlicer(config: SlicerConfig): Slicer {
     return dir;
   };
 
+  const reap = config.reap ?? (config.reapOrphans ? () => reapLeftovers() : null);
+
+  /**
+   * Kills the processes left behind (reap), when the clean-up is on, and
+   * logs what it killed. Only ever run by the job holding the lock, as it
+   * releases it, or while no job holds it.
+   */
+  const reapLeftBehind = (by: string): void => {
+    if (!reap) return;
+    const reaped = reap();
+    if (reaped.length > 0) {
+      log(`killed ${reaped.length} process(es) left behind by ${by}: ${reaped.join(", ")}`);
+    }
+  };
+
   /**
    * Takes the heavy-job lock and makes the job's folder, or returns null when
    * another job holds the lock. If the folder cannot be made (a full tmpfs,
@@ -656,15 +673,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
           // A program that called setsid() left the group killNow kills and
           // was re-parented to tini; nothing of the job may outlive it, or a
           // sleeping process holds /work files open until a restart.
-          const reap = config.reap ?? (config.reapOrphans ? reapLeftovers : null);
-          if (reap) {
-            const reaped = reap();
-            if (reaped.length > 0) {
-              log(
-                `killed ${reaped.length} process(es) left behind by the job: ${reaped.join(", ")}`,
-              );
-            }
-          }
+          reapLeftBehind("the job");
           if (dir) removeJobDir(dir);
           if (holder === job) sweepJobDirs(dir);
         } finally {
@@ -975,6 +984,10 @@ export function createSlicer(config: SlicerConfig): Slicer {
     const route = `${req.method} ${url.pathname}`;
     switch (route) {
       case "GET /v1/health": {
+        // With no job holding the lock, nothing running belongs to a job, so
+        // a process left behind is cleaned up now rather than at the next
+        // job's release.
+        if (!holder) reapLeftBehind("an earlier job");
         // A full /work fails every upload with ENOSPC, so health fails too.
         // The contract lets any route answer 500 with a plain-text body,
         // and the health schema itself is unchanged.
@@ -1043,13 +1056,13 @@ export function createSlicer(config: SlicerConfig): Slicer {
           "render",
           "an STL picture",
           async (job) => {
+            if (res.destroyed) return;
             // No triangles would render as a blank picture (stlProblem).
             const problem = stlProblem(job.dir);
             if (problem !== null) {
               return send(res, 422, { error: "render_failed", message: problem });
             }
             writeStlImport(job.dir);
-            if (res.destroyed) return;
             const r = await renderScad(config, job.dir, "png", job.track);
             if (r.ok) return sendBytes(res, "image/png", r.bytes);
             return send(res, 422, { error: "render_failed", message: r.message });
@@ -1108,6 +1121,17 @@ export function createSlicer(config: SlicerConfig): Slicer {
   };
 }
 
+/**
+ * The start-up line saying the clean-up of processes left behind is off, or
+ * null when it is on. It is on only when the server's parent is tini as PID
+ * 1, the image's own entrypoint; an init added in front of it (Compose's
+ * init: true, docker run --init) turns it off.
+ */
+export function reapOffNotice(config: Pick<SlicerConfig, "reapOrphans">): string | null {
+  if (config.reapOrphans) return null;
+  return "the clean-up of processes left behind by a job is off: the server is not running under tini as PID 1, the image's own entrypoint";
+}
+
 function log(line: string): void {
   process.stdout.write(`${new Date().toISOString()} ${line}\n`);
 }
@@ -1140,6 +1164,8 @@ if (isMain()) {
       log(
         `slicer contract ${CONTRACT_VERSION} listening on ${config.port}: orca ${config.orcaVersion}, openscad ${config.openscadVersion}, --mstpp ${config.slicePlateSeconds} s, kill at ${config.sliceTimeoutSeconds} s`,
       );
+      const notice = reapOffNotice(config);
+      if (notice) log(notice);
     });
     const stop = () => {
       slicer.close().then(() => process.exit(0));

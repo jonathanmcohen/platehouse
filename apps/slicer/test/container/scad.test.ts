@@ -201,7 +201,7 @@ describe("OpenSCAD in the image", () => {
 
   // Issue #153 item 3: a process that calls setsid() leaves its job's process
   // group, so the kill at the time cap misses it, and it is re-parented to
-  // tini. The server kills every such process when a job is released. A
+  // tini. The server kills such processes left behind when a job is released. A
   // setsid'd sleep started through docker exec stands for one: once its
   // shell exits, its parent is PID 1, as an escaped OpenSCAD child's would
   // be. A process docker exec starts directly has parent 0 and is not hit.

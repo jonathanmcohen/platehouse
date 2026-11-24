@@ -1,5 +1,5 @@
 # Platehouse slicer image: OrcaSlicer 2.5.0, OpenSCAD
-# 2026.11-RC0, landrun and occt-import-js behind Slicer HTTP contract v1.
+# 2026.11-RC0, landrun and occt-import-js behind Slicer HTTP contract 2.
 # amd64 only. The release workflow (.github/workflows/slicer-image.yml) builds
 # and publishes it; this file only defines it.
 #

@@ -1,4 +1,4 @@
-// The slicer server against stub programs: contract v1
+// The slicer server against stub programs: contract 2
 // over HTTP, one heavy job (slice, render or STEP conversion) at a time with
 // 409 busy for the rest, the kill at SLICE_TIMEOUT_SECONDS, the body limits,
 // the request timeouts and the Orca arguments of the slicing gate's recipe.
@@ -24,6 +24,7 @@ import { MAX_RENDER_OUTPUT_BYTES } from "../src/scad.js";
 import {
   createSlicer,
   loadConfig,
+  reapOffNotice,
   retryDelayMs,
   SANDBOX_RETRY,
   type Slicer,
@@ -263,6 +264,66 @@ describe("configuration", () => {
     expect(() => loadConfig({ ORCA_VERSION: "2.5.0" }, "/opt/node/bin/node")).toThrow(
       /OPENSCAD_VERSION/,
     );
+  });
+});
+
+// The clean-up of processes left behind runs only where the server's parent
+// is tini as PID 1 (the image's own entrypoint); anywhere else it is off,
+// and the server says so once at start-up.
+describe("the clean-up of processes left behind", () => {
+  test("its start-up notice says it is off when the server does not run under tini", () => {
+    expect(reapOffNotice({ reapOrphans: false })).toMatch(/processes left behind.*off.*tini/i);
+    expect(reapOffNotice({})).toMatch(/off/);
+  });
+
+  test("there is no start-up notice when it is on", () => {
+    expect(reapOffNotice({ reapOrphans: true })).toBeNull();
+  });
+
+  test("a health check while no job holds the lock runs it", async () => {
+    let reaps = 0;
+    const base = await start(
+      setup({
+        reap: () => {
+          reaps += 1;
+          return [];
+        },
+      }).config,
+    );
+    const before = reaps;
+    const res = await fetch(`${base}/v1/health`);
+    expect(res.status).toBe(200);
+    expect(reaps).toBe(before + 1);
+  });
+
+  test("a health check while a job holds the lock does not run it", async () => {
+    let reaps = 0;
+    const s = setup(
+      {
+        sliceTimeoutSeconds: 3,
+        reap: () => {
+          reaps += 1;
+          return [];
+        },
+      },
+      { kind: "sleep" },
+    );
+    const base = await start(s.config);
+    const first = postSlice(base, sliceable());
+    await waitFor(() => {
+      try {
+        return readFileSync(s.fake.pids, "utf8").length > 0;
+      } catch {
+        return false;
+      }
+    });
+    const before = reaps;
+    const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+    expect(health.busy).toBe(true);
+    expect(reaps).toBe(before);
+    // The job's own release runs it once.
+    expect((await first).status).toBe(200);
+    await waitFor(() => reaps === before + 1);
   });
 });
 
