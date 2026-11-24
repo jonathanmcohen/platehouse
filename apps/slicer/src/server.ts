@@ -54,7 +54,7 @@ import { z } from "zod";
 import { closeLingering, guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
 import { orcaArgs, SCRATCH_DIRS, scratchEnv, sliceOutcome } from "./orca.js";
 import { loadProfiles } from "./profiles.js";
-import { reapOrphans, runGroup, runsUnderTini } from "./sandbox.js";
+import { reapLeftovers, runGroup, runsUnderTini } from "./sandbox.js";
 import {
   renderScad,
   type SandboxCheck,
@@ -97,8 +97,8 @@ export interface SlicerConfig {
   workMinFreeBytes: number;
   limits: Limits;
   /**
-   * Kill every process re-parented to PID 1 once a job is released
-   * (reapOrphans in sandbox.ts, issue #153). loadConfig turns it on only
+   * Kill every leftover process once a job is released
+   * (reapLeftovers in sandbox.ts, issue #153). loadConfig turns it on only
    * where the server runs under tini as in the image (runsUnderTini), never
    * on a host where PID 1 has children of its own.
    */
@@ -461,7 +461,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
           // was re-parented to tini; nothing of the job may outlive it, or a
           // sleeping process holds /work files open until a restart.
           if (config.reapOrphans) {
-            const reaped = reapOrphans();
+            const reaped = reapLeftovers();
             if (reaped.length > 0) {
               log(
                 `killed ${reaped.length} process(es) left behind by the job: ${reaped.join(", ")}`,
@@ -485,6 +485,19 @@ export function createSlicer(config: SlicerConfig): Slicer {
     }
     job.dir = dir;
     return job;
+  };
+
+  /**
+   * Stops the job when its client goes away: if the response is destroyed
+   * before it finished, the job is released at once, which kills its program
+   * and deletes its folder, instead of running on to its time cap while every
+   * later request answers 409 busy. After a normal finish this does nothing,
+   * and a release that already ran is not repeated (see takeJob).
+   */
+  const releaseWhenClientGoes = (res: ServerResponse, job: Job): void => {
+    res.on("close", () => {
+      if (!res.writableFinished) job.release();
+    });
   };
 
   // The sandbox self-test runs before the first render, and every render
@@ -554,6 +567,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
         if (err instanceof TooLarge) return refuseEarly(res, 413, { error: "too_large" });
         throw err;
       }
+      releaseWhenClientGoes(res, job);
       const head = Buffer.alloc(4);
       const fd = await open(input, "r");
       try {
@@ -564,6 +578,9 @@ export function createSlicer(config: SlicerConfig): Slicer {
       if (!ZIP_MAGIC.some((m) => head.equals(m))) return sendError(res, 422, { error: "not_3mf" });
       const project = await readProject(input);
       if (!project) return sendError(res, 422, { error: "not_3mf" });
+      // The client may have gone while the project was read; its job is
+      // already released, so there is nothing to run and nobody to answer.
+      if (res.destroyed) return;
 
       const slots = [...project.projectFilaments].sort((a, b) => a.slot - b.slot);
       const picks = slots.map((f) => profiles.filamentFor(printer, f.type));
@@ -630,6 +647,8 @@ export function createSlicer(config: SlicerConfig): Slicer {
         if (err instanceof TooLarge) return refuseEarly(res, 413, { error: "too_large" });
         throw err;
       }
+      releaseWhenClientGoes(res, job);
+      if (res.destroyed) return;
       await work(job);
     } finally {
       job.release();
@@ -682,6 +701,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
               message: `OpenSCAD renders are off: the sandbox self-test failed (${check.detail}).`,
             });
           }
+          if (res.destroyed) return;
           const r = await renderScad(config, job.dir, kind, job.track);
           if (r.ok) return sendBytes(res, kind === "png" ? "image/png" : "model/stl", r.bytes);
           return send(res, 422, { error: "render_failed", message: r.message });
@@ -704,6 +724,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
             });
           }
           writeStlImport(job.dir);
+          if (res.destroyed) return;
           const r = await renderScad(config, job.dir, "png", job.track);
           if (r.ok) return sendBytes(res, "image/png", r.bytes);
           return send(res, 422, { error: "render_failed", message: r.message });

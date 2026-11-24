@@ -289,7 +289,9 @@ exec "$@"
 /**
  * A fake STEP worker module: node worker.mjs <in> <out>. "echo" copies the
  * input to the output; "slow" appends "start" and "end" lines to `log`
- * around a wait of `ms`, so a test can see whether two conversions overlap.
+ * around a wait of `ms`, so a test can see whether two conversions overlap;
+ * "sleep" writes its pid to `pidFile` and waits for a kill; "big" writes
+ * `bytes` bytes of output.
  */
 export function fakeStepWorker(
   dir: string,
@@ -297,7 +299,9 @@ export function fakeStepWorker(
     | { kind: "ok"; content: string }
     | { kind: "fail"; stderr: string }
     | { kind: "echo" }
-    | { kind: "slow"; log: string; ms: number },
+    | { kind: "slow"; log: string; ms: number }
+    | { kind: "sleep"; pidFile: string }
+    | { kind: "big"; bytes: number },
 ): string {
   const file = join(dir, "step-worker.mjs");
   let body: string;
@@ -315,6 +319,17 @@ process.exit(1);
     case "echo":
       body = `import { copyFileSync } from "node:fs";
 copyFileSync(process.argv[2], process.argv[3]);
+`;
+      break;
+    case "sleep":
+      body = `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(mode.pidFile)}, String(process.pid));
+await new Promise((r) => setTimeout(r, 60000));
+`;
+      break;
+    case "big":
+      body = `import { writeFileSync } from "node:fs";
+writeFileSync(process.argv[3], Buffer.alloc(${mode.bytes}, 120));
 `;
       break;
     case "slow":

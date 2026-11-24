@@ -4,7 +4,7 @@
 //   OpenSCAD tree does not run (exit 1);
 // - landrun's flags must end with "--", or it reads OpenSCAD's own -o as a
 //   landrun flag (run 3: "flag provided but not defined: -o").
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIMITS } from "@platehouse/slicer-contract";
@@ -12,12 +12,12 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   LANDRUN_STRICT_ABI,
   landrunArgs,
+  leftoverProcesses,
   MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
-  orphansOfInit,
   prlimitArgs,
   readLandlockAbi,
-  reapOrphans,
+  reapLeftovers,
   runGroup,
   runsUnderTini,
   scadArgs,
@@ -28,7 +28,7 @@ import { removeTempDirs, tempDir } from "./support/tmp.js";
 // helper that calls setsid() leaves the group the kills reach and can keep
 // the stdout and stderr pipes it inherited open; Node's 'close' then never
 // fires, and a job waiting on it would hold the heavy-job lock (and keep
-// /v1/health at busy) until the container restarts. reapOrphans, which kills
+// /v1/health at busy) until the container restarts. reapLeftovers, which kills
 // such a helper, runs only after runGroup returns (release()).
 describe("runGroup and a detached helper that keeps the pipes", () => {
   // A node program that starts a detached (setsid) helper sharing its stdout
@@ -125,10 +125,10 @@ describe("runGroup and a detached helper that keeps the pipes", () => {
 
 // Issue #153 item 3: a program that calls setsid() leaves its job's process
 // group, so the kill at the time cap misses it, and it is re-parented to
-// tini (PID 1). After each job the server kills every process whose parent
-// is PID 1 other than itself. A process docker exec starts, the health
-// check included, has parent 0 and is left alone.
-describe("orphans re-parented to PID 1", () => {
+// tini (PID 1). After each job the server kills every process except PID 1,
+// itself and whatever docker exec started (the health check included, and
+// anything that command's processes start): those have parent 0.
+describe("processes left behind by a job", () => {
   /** A fake /proc holding one stat file per [pid, comm, ppid]. */
   function proc(
     entries: Array<[number, string, number]>,
@@ -155,37 +155,128 @@ describe("orphans re-parented to PID 1", () => {
     [1, "tini", 0],
     [7, "node", 1], // the server
     [42, "sleep", 1], // escaped its job with setsid
-    [43, "orca-slicer", 7], // a job's own program, still the server's child
-    [50, "node", 0], // the health check, started by docker exec
-    [51, "a) S 1 (b", 7], // a name built to look like parent 1
+    [43, "sh", 42], // a child of the orphan
+    [44, "sleep", 43], // and its grandchild
+    [50, "docker-exec", 0], // started by docker exec
+    [51, "sh", 50], // its child
+    [52, "sleep", 51], // its grandchild
+    [60, "orca-slicer", 7], // a job's own program, still the server's child
   ];
 
-  test("lists every process whose parent is PID 1, except the server itself", () => {
-    expect(orphansOfInit(proc(TREE), 7)).toEqual([42]);
+  test("lists every process except PID 1, the server and the subtree of a docker exec process", () => {
+    expect(leftoverProcesses(proc(TREE), 7)).toEqual([42, 43, 44, 60]);
+  });
+
+  test("an orphan with a child and a grandchild is listed whole, and exec's subtree is not", () => {
+    const dir = proc([
+      [1, "tini", 0],
+      [7, "node", 1],
+      [20, "docker-exec", 0],
+      [21, "sh", 20],
+      [30, "sh", 1],
+      [31, "sleep", 30],
+      [32, "sleep", 31],
+    ]);
+    expect(leftoverProcesses(dir, 7)).toEqual([30, 31, 32]);
   });
 
   test("reads the parent after the last ) of the name, so a crafted name cannot fake it", () => {
-    expect(orphansOfInit(proc(TREE), 7)).not.toContain(51);
+    // A name that reads as parent 0 must not hide the process, and one that
+    // reads as parent 1 must not change which tree it belongs to.
+    const dir = proc([
+      [1, "tini", 0],
+      [7, "node", 1],
+      [50, "docker-exec", 0],
+      [51, "a) S 0 (b", 7],
+      [52, "a) S 1 (b", 50],
+    ]);
+    expect(leftoverProcesses(dir, 7)).toEqual([51]);
   });
 
   test("skips a stat it cannot read or parse, and names that are not process ids", () => {
-    const dir = proc(TREE, { "60": "garbage", self: "7 (node) S 1 7 7\n" });
-    expect(orphansOfInit(dir, 7)).toEqual([42]);
+    const dir = proc(TREE, { "70": "garbage", self: "7 (node) S 1 7 7\n" });
+    expect(leftoverProcesses(dir, 7)).toEqual([42, 43, 44, 60]);
   });
 
-  test("reapOrphans sends SIGKILL to each and returns their ids; a kill that fails is skipped", () => {
-    const dir = proc([...TREE, [44, "sleep", 1]]);
-    const killed: Array<[number, string]> = [];
-    const out = reapOrphans({
+  test("a missing /proc lists nothing", () => {
+    expect(leftoverProcesses(join(tmpdir(), "slicer-no-such-proc"), 7)).toEqual([]);
+  });
+
+  /** A kill for reapLeftovers that removes the process, as a real SIGKILL does. */
+  function killing(dir: string, log: number[], then: (pid: number) => void = () => {}) {
+    return (pid: number, signal: NodeJS.Signals) => {
+      expect(signal).toBe("SIGKILL");
+      log.push(pid);
+      rmSync(join(dir, String(pid)), { recursive: true });
+      then(pid);
+    };
+  }
+
+  test("reapLeftovers signals each with SIGKILL and returns their ids; a kill that fails is skipped", () => {
+    const dir = proc(TREE);
+    const killed: number[] = [];
+    const out = reapLeftovers({
       procDir: dir,
       selfPid: 7,
       kill: (pid, signal) => {
         if (pid === 44) throw Object.assign(new Error("gone"), { code: "ESRCH" });
-        killed.push([pid, signal]);
+        killing(dir, killed)(pid, signal);
+      },
+      maxPasses: 2,
+    });
+    expect(killed).toEqual([42, 43, 60]);
+    expect(out).toEqual([42, 43, 60]);
+  });
+
+  test("reapLeftovers passes again while a pass finds something: one a kill spawns is caught", () => {
+    const dir = proc(TREE);
+    const killed: number[] = [];
+    const out = reapLeftovers({
+      procDir: dir,
+      selfPid: 7,
+      kill: killing(dir, killed, (pid) => {
+        // killing 42 lets a watcher start a replacement orphan
+        if (pid === 42) {
+          mkdirSync(join(dir, "99"));
+          writeFileSync(join(dir, "99", "stat"), "99 (respawn) S 1 99 99 0 -1 4194560 0\n");
+        }
+      }),
+    });
+    expect(killed).toEqual([42, 43, 44, 60, 99]);
+    expect(out).toEqual([42, 43, 44, 60, 99]);
+    expect(leftoverProcesses(dir, 7)).toEqual([]);
+  });
+
+  test("reapLeftovers stops at maxPasses when the kills never clear", () => {
+    const dir = proc(TREE);
+    let calls = 0;
+    const out = reapLeftovers({
+      procDir: dir,
+      selfPid: 7,
+      kill: () => {
+        calls += 1;
+      },
+      maxPasses: 3,
+    });
+    expect(calls).toBe(4 * 3);
+    expect(out).toEqual([42, 43, 44, 60]);
+  });
+
+  test("reapLeftovers defaults to 20 passes", () => {
+    const dir = proc([
+      [1, "tini", 0],
+      [7, "node", 1],
+      [42, "sleep", 1],
+    ]);
+    let calls = 0;
+    reapLeftovers({
+      procDir: dir,
+      selfPid: 7,
+      kill: () => {
+        calls += 1;
       },
     });
-    expect(killed).toEqual([[42, "SIGKILL"]]);
-    expect(out).toEqual([42]);
+    expect(calls).toBe(20);
   });
 
   test("runsUnderTini holds only on Linux, with the server's parent PID 1 named tini", () => {

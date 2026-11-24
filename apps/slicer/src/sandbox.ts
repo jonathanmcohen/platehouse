@@ -270,7 +270,7 @@ export const PIPE_GRACE_MS = 2_000;
  * runGroup waits at most pipeGraceMs (PIPE_GRACE_MS by default) for the
  * pipes, then destroys them and returns with the output read so far. Without
  * that, the job would never finish and would hold the heavy-job lock until
- * the container restarted; the helper itself is killed by reapOrphans when
+ * the container restarted; the helper itself is killed by reapLeftovers when
  * the job is released (issue #153 item 3).
  */
 export function runGroup(
@@ -348,28 +348,28 @@ export function runGroup(
 }
 
 /**
- * The processes whose parent is PID 1, other than selfPid, read from each
+ * Every process a finished job may have left running: all of them except PID
+ * 1, selfPid and the subtree of any process whose parent is 0, read from each
  * procDir/<pid>/stat. A program that calls setsid() leaves its job's process
- * group, so the kill at the time cap misses it, and once its parent is gone
- * it is re-parented to PID 1, tini in the image (issue #153). The server is
- * tini's own child, so it is left out; a process docker exec starts (the
- * health check among them) has parent 0, so it is not listed. The parent is
- * read after the last ")" of the stat line, since the name in the
- * parentheses may hold anything, ")" and digits included. A stat that is
- * gone or does not parse is skipped.
+ * group, so the kill at the time cap misses it; once its parent is gone it
+ * is re-parented to PID 1, tini in the image (issue #153), and its own
+ * children and grandchildren stay below it. Whatever a client's disconnect
+ * interrupts leaves the same mess. A process docker exec starts (the health
+ * check among them) has parent 0, and so does everything it starts in turn,
+ * so those subtrees are not listed. The parent is read after the last ")" of
+ * the stat line, since the name in the parentheses may hold anything, ")" and
+ * digits included. A stat that is gone or does not parse is skipped.
  */
-export function orphansOfInit(procDir: string, selfPid: number): number[] {
+export function leftoverProcesses(procDir: string, selfPid: number): number[] {
   let names: string[];
   try {
     names = readdirSync(procDir);
   } catch {
     return [];
   }
-  const out: number[] = [];
+  const parents = new Map<number, number>();
   for (const name of names) {
     if (!/^[1-9][0-9]*$/.test(name)) continue;
-    const pid = Number(name);
-    if (pid === selfPid || pid === 1) continue;
     let stat: string;
     try {
       stat = readFileSync(join(procDir, name, "stat"), "utf8");
@@ -379,40 +379,69 @@ export function orphansOfInit(procDir: string, selfPid: number): number[] {
     const close = stat.lastIndexOf(")");
     if (close === -1) continue;
     const ppid = stat.slice(close + 2).split(" ")[1];
-    if (ppid === "1") out.push(pid);
+    if (ppid === undefined || !/^[0-9]+$/.test(ppid)) continue;
+    parents.set(Number(name), Number(ppid));
+  }
+  // Grow the set of processes to leave alone from each docker exec root
+  // (parent 0, but not PID 1 itself, whose parent is 0 too) down through
+  // every child, until a pass adds none.
+  const spared = new Set<number>();
+  for (const [pid, ppid] of parents) {
+    if (ppid === 0 && pid !== 1 && pid !== selfPid) spared.add(pid);
+  }
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [pid, ppid] of parents) {
+      if (!spared.has(pid) && spared.has(ppid) && pid !== selfPid) {
+        spared.add(pid);
+        grew = true;
+      }
+    }
+  }
+  const out: number[] = [];
+  for (const pid of parents.keys()) {
+    if (pid !== 1 && pid !== selfPid && !spared.has(pid)) out.push(pid);
   }
   return out.sort((a, b) => a - b);
 }
 
 /**
- * Kills every process orphansOfInit lists with SIGKILL and returns the ids
- * it signalled. Run after each job, when nothing of that job may still be
- * running, so a setsid() child cannot outlive it holding /work files open
- * (issue #153 item 3). A kill that fails (already gone, or not this user's)
- * is skipped.
+ * Kills every process leftoverProcesses lists with SIGKILL, then looks again
+ * and repeats until a pass finds none, or maxPasses (20) passes have run:
+ * killing a parent can let a child be re-parented, and a watcher can start a
+ * replacement, so one pass is not enough. Returns the ids it signalled, each
+ * once. Run after each job, when nothing of that job may still be running,
+ * so a setsid() child cannot outlive it holding /work files open (issue #153
+ * item 3). A kill that fails (already gone, or not this user's) is skipped.
  */
-export function reapOrphans(
+export function reapLeftovers(
   opts: {
     procDir?: string;
     selfPid?: number;
     kill?: (pid: number, signal: NodeJS.Signals) => void;
+    maxPasses?: number;
   } = {},
 ): number[] {
   const kill = opts.kill ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal));
-  const killed: number[] = [];
-  for (const pid of orphansOfInit(opts.procDir ?? "/proc", opts.selfPid ?? process.pid)) {
-    try {
-      kill(pid, "SIGKILL");
-      killed.push(pid);
-    } catch {
-      // already gone, or not ours to signal
+  const maxPasses = opts.maxPasses ?? 20;
+  const killed = new Set<number>();
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const found = leftoverProcesses(opts.procDir ?? "/proc", opts.selfPid ?? process.pid);
+    if (found.length === 0) break;
+    for (const pid of found) {
+      try {
+        kill(pid, "SIGKILL");
+        killed.add(pid);
+      } catch {
+        // already gone, or not ours to signal
+      }
     }
   }
-  return killed;
+  return [...killed];
 }
 
 /**
- * True only where reapOrphans is safe: on Linux, with the server's parent
+ * True only where reapLeftovers is safe: on Linux, with the server's parent
  * PID 1 and PID 1 named tini, as in the image (its ENTRYPOINT). Anywhere
  * else (a developer machine, a CI runner, a test) PID 1 has other children
  * that are not the slicer's to kill.

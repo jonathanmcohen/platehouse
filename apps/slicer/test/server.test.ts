@@ -11,7 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { request } from "node:http";
+import { type ClientRequest, type IncomingMessage, request } from "node:http";
 import { type AddressInfo, createServer } from "node:net";
 import { join } from "node:path";
 import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
@@ -1329,6 +1329,95 @@ describe("one heavy job at a time", () => {
     });
     expect(res.status).toBe(413);
     await first;
+  });
+});
+
+// A client that goes away takes its job with it: the program is killed, the
+// folder deleted and the lock freed, rather than the job running to its time
+// cap while every later request answers 409 busy.
+describe("a client that goes away", () => {
+  /** POSTs `body`, resolves with the request once the body is out. */
+  function send(url: string, body: Buffer | string): Promise<ClientRequest> {
+    return new Promise((resolve) => {
+      const req = request(url, { method: "POST" }, () => {});
+      req.on("error", () => {});
+      req.end(body, () => resolve(req));
+    });
+  }
+
+  test("the slice's program is killed and the next slice is not 409", async () => {
+    const s = setup({ sliceTimeoutSeconds: 2 }, { kind: "sleep" });
+    const base = await start(s.config);
+    const req = await send(sliceUrl(base, P1S, 1), sliceable());
+    await waitForFile(s.fake.pids);
+    const [shell, child] = readFileSync(s.fake.pids, "utf8").trim().split(" ").map(Number);
+    req.destroy();
+    await waitFor(() => !alive(shell as number) && !alive(child as number), 2000);
+    await waitFor(() => readdirSync(s.workDir).length === 0, 2000);
+    const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+    expect(health.busy).toBe(false);
+    const next = await postSlice(base, sliceable());
+    expect(next.status).not.toBe(409);
+  });
+
+  test("a STEP conversion's program is killed and the next conversion is not 409", async () => {
+    const stubs = stubDir();
+    const pidFile = join(stubs, "worker.pid");
+    const s = setup({
+      stepTimeoutSeconds: 2,
+      stepWorker: fakeStepWorker(stubs, { kind: "sleep", pidFile }),
+    });
+    const base = await start(s.config);
+    const req = await send(`${base}/v1/step/glb`, "ISO-10303-21;");
+    await waitForFile(pidFile);
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    req.destroy();
+    await waitFor(() => !alive(pid), 2000);
+    await waitFor(() => readdirSync(s.workDir).length === 0, 2000);
+    const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+    expect(health.busy).toBe(false);
+    const next = await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
+    expect(next.status).not.toBe(409);
+  });
+
+  // The first job is done and released, its answer still unsent to a client
+  // that is not reading, when a second job takes the lock. The first
+  // client's disconnect then calls release a second time, and that call must
+  // not touch the second job's program, folder or lock.
+  test("a late release of a finished job leaves the next job's folder and answer alone", async () => {
+    const stubs = stubDir();
+    const s = setup(
+      {
+        sliceTimeoutSeconds: 4,
+        stepWorker: fakeStepWorker(stubs, { kind: "big", bytes: 64 * 1024 * 1024 }),
+      },
+      { kind: "sleep" },
+    );
+    const base = await start(s.config);
+    // Job 1: its answer is too big to leave the server before the client
+    // reads, so the response is still unfinished after the job is released.
+    const first = await new Promise<IncomingMessage>((resolve, reject) => {
+      const req = request(`${base}/v1/step/glb`, { method: "POST" }, (res) => {
+        res.pause();
+        resolve(res);
+      });
+      req.on("error", reject);
+      req.end("ISO-10303-21;");
+    });
+    await waitFor(() => readdirSync(s.workDir).length === 0, 5000);
+    // Job 2 takes the lock and hangs in its program.
+    const second = postSlice(base, sliceable());
+    await waitForFile(s.fake.pids);
+    const [shell, child] = readFileSync(s.fake.pids, "utf8").trim().split(" ").map(Number);
+    const folders = readdirSync(s.workDir);
+    expect(folders).toHaveLength(1);
+    // Job 1's client goes away.
+    first.destroy();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(alive(shell as number) && alive(child as number)).toBe(true);
+    expect(readdirSync(s.workDir)).toEqual(folders);
+    expect((await postSlice(base, sliceable())).status).toBe(409);
+    expect((await second).status).toBe(200);
   });
 });
 

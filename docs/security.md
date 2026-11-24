@@ -265,7 +265,8 @@ container, the slicer, which is locked down.
   dropped, a read-only system, and only an in-memory `/work` folder that it cannot run programs
   from. Each job's folder is deleted afterwards.
 - **Limits.** It has a CPU and memory limit, a process limit, and runs one job at a time. Each plate
-  has a time cap, and the slicer kills a job that runs over, including any processes it started.
+  has a time cap, and the slicer kills a job that runs over. After each job it also kills every
+  process the job left running, and it stops a job at once when its client goes away.
 - **OpenSCAD is boxed in further.** OpenSCAD runs under a Linux Landlock sandbox that lets it write
   only to its own job folder and run only its own programs, with limits on CPU time, memory, file
   size and processes. Before the first render the slicer checks that the sandbox really blocks a
