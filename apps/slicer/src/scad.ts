@@ -24,23 +24,21 @@ import {
 import { join } from "node:path";
 import {
   type GroupResult,
-  landrunArgs,
   ledInMessage,
   MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
-  prlimitArgs,
+  prlimitCommand,
   readLandlockAbi,
   runGroup,
+  type SandboxConfig,
   type ScadOutput,
+  sandboxPaths,
+  sandboxRules,
   scadArgs,
 } from "./sandbox.js";
 
-export interface ScadConfig {
-  landrunBin: string;
-  /** util-linux prlimit, which sets OpenSCAD's resource limits (sandbox.ts). */
-  prlimitBin: string;
+export interface ScadConfig extends SandboxConfig {
   openscadBin: string;
-  openscadDir: string;
   scadTimeoutSeconds: number;
 }
 
@@ -178,15 +176,15 @@ function runSandboxed(
   command: string[],
   opts: { timeoutMs: number; strict?: boolean; track?: (kill: (() => void) | null) => void },
 ): Promise<GroupResult> {
-  const landrun = landrunArgs({
-    dir,
-    openscadDir: config.openscadDir,
-    command,
-    strict: opts.strict ?? false,
-  });
+  const rules = sandboxRules("openscad", sandboxPaths(config, dir));
   return runGroup(
     config.prlimitBin,
-    [...prlimitArgs(config.scadTimeoutSeconds), "--", config.landrunBin, ...landrun],
+    prlimitCommand({
+      program: "openscad",
+      timeoutSeconds: config.scadTimeoutSeconds,
+      landrun: { bin: config.landrunBin, rules, strict: opts.strict ?? false },
+      command,
+    }),
     {
       cwd: dir,
       env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dir, TMPDIR: dir, LANG: "C.UTF-8" },

@@ -17,10 +17,12 @@ import {
   MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
   prlimitArgs,
+  prlimitCommand,
   readLandlockAbi,
   reapLeftovers,
   runGroup,
   runsUnderTini,
+  sandboxRules,
   scadArgs,
 } from "../src/sandbox.js";
 import { removeTempDirs, tempDir } from "./support/tmp.js";
@@ -319,6 +321,15 @@ describe("processes left behind by a job", () => {
 
 const DIR = "/work/0b5f4c2e-6a7d-4d1b-9a3e-2b7c1d9e8f00";
 const OPENSCAD = "/opt/openscad/AppRun";
+/** The image's paths, as the server passes them for one job folder. */
+const PATHS = {
+  dir: DIR,
+  openscadDir: "/opt/openscad",
+  orcaDir: "/opt/orca",
+  profilesDir: "/opt/platehouse/profiles",
+  nodeDir: "/opt/node",
+  appDir: "/opt/platehouse/app",
+};
 
 function split(args: string[]) {
   const at = args.indexOf("--");
@@ -335,7 +346,7 @@ function values(flags: string[], name: string): string[] {
 
 describe("landrun arguments", () => {
   const command = [OPENSCAD, ...scadArgs("stl", "input.scad", "out.stl")];
-  const args = landrunArgs({ dir: DIR, openscadDir: "/opt/openscad", command });
+  const args = landrunArgs({ rules: sandboxRules("openscad", PATHS), command });
 
   test("landrun's flags end with -- and the whole command follows unchanged", () => {
     const { command: after, at } = split(args);
@@ -426,7 +437,11 @@ describe("landrun arguments", () => {
   // landrun reports the kernel's Landlock ABI only when it is not best
   // effort, so the self-test's ABI check runs it strict, with the same rules.
   test("the strict form drops --best-effort and nothing else", () => {
-    const strict = landrunArgs({ dir: DIR, openscadDir: "/opt/openscad", command, strict: true });
+    const strict = landrunArgs({
+      rules: sandboxRules("openscad", PATHS),
+      command,
+      strict: true,
+    });
     expect(strict).not.toContain("--best-effort");
     expect(strict).toEqual(args.filter((a) => a !== "--best-effort"));
   });
@@ -443,6 +458,268 @@ describe("landrun arguments", () => {
       ]),
     );
     expect(env.some((e) => e.startsWith("OPENSCADPATH"))).toBe(false);
+  });
+});
+
+// OpenSCAD's rules are the ones the slicing gate and the container tests
+// proved; making the rules per program must not change a byte of them.
+test("OpenSCAD's landrun and prlimit arguments are exactly what they were", () => {
+  const command = [OPENSCAD, ...scadArgs("stl", "input.scad", "out.stl")];
+  expect(landrunArgs({ rules: sandboxRules("openscad", PATHS), command })).toEqual([
+    "--best-effort",
+    "--ignore-missing",
+    "--rox",
+    "/opt/openscad,/usr/lib/x86_64-linux-gnu,/lib64/ld-linux-x86-64.so.2",
+    "--ro",
+    "/usr/share/fonts,/etc/fonts,/usr/share/fontconfig,/usr/share/glvnd,/usr/share/drirc.d,/usr/lib/locale",
+    "--rw",
+    DIR,
+    "--env",
+    `HOME=${DIR}`,
+    "--env",
+    `TMPDIR=${DIR}`,
+    "--env",
+    "LANG=C.UTF-8",
+    "--env",
+    "PATH=/usr/bin:/bin",
+    "--",
+    ...command,
+  ]);
+  expect(prlimitArgs("openscad", 120)).toEqual([
+    "--cpu=540",
+    "--as=4294967296",
+    "--nproc=512",
+    "--fsize=268435456",
+    "--core=0",
+  ]);
+});
+
+// OrcaSlicer runs as bin/orca-slicer itself, with the environment its
+// AppImage launcher would set (launcherEnv in orca.ts says why), under the
+// same landrun as OpenSCAD: it may run code only from its own tree and the
+// system libraries, read the printer profiles and the read-only data
+// OpenSCAD reads, and write only its job folder. Node cannot run under these
+// rules, so the container tests cannot probe Orca's sandbox from inside;
+// this pins its rules, and the kernel enforces them.
+describe("OrcaSlicer's sandbox", () => {
+  const command = ["/opt/orca/bin/orca-slicer", "--slice", "1", `${DIR}/input.3mf`];
+  const rules = sandboxRules("orca", PATHS);
+
+  test("its rules: its own tree and the system libraries to run, profiles and fonts to read, the job folder to write", () => {
+    expect(rules).toEqual({
+      rox: ["/opt/orca", "/usr/lib/x86_64-linux-gnu", "/lib64/ld-linux-x86-64.so.2"],
+      ro: [
+        "/opt/platehouse/profiles",
+        "/usr/share/fonts",
+        "/etc/fonts",
+        "/usr/share/fontconfig",
+        "/usr/share/glvnd",
+        "/usr/share/drirc.d",
+        "/usr/lib/locale",
+      ],
+      rw: [DIR],
+      env: {
+        PATH: "/usr/local/bin:/usr/bin:/bin",
+        HOME: `${DIR}/home`,
+        TMPDIR: `${DIR}/tmp`,
+        XDG_CONFIG_HOME: `${DIR}/home/.config`,
+        XDG_CACHE_HOME: `${DIR}/home/.cache`,
+        XDG_DATA_HOME: `${DIR}/home/.local/share`,
+        XDG_RUNTIME_DIR: `${DIR}/tmp`,
+        MESA_SHADER_CACHE_DISABLE: "true",
+        LANG: "C.UTF-8",
+        APPDIR: "/opt/orca",
+        LC_ALL: "C",
+        LD_LIBRARY_PATH: "/opt/orca/lib/orca-runtime:/opt/orca/bin",
+      },
+    });
+  });
+
+  test("landrun's arguments carry those rules, best effort, then the command after --", () => {
+    expect(landrunArgs({ rules, command })).toEqual([
+      "--best-effort",
+      "--ignore-missing",
+      "--rox",
+      "/opt/orca,/usr/lib/x86_64-linux-gnu,/lib64/ld-linux-x86-64.so.2",
+      "--ro",
+      "/opt/platehouse/profiles,/usr/share/fonts,/etc/fonts,/usr/share/fontconfig,/usr/share/glvnd,/usr/share/drirc.d,/usr/lib/locale",
+      "--rw",
+      DIR,
+      "--env",
+      "PATH=/usr/local/bin:/usr/bin:/bin",
+      "--env",
+      `HOME=${DIR}/home`,
+      "--env",
+      `TMPDIR=${DIR}/tmp`,
+      "--env",
+      `XDG_CONFIG_HOME=${DIR}/home/.config`,
+      "--env",
+      `XDG_CACHE_HOME=${DIR}/home/.cache`,
+      "--env",
+      `XDG_DATA_HOME=${DIR}/home/.local/share`,
+      "--env",
+      `XDG_RUNTIME_DIR=${DIR}/tmp`,
+      "--env",
+      "MESA_SHADER_CACHE_DISABLE=true",
+      "--env",
+      "LANG=C.UTF-8",
+      "--env",
+      "APPDIR=/opt/orca",
+      "--env",
+      "LC_ALL=C",
+      "--env",
+      "LD_LIBRARY_PATH=/opt/orca/lib/orca-runtime:/opt/orca/bin",
+      "--",
+      ...command,
+    ]);
+  });
+
+  test("prlimit: CPU time is the wall cap on 4 CPUs plus a minute, 512 processes, 1 GiB files, no core file, no address-space limit", () => {
+    expect(prlimitArgs("orca", 180)).toEqual([
+      "--cpu=780",
+      "--nproc=512",
+      "--fsize=1073741824",
+      "--core=0",
+    ]);
+  });
+});
+
+// The STEP worker is this Node and step.js: it may run code only from Node's
+// own folder and the system libraries, read the app (step.js and
+// occt-import-js), and write only its job folder.
+describe("the STEP worker's sandbox", () => {
+  const command = ["/opt/node/bin/node", "/opt/platehouse/app/apps/slicer/dist/src/step.js"];
+  const rules = sandboxRules("step", PATHS);
+
+  test("its rules: Node and the system libraries to run, the app to read, the job folder to write", () => {
+    expect(rules).toEqual({
+      rox: ["/opt/node", "/usr/lib/x86_64-linux-gnu", "/lib64/ld-linux-x86-64.so.2"],
+      ro: ["/opt/platehouse/app"],
+      rw: [DIR],
+      env: {
+        PATH: "/usr/local/bin:/usr/bin:/bin",
+        HOME: DIR,
+        TMPDIR: DIR,
+        LANG: "C.UTF-8",
+      },
+    });
+  });
+
+  test("landrun's arguments carry those rules, best effort, then the command after --", () => {
+    expect(landrunArgs({ rules, command })).toEqual([
+      "--best-effort",
+      "--ignore-missing",
+      "--rox",
+      "/opt/node,/usr/lib/x86_64-linux-gnu,/lib64/ld-linux-x86-64.so.2",
+      "--ro",
+      "/opt/platehouse/app",
+      "--rw",
+      DIR,
+      "--env",
+      "PATH=/usr/local/bin:/usr/bin:/bin",
+      "--env",
+      `HOME=${DIR}`,
+      "--env",
+      `TMPDIR=${DIR}`,
+      "--env",
+      "LANG=C.UTF-8",
+      "--",
+      ...command,
+    ]);
+  });
+
+  test("prlimit: CPU time is the wall cap on 4 CPUs plus a minute, 512 processes, files up to the mesh cap, no core file, no address-space limit", () => {
+    expect(prlimitArgs("step", 120)).toEqual([
+      "--cpu=540",
+      "--nproc=512",
+      `--fsize=${LIMITS.stepOutputBytes}`,
+      "--core=0",
+    ]);
+  });
+});
+
+describe("every program's sandbox", () => {
+  const PROGRAMS = ["openscad", "orca", "step"] as const;
+
+  test.each(PROGRAMS)("%s may write only its own job folder", (program) => {
+    expect(sandboxRules(program, PATHS).rw).toEqual([DIR]);
+    const args = landrunArgs({ rules: sandboxRules(program, PATHS), command: ["/x"] });
+    expect(values(split(args).flags, "--rw")).toEqual([DIR]);
+    expect(args).not.toContain("--rwx");
+  });
+
+  // No landrun flag opens the network or lifts a restriction, so every TCP
+  // bind and connect is refused (landrun restricts both unless told not to).
+  test.each(PROGRAMS)("%s gets no network rule and no unrestricted mode", (program) => {
+    const { flags } = split(landrunArgs({ rules: sandboxRules(program, PATHS), command: ["/x"] }));
+    for (const f of flags) {
+      expect(f).not.toMatch(/^--(connect-tcp|bind-tcp|unix|unrestricted-.*|ldd|add-exec)$/);
+    }
+  });
+
+  test.each(PROGRAMS)("%s can read nothing under /work but its own folder", (program) => {
+    const r = sandboxRules(program, PATHS);
+    for (const p of [...r.rox, ...r.ro, ...r.rw]) {
+      expect(p === DIR || !p.startsWith("/work")).toBe(true);
+      expect(p).not.toBe("/");
+    }
+  });
+});
+
+// prlimit comes first and sets the limits on itself; then GNU time for a
+// slice, outside the sandbox so it can write its report; then landrun, which
+// applies the sandbox and runs the program in its own place. Without landrun
+// (SLICER_ALLOW_UNSANDBOXED while the sandbox is off) only the limits apply.
+describe("prlimit's whole command", () => {
+  const rules = sandboxRules("orca", PATHS);
+  const command = ["/opt/orca/bin/orca-slicer", "--slice", "1"];
+  const time = ["/usr/bin/time", "-v", "-o", `${DIR}/time.txt`];
+
+  test("limits, then time, then landrun with the rules, then the program", () => {
+    expect(
+      prlimitCommand({
+        program: "orca",
+        timeoutSeconds: 180,
+        outside: time,
+        landrun: { bin: "/usr/local/bin/landrun", rules },
+        command,
+      }),
+    ).toEqual([
+      ...prlimitArgs("orca", 180),
+      "--",
+      ...time,
+      "/usr/local/bin/landrun",
+      ...landrunArgs({ rules, command }),
+    ]);
+  });
+
+  test("without landrun: limits, then time, then the program", () => {
+    expect(
+      prlimitCommand({
+        program: "orca",
+        timeoutSeconds: 180,
+        outside: time,
+        landrun: null,
+        command,
+      }),
+    ).toEqual([...prlimitArgs("orca", 180), "--", ...time, ...command]);
+  });
+
+  test("strict passes on to landrun, for the self-test's ABI check", () => {
+    const r = sandboxRules("openscad", PATHS);
+    expect(
+      prlimitCommand({
+        program: "openscad",
+        timeoutSeconds: 30,
+        landrun: { bin: "/usr/local/bin/landrun", rules: r, strict: true },
+        command: [OPENSCAD, "--version"],
+      }),
+    ).toEqual([
+      ...prlimitArgs("openscad", 30),
+      "--",
+      "/usr/local/bin/landrun",
+      ...landrunArgs({ rules: r, command: [OPENSCAD, "--version"], strict: true }),
+    ]);
   });
 });
 
@@ -469,12 +746,12 @@ describe("OpenSCAD arguments", () => {
 // memory and pids limits.
 describe("prlimit arguments", () => {
   test("CPU time is the wall cap on 4 CPUs plus a minute, so the wall cap always stops a render first", () => {
-    expect(prlimitArgs(120)).toContain("--cpu=540");
-    expect(prlimitArgs(30)).toContain("--cpu=180");
+    expect(prlimitArgs("openscad", 120)).toContain("--cpu=540");
+    expect(prlimitArgs("openscad", 30)).toContain("--cpu=180");
   });
 
   test("address space is the container's 4 GiB, processes are capped at 512, files at 256 MiB and core files at 0", () => {
-    expect(prlimitArgs(120)).toEqual([
+    expect(prlimitArgs("openscad", 120)).toEqual([
       "--cpu=540",
       "--as=4294967296",
       "--nproc=512",
@@ -489,8 +766,8 @@ describe("prlimit arguments", () => {
   // core_pattern ("|...") ignores the limit and still gets the dump; only a
   // handler that honours the limit drops it. No test here runs the kernel.
   test("the core-file size limit is 0, so a render the file-size limit stops writes no core file", () => {
-    expect(prlimitArgs(120)).toContain("--core=0");
-    expect(prlimitArgs(30)).toContain("--core=0");
+    expect(prlimitArgs("openscad", 120)).toContain("--core=0");
+    expect(prlimitArgs("openscad", 30)).toContain("--core=0");
   });
 
   // The file-size limit stops OpenSCAD while it writes past the render output
@@ -499,7 +776,7 @@ describe("prlimit arguments", () => {
     expect(MAX_RENDER_OUTPUT_BYTES).toBe(256 * 1024 * 1024);
     // The same cap the contract documents and the app streams answers under.
     expect(MAX_RENDER_OUTPUT_BYTES).toBe(LIMITS.renderOutputBytes);
-    expect(prlimitArgs(120)).toContain(`--fsize=${MAX_RENDER_OUTPUT_BYTES}`);
+    expect(prlimitArgs("openscad", 120)).toContain(`--fsize=${MAX_RENDER_OUTPUT_BYTES}`);
   });
 });
 

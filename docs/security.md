@@ -267,11 +267,22 @@ container, the slicer, which is locked down.
 - **Limits.** It has a CPU and memory limit, a process limit, and runs one job at a time. Each plate
   has a time cap, and the slicer kills a job that runs over. After each job it also cleans up
   processes the job left behind, and it stops a job's programs at once when its client goes away.
-- **OpenSCAD is boxed in further.** OpenSCAD runs under a Linux Landlock sandbox that lets it write
-  only to its own job folder and run only its own programs, with limits on CPU time, memory, file
-  size and processes. Before the first render the slicer checks that the sandbox really blocks a
-  read outside the job folder, and refuses to render until that check passes. It needs Linux 6.12
-  or newer (Landlock ABI 6).
+- **Each program is boxed in further.** OpenSCAD, OrcaSlicer and the STEP converter each run under
+  a Linux Landlock sandbox that lets them write only to their own job folder, so none can read or
+  change another job's files, and open no network connection. Each may run only its own programs
+  and the system libraries, and read only what it needs:
+  - OpenSCAD reads fonts and the graphics and language settings it renders with.
+  - OrcaSlicer reads its own files, the printer and filament profiles, and fonts.
+  - The STEP converter reads the slicer's own code, which holds the converter.
+
+  Each also runs with limits on CPU time, file size and processes, and OpenSCAD on memory too. The
+  slicer reads a program's result only when it is an ordinary file in the job folder.
+- **The sandbox is checked first.** At start-up the slicer checks that the sandbox really blocks a
+  read outside the job folder, and runs no render, slice or STEP conversion until that check
+  passes. It needs Linux 6.12 or newer (Landlock ABI 6). On an older kernel, or while the check
+  fails, renders and STL pictures are off. Slices and STEP conversions are off too, unless
+  `SLICER_ALLOW_UNSANDBOXED` is set on the slicer: then they run without the sandbox, with only
+  the limits above and the container's own isolation.
 
 **What it does not do:**
 
@@ -288,8 +299,9 @@ container, the slicer, which is locked down.
   is why that is acceptable. A deployment pinned to a version tag gets the fixes with the next
   Platehouse release's version tag, so update Platehouse to get them: pulling the same version tag
   again gets nothing new.
-- OpenSCAD can still read the system libraries, fonts and programs it needs to run; the sandbox
-  keeps it away from your data, not from the operating system files inside its own container.
+- Each program can still read the system libraries, fonts and programs it needs to run; the
+  sandbox keeps it away from your data and other jobs' files, not from the operating system files
+  inside its own container.
 - Some limits are documented in the code as known: for example, the sandbox does not block UDP.
   The network isolation is what keeps the slicer from reaching anything with it.
 - The app itself also reads untrusted files: it unpacks each `.3mf` to read its plates and

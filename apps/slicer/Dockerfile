@@ -77,8 +77,12 @@ WORKDIR /dl
 # chmod -R a+rX so the non-root user can read everything and run what has an
 # execute bit (the gate's first CI build: "Permission denied" on
 # libexec/orca-slicer-env). AppRun is a bash launcher that execs
-# libexec/orca-slicer-env bin/orca-slicer. The AppImage ships its presets
-# only as binary .opc caches; the JSON comes from Orca's source next.
+# libexec/orca-slicer-env bin/orca-slicer. The server runs bin/orca-slicer
+# itself, in its sandbox, with the environment those two would set
+# (launcherEnv in apps/slicer/src/orca.ts). That environment is fixed only
+# while the AppImage bundles no WebKitGTK of its own, so the build fails if
+# it does. The AppImage ships its presets only as binary .opc caches; the
+# JSON comes from Orca's source next.
 ARG ORCA_VERSION
 ARG ORCA_SHA256=d13eb0a9cd618ed080ab6b82c64c0a60c4501aac91e88d5ac2c3b526fb141a7c
 RUN source /usr/local/lib/fetch.sh \
@@ -93,6 +97,8 @@ RUN source /usr/local/lib/fetch.sh \
  && need -x /opt/orca/libexec/orca-slicer-env \
  && need -x /opt/orca/bin/orca-slicer \
  && need -d /opt/orca/lib/orca-runtime \
+ && need ! -e /opt/orca/lib/libwebkit2gtk-4.1.so.0 -- "the AppImage bundles WebKitGTK, so its launcher sets more than the server does" \
+ && need ! -e /opt/orca/lib/libwebkit2gtk-4.0.so.0 -- "the AppImage bundles WebKitGTK, so its launcher sets more than the server does" \
  && need -f /opt/orca/resources/profiles/BBL.opc \
  && need -f /opt/orca/resources/profiles/OrcaFilamentLibrary.opc
 
@@ -285,9 +291,10 @@ RUN printf '%s\n' 'solid probe' \
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin slicer
 
 # No setuid or setgid file is left in the image (security review of PR #123,
-# issue #153). Inside OpenSCAD's sandbox Landlock sets no-new-privileges, but
-# Orca runs outside it, and an Ubuntu install script can leave a helper
-# setuid when setcap is missing (gst-ptp-helper's falls back to that). The
+# issue #153). Inside the sandbox Landlock sets no-new-privileges, but a slice
+# or STEP conversion can run without it (SLICER_ALLOW_UNSANDBOXED), and an
+# Ubuntu install script can leave a helper setuid when setcap is missing
+# (gst-ptp-helper's falls back to that). The
 # slicer never needs one: it runs as 10001 with every capability dropped.
 # This runs after the last step that adds files as root, and fails the build
 # if any bit is left.

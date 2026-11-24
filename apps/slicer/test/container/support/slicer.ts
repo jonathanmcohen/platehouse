@@ -22,6 +22,19 @@ import { slicerContract } from "@platehouse/slicer-contract";
 const ROOT = resolve(fileURLToPath(new URL("../../../../../", import.meta.url)));
 export const IMAGE = process.env.SLICER_IMAGE ?? "platehouse-slicer:test";
 
+/**
+ * The image's folders, as the server's defaults name them (loadConfig), for
+ * a test that builds a program's sandbox rules by hand (sandboxRules) and
+ * runs them with docker exec.
+ */
+export const IMAGE_PATHS = {
+  openscadDir: "/opt/openscad",
+  orcaDir: "/opt/orca",
+  profilesDir: "/opt/platehouse/profiles",
+  nodeDir: "/opt/node",
+  appDir: "/opt/platehouse/app",
+} as const;
+
 interface Run {
   code: number;
   stdout: string;

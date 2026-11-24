@@ -14,12 +14,12 @@ import {
 } from "node:fs";
 import { type ClientRequest, request } from "node:http";
 import { type AddressInfo, createServer } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import { afterAll, afterEach, describe, expect, test, vi } from "vitest";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
-import { PIPE_GRACE_MS } from "../src/sandbox.js";
+import { landrunArgs, PIPE_GRACE_MS, sandboxRules } from "../src/sandbox.js";
 import { MAX_RENDER_OUTPUT_BYTES, readRenderOutput } from "../src/scad.js";
 import {
   createSlicer,
@@ -115,6 +115,9 @@ function setup(
     timeBin: fakeTime(stubs),
     openscadBin: "/opt/openscad/AppRun",
     openscadDir: "/opt/openscad",
+    orcaDir: "/opt/orca",
+    nodeDir: dirname(dirname(process.execPath)),
+    appDir: "/opt/platehouse/app",
     landrunBin: fakeLandrun(stubs, { kind: "ok", content: "solid x" }).bin,
     prlimitBin: prlimit.bin,
     sandboxProbe,
@@ -2067,5 +2070,130 @@ describe("leftover job folders and /work space", () => {
     expect(() => loadConfig({ ...VERSIONS, WORK_MIN_FREE_MIB: "lots" })).toThrow(
       /WORK_MIN_FREE_MIB/,
     );
+  });
+});
+
+// OrcaSlicer and the STEP worker run the way OpenSCAD does: prlimit with
+// their own limits, then (for a slice) GNU time, then landrun with their own
+// rules, then the program. With SLICER_ALLOW_UNSANDBOXED while the sandbox is
+// off they run under prlimit only, and landrun never runs.
+describe("OrcaSlicer and the STEP worker in the sandbox", () => {
+  const argsOf = (file: string) => readFileSync(file, "utf8").trimEnd().split("\n");
+  const pathsFor = (config: SlicerConfig, dir: string) => ({
+    dir,
+    openscadDir: config.openscadDir,
+    orcaDir: config.orcaDir,
+    profilesDir: config.profilesDir,
+    nodeDir: config.nodeDir,
+    appDir: config.appDir,
+  });
+  const ORCA_LIMITS = ["--cpu=180", "--nproc=512", "--fsize=1073741824", "--core=0"];
+  const STEP_LIMITS = ["--cpu=180", "--nproc=512", `--fsize=${LIMITS.stepOutputBytes}`, "--core=0"];
+
+  test("a slice runs prlimit with Orca's limits, then GNU time, then landrun with Orca's rules, then Orca", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const res = await postSlice(base, sliceable());
+    expect(res.status).toBe(200);
+    expect(slicerContract.sliceResult.parse(await res.json()).status).toBe("ok");
+    const args = argsOf(s.prlimit.argsLog);
+    const timeFile = args[args.indexOf("-o") + 1] ?? "";
+    const dir = dirname(timeFile);
+    expect(dirname(dir)).toBe(s.workDir);
+    const orca = argsOf(s.fake.argsLog);
+    const rules = sandboxRules("orca", pathsFor(s.config, dir));
+    expect(args).toEqual([
+      ...ORCA_LIMITS,
+      "--",
+      s.config.timeBin,
+      "-v",
+      "-o",
+      join(dir, "time.txt"),
+      lr.bin,
+      ...landrunArgs({ rules, command: [s.config.orcaBin, ...orca] }),
+    ]);
+    // landrun ran Orca with only its rules' environment
+    expect(argsOf(lr.argsLog)).toEqual(
+      landrunArgs({ rules, command: [s.config.orcaBin, ...orca] }),
+    );
+  });
+
+  test("an unsandboxed slice runs prlimit with Orca's limits, then GNU time, then Orca, and no landrun", async () => {
+    const s = setup({ allowUnsandboxed: true });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: 5 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const res = await postSlice(base, sliceable());
+    expect(res.status).toBe(200);
+    expect(slicerContract.sliceResult.parse(await res.json()).status).toBe("ok");
+    const args = argsOf(s.prlimit.argsLog);
+    const dir = dirname(args[args.indexOf("-o") + 1] ?? "");
+    expect(args).toEqual([
+      ...ORCA_LIMITS,
+      "--",
+      s.config.timeBin,
+      "-v",
+      "-o",
+      join(dir, "time.txt"),
+      s.config.orcaBin,
+      ...argsOf(s.fake.argsLog),
+    ]);
+    expect(() => readFileSync(lr.argsLog)).toThrow();
+    expect(() => readFileSync(lr.runsLog)).toThrow();
+  });
+
+  test("a STEP conversion runs prlimit with the worker's limits, then landrun with its rules, then the worker", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const res = await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("glTF");
+    const args = argsOf(s.prlimit.argsLog);
+    const dir = dirname(args.at(-1) ?? "");
+    expect(dirname(dir)).toBe(s.workDir);
+    const command = [
+      process.execPath,
+      s.config.stepWorker,
+      join(dir, "input.stp"),
+      join(dir, "output.glb"),
+    ];
+    expect(args).toEqual([
+      ...STEP_LIMITS,
+      "--",
+      lr.bin,
+      ...landrunArgs({ rules: sandboxRules("step", pathsFor(s.config, dir)), command }),
+    ]);
+  });
+
+  test("an unsandboxed STEP conversion runs prlimit with the worker's limits, then the worker, and no landrun", async () => {
+    const s = setup({ allowUnsandboxed: true });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: 5 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const res = await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
+    expect(res.status).toBe(200);
+    const args = argsOf(s.prlimit.argsLog);
+    const dir = dirname(args.at(-1) ?? "");
+    expect(args).toEqual([
+      ...STEP_LIMITS,
+      "--",
+      process.execPath,
+      s.config.stepWorker,
+      join(dir, "input.stp"),
+      join(dir, "output.glb"),
+    ]);
+    expect(() => readFileSync(lr.argsLog)).toThrow();
+    expect(() => readFileSync(lr.runsLog)).toThrow();
+  });
+
+  // OrcaSlicer runs as bin/orca-slicer, with its launcher's environment
+  // (launcherEnv in orca.ts), not through the AppRun bash launcher, which
+  // would need bash and the commands it calls inside the sandbox.
+  test("the image's defaults: Orca's own binary and tree, this Node's folder, the app folder", () => {
+    const c = loadConfig({ ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" });
+    expect(c.orcaBin).toBe("/opt/orca/bin/orca-slicer");
+    expect(c.orcaDir).toBe("/opt/orca");
+    expect(c.nodeDir).toBe(dirname(dirname(process.execPath)));
+    expect(c.appDir).toBe("/opt/platehouse/app");
   });
 });

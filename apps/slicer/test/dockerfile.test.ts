@@ -59,8 +59,9 @@ describe("apps/slicer/Dockerfile apt stages", () => {
 });
 
 // Issue #153 item 5: Landlock's no-new-privileges covers a setuid helper
-// inside OpenSCAD's sandbox, but Orca runs outside it, and an Ubuntu install
-// script can leave a helper setuid when setcap is missing. The runtime stage
+// inside the sandbox, but a slice or STEP conversion can run without it
+// (SLICER_ALLOW_UNSANDBOXED), and an Ubuntu install script can leave a helper
+// setuid when setcap is missing. The runtime stage
 // strips every setuid and setgid bit, as root, after its last package and
 // file is in place, and fails the build if any is left. The container test
 // checks the built image has none; this pins where the step sits.
@@ -85,4 +86,18 @@ test("the runtime stage strips setuid and setgid bits and checks none is left", 
     lastRootChange,
     `a step after the strip could add one back: ${all[lastRootChange]}`,
   ).toBeLessThan(strip);
+});
+
+// The server runs bin/orca-slicer itself with the environment Orca's
+// AppImage launcher would set (launcherEnv in src/orca.ts). That environment
+// is fixed only while the AppImage bundles no WebKitGTK of its own; one that
+// did would make the launcher set GStreamer, GIO and WebKit paths too. The
+// Orca step fails the build if it does.
+test("the Orca step fails the build when the AppImage bundles its own WebKitGTK", () => {
+  const orca = runs().find((r) => r.includes("orca.AppImage --appimage-extract"));
+  expect(orca, "the RUN that extracts Orca").toBeDefined();
+  for (const lib of ["libwebkit2gtk-4.1.so.0", "libwebkit2gtk-4.0.so.0"]) {
+    expect(orca).toContain(`need ! -e /opt/orca/lib/${lib}`);
+  }
+  expect(orca).toContain("need -d /opt/orca/lib/orca-runtime");
 });

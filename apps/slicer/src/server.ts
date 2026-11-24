@@ -33,6 +33,10 @@
 //   is set (sandboxGate).
 // - Every external program runs in its own process group, killed whole at
 //   its time cap (SLICE_TIMEOUT_SECONDS, default SLICE_PLATE_SECONDS + 60).
+//   OpenSCAD, OrcaSlicer and the STEP worker each run under prlimit and
+//   landrun with their own rules (sandbox.ts); a slice or conversion that
+//   SLICER_ALLOW_UNSANDBOXED lets run while the sandbox is off runs under
+//   prlimit alone.
 // - An error in a request costs that request, never the process (guard.ts):
 //   it is answered 500, or its connection is closed, and its job is undone
 //   (program killed, folder deleted, lock freed). The 500 closes with the
@@ -48,7 +52,7 @@ import {
 } from "node:fs";
 import { open } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import {
@@ -63,9 +67,16 @@ import {
 import { readProject } from "@platehouse/threemf";
 import { z } from "zod";
 import { closeLingering, guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
-import { orcaArgs, SCRATCH_DIRS, scratchEnv, sliceOutcome } from "./orca.js";
+import { orcaArgs, SCRATCH_DIRS, sliceOutcome } from "./orca.js";
 import { loadProfiles } from "./profiles.js";
-import { reapLeftovers, runGroup, runsUnderTini } from "./sandbox.js";
+import {
+  prlimitCommand,
+  reapLeftovers,
+  runGroup,
+  runsUnderTini,
+  sandboxPaths,
+  sandboxRules,
+} from "./sandbox.js";
 import {
   renderScad,
   type SandboxCheck,
@@ -81,18 +92,28 @@ export interface SlicerConfig {
   port: number;
   workDir: string;
   profilesDir: string;
+  /**
+   * OrcaSlicer's own binary, bin/orca-slicer in its AppImage tree, run with
+   * its launcher's environment (launcherEnv in orca.ts), not AppRun.
+   */
   orcaBin: string;
+  /** OrcaSlicer's extracted AppImage tree, which its sandbox may run code from. */
+  orcaDir: string;
   /** GNU time, which reports Orca's peak RSS (time -v). */
   timeBin: string;
   openscadBin: string;
   openscadDir: string;
   landrunBin: string;
-  /** util-linux prlimit, which sets OpenSCAD's resource limits (sandbox.ts). */
+  /** util-linux prlimit, which sets each sandboxed program's resource limits (sandbox.ts). */
   prlimitBin: string;
   /** A file outside every job folder that the sandbox self-test imports. */
   sandboxProbe: string;
   /** The STEP worker module, run with this Node (normally dist/src/step.js). */
   stepWorker: string;
+  /** This Node's folder (bin/node inside it), which the STEP worker's sandbox may run code from. */
+  nodeDir: string;
+  /** The built app, which the STEP worker's sandbox may read (step.js, occt-import-js). */
+  appDir: string;
   /** Orca's own per-plate cap, --mstpp. */
   slicePlateSeconds: number;
   /** When the server kills a plate's process group. */
@@ -152,7 +173,8 @@ export function retryDelayMs(failures: number, retry: SandboxRetry = SANDBOX_RET
 /**
  * What a heavy route does while it holds the lock: "run" in the sandbox,
  * "unsandboxed" (a slice or STEP conversion with SLICER_ALLOW_UNSANDBOXED,
- * the program run exactly as without a sandbox), or the 503 body to answer.
+ * the program run under prlimit alone, without landrun), or the 503 body to
+ * answer.
  */
 export type SandboxGate = "run" | "unsandboxed" | SandboxOffBody;
 
@@ -183,7 +205,9 @@ const envSchema = z.object({
     .default(8080),
   WORK_DIR: z.string().min(1).default("/work"),
   PROFILES_DIR: z.string().min(1).default("/opt/platehouse/profiles"),
-  ORCA_BIN: z.string().min(1).default("/opt/orca/AppRun"),
+  ORCA_BIN: z.string().min(1).default("/opt/orca/bin/orca-slicer"),
+  ORCA_DIR: z.string().min(1).default("/opt/orca"),
+  APP_DIR: z.string().min(1).default("/opt/platehouse/app"),
   TIME_BIN: z.string().min(1).default("/usr/bin/time"),
   OPENSCAD_BIN: z.string().min(1).default("/opt/openscad/AppRun"),
   OPENSCAD_DIR: z.string().min(1).default("/opt/openscad"),
@@ -229,6 +253,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SlicerConfig {
     workDir: e.WORK_DIR,
     profilesDir: e.PROFILES_DIR,
     orcaBin: e.ORCA_BIN,
+    orcaDir: e.ORCA_DIR,
     timeBin: e.TIME_BIN,
     openscadBin: e.OPENSCAD_BIN,
     openscadDir: e.OPENSCAD_DIR,
@@ -236,6 +261,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): SlicerConfig {
     prlimitBin: e.PRLIMIT_BIN,
     sandboxProbe: e.SANDBOX_PROBE,
     stepWorker: e.STEP_WORKER,
+    // The Node running this server runs the worker too (process.execPath,
+    // /opt/node/bin/node in the image).
+    nodeDir: dirname(dirname(process.execPath)),
+    appDir: e.APP_DIR,
     slicePlateSeconds: e.SLICE_PLATE_SECONDS,
     sliceTimeoutSeconds: e.SLICE_TIMEOUT_SECONDS ?? e.SLICE_PLATE_SECONDS + 60,
     scadTimeoutSeconds: e.SCAD_TIMEOUT_SECONDS,
@@ -719,7 +748,8 @@ export function createSlicer(config: SlicerConfig): Slicer {
     if (!job) return refuseEarly(res, 409, { error: "busy" });
     const dir = job.dir;
     try {
-      if (!passSandboxGate(res, "program", "a slice")) return;
+      const gate = passSandboxGate(res, "program", "a slice");
+      if (!gate) return;
       for (const sub of SCRATCH_DIRS) mkdirSync(join(dir, sub), { recursive: true });
       const input = join(dir, "input.3mf");
       try {
@@ -756,9 +786,25 @@ export function createSlicer(config: SlicerConfig): Slicer {
         filamentFiles: picks.map((p) => p?.file ?? ""),
         input,
       });
-      const run = await runGroup(config.timeBin, ["-v", "-o", timeFile, config.orcaBin, ...args], {
+      // prlimit, then GNU time, outside the sandbox so it can write its
+      // report to the job folder, then landrun with Orca's rules, then Orca
+      // (prlimitCommand). Unsandboxed, landrun is left out. Orca's
+      // environment (its rules' env: scratchEnv plus its launcher's) is
+      // what landrun passes it, and what it inherits without landrun.
+      // prlimit and GNU time see its LD_LIBRARY_PATH too: both link glibc,
+      // which the AppImage never bundles (Orca's appimage_lib_policy.sh),
+      // and prlimit also util-linux's libsmartcols; landrun is static.
+      const rules = sandboxRules("orca", sandboxPaths(config, dir));
+      const command = prlimitCommand({
+        program: "orca",
+        timeoutSeconds: config.sliceTimeoutSeconds,
+        outside: [config.timeBin, "-v", "-o", timeFile],
+        landrun: gate === "run" ? { bin: config.landrunBin, rules } : null,
+        command: [config.orcaBin, ...args],
+      });
+      const run = await runGroup(config.prlimitBin, command, {
         cwd: dir,
-        env: scratchEnv(dir),
+        env: rules.env,
         timeoutMs: config.sliceTimeoutSeconds * 1000,
         track: job.track,
       });
@@ -788,7 +834,8 @@ export function createSlicer(config: SlicerConfig): Slicer {
    * Takes the heavy-job lock (or answers 409 busy before reading the body),
    * answers 503 sandbox_off, also before reading it, while the sandbox is off
    * (sandboxGate), saves the body as dir/<input> in a fresh job folder and hands the folder
-   * to `work`, which runs its program on that file. The body is never read
+   * to `work`, which runs its program on that file, sandboxed unless the gate
+   * said "unsandboxed" (only ever for kind "program"). The body is never read
    * into the server's memory.
    */
   async function withBody(
@@ -798,14 +845,15 @@ export function createSlicer(config: SlicerConfig): Slicer {
     input: string,
     kind: "render" | "program",
     what: string,
-    work: (job: Job) => Promise<void>,
+    work: (job: Job, gate: "run" | "unsandboxed") => Promise<void>,
   ): Promise<void> {
     const declared = declaredLength(req);
     if (declared !== null && declared > limit) return refuseEarly(res, 413, { error: "too_large" });
     const job = takeJob();
     if (!job) return refuseEarly(res, 409, { error: "busy" });
     try {
-      if (!passSandboxGate(res, kind, what)) return;
+      const gate = passSandboxGate(res, kind, what);
+      if (!gate) return;
       try {
         await saveBody(req, join(job.dir, input), limit);
       } catch (err) {
@@ -814,7 +862,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
       }
       releaseWhenClientGoes(res, job);
       if (res.destroyed) return;
-      await work(job);
+      await work(job, gate);
     } finally {
       job.release();
     }
@@ -913,12 +961,14 @@ export function createSlicer(config: SlicerConfig): Slicer {
           STEP_INPUT,
           "program",
           "a STEP conversion",
-          async (job) => {
+          async (job, gate) => {
             const r = await runStepWorker(
               {
+                ...config,
                 worker: config.stepWorker,
                 timeoutSeconds: config.stepTimeoutSeconds,
                 maxOutputBytes: config.limits.stepOutputBytes,
+                sandboxed: gate === "run",
               },
               job.dir,
               job.track,

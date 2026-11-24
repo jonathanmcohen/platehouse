@@ -131,12 +131,17 @@ export type ProbeMode = "blocked" | "read" | "other" | "hang";
 export type AbiMode = number | "garbled";
 
 /**
- * A fake landrun. It writes its arguments to landrun.log, then, for the
- * command after "--", writes the file named by -o (or fails like OpenSCAD).
+ * A fake landrun. It writes its arguments to landrun.log. A command after
+ * "--" that exists (Orca's or the STEP worker's, in these tests) it runs in
+ * its own place with only the --env variables, as landrun does; for any other
+ * (OpenSCAD, which these tests never have) it writes the file named by -o, or
+ * fails like OpenSCAD.
  * setProbe changes how it answers the self-test from the next run on, and
- * setAbi the Landlock ABI it reports (default 8, GitHub's runner). A run
- * without --best-effort is the ABI check: it is counted in landrun-abi.log,
- * not in landrun.log or landrun-runs.log. "big" writes a sparse output file of
+ * setAbi the Landlock ABI it reports (default 8, GitHub's runner).
+ * landrun-runs.log counts the OpenSCAD runs it acts out, the self-test's
+ * included, not the programs it runs in its place. A run without
+ * --best-effort is the ABI check: it is counted in landrun-abi.log, not in
+ * landrun.log or landrun-runs.log. "big" writes a sparse output file of
  * `bytes` bytes, so a test can pass the render output cap without filling the
  * disk. "fsize" acts out prlimit's file-size limit: it writes part of the
  * output, then dies of SIGXFSZ, as the kernel kills a program that writes
@@ -247,13 +252,28 @@ fi
   const bin = writeScript(
     join(dir, "landrun"),
     `#!/bin/sh
-${abiCheck}printf 'run\\n' >> '${runsLog}'
-input=""
+${abiCheck}input=""
 for a in "$@"; do input="$a"; done
 if ! grep -q sandbox-probe "$input" 2>/dev/null; then
   : > '${argsLog}'
   for a in "$@"; do printf '%s\\n' "$a" >> '${argsLog}'; done
 fi
+cmd=""; past=no
+for a in "$@"; do
+  if [ "$past" = yes ]; then cmd="$a"; break; fi
+  [ "$a" = "--" ] && past=yes
+done
+if [ -n "$cmd" ] && [ -x "$cmd" ]; then
+  first=yes; past=no; take=no
+  for a in "$@"; do
+    if [ "$first" = yes ]; then set -- env -i; first=no; fi
+    if [ "$past" = yes ]; then set -- "$@" "$a"; continue; fi
+    if [ "$take" = yes ]; then set -- "$@" "$a"; take=no; continue; fi
+    case "$a" in --env) take=yes ;; --) past=yes ;; esac
+  done
+  exec "$@"
+fi
+printf 'run\\n' >> '${runsLog}'
 out=""
 while [ $# -gt 0 ]; do
   if [ "$1" = "-o" ]; then out="$2"; fi
@@ -291,7 +311,10 @@ exec "$@"
  * input to the output; "slow" appends "start" and "end" lines to `log`
  * around a wait of `ms`, so a test can see whether two conversions overlap;
  * "sleep" writes its pid to `pidFile` and waits for a kill; "big" writes
- * `bytes` bytes of output.
+ * `bytes` bytes of output. "symlink" leaves the output as a link to
+ * `target` and "folder" as a folder, as code inside the worker could;
+ * "cutOff" writes `bytes` bytes, then fails as Node's write fails at
+ * prlimit's file-size limit (EFBIG: Node ignores SIGXFSZ).
  */
 export function fakeStepWorker(
   dir: string,
@@ -301,7 +324,10 @@ export function fakeStepWorker(
     | { kind: "echo" }
     | { kind: "slow"; log: string; ms: number }
     | { kind: "sleep"; pidFile: string }
-    | { kind: "big"; bytes: number },
+    | { kind: "big"; bytes: number }
+    | { kind: "symlink"; target: string }
+    | { kind: "folder" }
+    | { kind: "cutOff"; bytes: number },
 ): string {
   const file = join(dir, "step-worker.mjs");
   let body: string;
@@ -330,6 +356,23 @@ await new Promise((r) => setTimeout(r, 60000));
     case "big":
       body = `import { writeFileSync } from "node:fs";
 writeFileSync(process.argv[3], Buffer.alloc(${mode.bytes}, 120));
+`;
+      break;
+    case "symlink":
+      body = `import { symlinkSync } from "node:fs";
+symlinkSync(${JSON.stringify(mode.target)}, process.argv[3]);
+`;
+      break;
+    case "folder":
+      body = `import { mkdirSync } from "node:fs";
+mkdirSync(process.argv[3]);
+`;
+      break;
+    case "cutOff":
+      body = `import { writeFileSync } from "node:fs";
+writeFileSync(process.argv[3], Buffer.alloc(${mode.bytes}, 120));
+process.stderr.write("EFBIG: file too large, write\\n");
+process.exit(1);
 `;
       break;
     case "slow":

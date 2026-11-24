@@ -11,8 +11,8 @@
 // case runs bash under the server's rules with bash itself let in by hand.
 import { slicerContract } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { landrunArgs } from "../../src/sandbox.js";
-import { type RunningSlicer, runInImage, startSlicer } from "./support/slicer.js";
+import { landrunArgs, sandboxRules } from "../../src/sandbox.js";
+import { IMAGE_PATHS, type RunningSlicer, runInImage, startSlicer } from "./support/slicer.js";
 
 let slicer: RunningSlicer;
 beforeAll(async () => {
@@ -60,7 +60,8 @@ function importWithoutSandbox(file: string) {
 
 /** landrun with the server's own rules, run by hand in SHELL_DIR. */
 function landrunInContainer(command: string[], extraRox: string[] = []) {
-  const args = landrunArgs({ dir: SHELL_DIR, openscadDir: "/opt/openscad", command });
+  const rules = sandboxRules("openscad", { ...IMAGE_PATHS, dir: SHELL_DIR });
+  const args = landrunArgs({ rules, command });
   if (extraRox.length > 0) {
     const at = args.indexOf("--rox") + 1;
     args[at] = [args[at], ...extraRox].join(",");
