@@ -58,7 +58,14 @@ const X1C = "Bambu Lab X1 Carbon 0.4 nozzle";
 const ORCA = "2.5.0";
 const OPENSCAD = "2026.10.01";
 
-const HEALTHY: Health = { contract: 1, orca: ORCA, openscad: OPENSCAD, busy: false } as Health;
+const HEALTHY: Health = {
+  contract: 2,
+  orca: ORCA,
+  openscad: OPENSCAD,
+  busy: false,
+  sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+  timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+};
 
 let pgc: TestPostgres;
 let auth: TestAuth;

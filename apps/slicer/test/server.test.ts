@@ -21,7 +21,14 @@ import { afterAll, afterEach, describe, expect, test, vi } from "vitest";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
 import { PIPE_GRACE_MS } from "../src/sandbox.js";
 import { MAX_RENDER_OUTPUT_BYTES, readRenderOutput } from "../src/scad.js";
-import { createSlicer, loadConfig, type Slicer, type SlicerConfig } from "../src/server.js";
+import {
+  createSlicer,
+  loadConfig,
+  retryDelayMs,
+  SANDBOX_RETRY,
+  type Slicer,
+  type SlicerConfig,
+} from "../src/server.js";
 import { streamChunked } from "./support/http.js";
 import { profileTree, put, TREE_PRINTERS } from "./support/profiles.js";
 import {
@@ -121,18 +128,33 @@ function setup(
     // The test machine's disk always has a mebibyte free; the floor's own
     // tests set it high.
     workMinFreeBytes: 1024 * 1024,
+    allowUnsandboxed: false,
     limits: LIMITS,
     ...over,
   };
   return { config, stubs, fake, workDir, prlimit };
 }
 
-async function start(config: SlicerConfig): Promise<string> {
+/**
+ * Starts the slicer and, unless `settle` is false, waits for its start-up
+ * sandbox check to finish: a request that came sooner would be 409 busy,
+ * because the check holds the heavy-job lock.
+ */
+async function start(config: SlicerConfig, settle = true): Promise<string> {
   const slicer = createSlicer(config);
   running.push(slicer);
   await new Promise<void>((resolve) => slicer.server.listen(0, "127.0.0.1", resolve));
   const { port } = slicer.server.address() as AddressInfo;
-  return `http://127.0.0.1:${port}`;
+  const base = `http://127.0.0.1:${port}`;
+  if (settle) await waitFor(async () => (await sandboxOf(base)) !== "checking");
+  return base;
+}
+
+/** The sandbox state /v1/health reports, or "unreadable" when it is not a 200. */
+async function sandboxOf(base: string): Promise<string> {
+  const res = await fetch(`${base}/v1/health`);
+  if (res.status !== 200) return "unreadable";
+  return slicerContract.health.parse(await res.json()).sandbox.state;
 }
 
 const sliceUrl = (base: string, printer: string, plate: string | number) =>
@@ -153,9 +175,9 @@ async function postSlice(
 
 const sliceable = () => buildSliceable({ plates: 2, filaments: 2 });
 
-async function waitFor(check: () => boolean, ms = 5000): Promise<void> {
+async function waitFor(check: () => boolean | Promise<boolean>, ms = 5000): Promise<void> {
   const until = Date.now() + ms;
-  while (!check()) {
+  while (!(await check())) {
     if (Date.now() > until) throw new Error("timed out waiting");
     await new Promise((r) => setTimeout(r, 25));
   }
@@ -233,15 +255,17 @@ describe("configuration", () => {
 });
 
 describe("health and profiles", () => {
-  test("health reports the contract, the versions and busy false", async () => {
+  test("health reports the contract, the versions, busy false, the sandbox state and the time caps", async () => {
     const base = await start(setup().config);
     const res = await fetch(`${base}/v1/health`);
     expect(res.status).toBe(200);
     expect(slicerContract.health.parse(await res.json())).toEqual({
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       openscad: "2026.11-RC0",
       busy: false,
+      sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+      timeouts: { sliceSeconds: 30, scadSeconds: 30, stepSeconds: 30, uploadSeconds: 600 },
     });
   });
 
@@ -286,7 +310,7 @@ describe("slicing", () => {
     expect(res.status).toBe(200);
     const body = slicerContract.sliceResult.parse(await res.json());
     expect(body).toMatchObject({
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       plate: 2,
       status: "ok",
@@ -384,7 +408,7 @@ describe("slicing", () => {
       await (await postSlice(base, sliceable())).json(),
     );
     expect(body).toEqual({
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       plate: 1,
       status: "failed",
@@ -561,82 +585,89 @@ describe("slicing", () => {
 });
 
 // landrun runs best effort (see sandbox.test.ts), so the server proves the
-// sandbox works before it renders: it renders a .scad that imports a file
+// sandbox works when it starts: it renders a .scad that imports a file
 // outside the job folder, through the same landrun, and passes the check only
-// when OpenSCAD reports it cannot open that file. Only a pass is remembered.
-// Anything else (the import works, the probe file is missing, or the render
-// fails for another reason such as a timeout) refuses that render, and the
-// next render runs the check again.
+// when OpenSCAD reports it cannot open that file. The check holds the
+// heavy-job lock, health reports where it stands, and no job ever runs it.
+// Anything but a pass (the import works, the probe file is missing, or the
+// render fails for another reason such as a timeout) is a check_failed and
+// is tried again after a back-off; a kernel too old is final until restart.
 describe("sandbox self-test", () => {
   const lines = (file: string) => readFileSync(file, "utf8").trim().split("\n").length;
   const render = (base: string, kind = "stl") =>
     fetch(`${base}/v1/scad/${kind}`, { method: "POST", body: "cube(10);" });
+  const sandboxOfHealth = async (base: string) =>
+    slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json()).sandbox;
+  const refusal = async (res: Response) => {
+    expect(res.status).toBe(503);
+    return slicerContract.sandboxOff.parse(await res.json());
+  };
 
   test("renders run once the self-test has seen the sandbox block a read outside the job folder", async () => {
     const s = setup();
     const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
     const base = await start({ ...s.config, landrunBin: lr.bin });
+    expect(await sandboxOfHealth(base)).toEqual({
+      state: "on",
+      reason: null,
+      detail: null,
+      allowUnsandboxed: false,
+    });
     for (let i = 0; i < 2; i++) {
       const res = await render(base);
       expect(res.status).toBe(200);
     }
-    // one self-test, then the two renders
+    // one self-test at start-up, then the two renders
     expect(lines(lr.runsLog)).toBe(3);
     expect(readdirSync(s.workDir)).toEqual([]);
   });
 
-  test("when the sandbox lets OpenSCAD read outside its folder, every render is refused", async () => {
+  test("when the sandbox lets OpenSCAD read outside its folder, every render is 503 check_failed", async () => {
     const s = setup();
     const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "read" });
     const base = await start({ ...s.config, landrunBin: lr.bin });
+    const state = await sandboxOfHealth(base);
+    expect(state).toMatchObject({ state: "off", reason: "check_failed" });
+    expect(state.detail).toMatch(/read .* from outside its job folder/);
     for (const kind of ["stl", "png"]) {
-      const res = await render(base, kind);
-      expect(res.status).toBe(422);
-      expect(slicerContract.renderError.parse(await res.json()).message).toMatch(/sandbox/i);
+      const body = await refusal(await render(base, kind));
+      expect(body).toEqual({ error: "sandbox_off", reason: "check_failed", detail: state.detail });
     }
-    // the self-test ran before each request and no render ran
-    expect(lines(lr.runsLog)).toBe(2);
-    expect(() => readFileSync(lr.argsLog)).toThrow();
-  });
-
-  test("a self-test render that fails for another reason refuses that render, and the next one checks again", async () => {
-    const s = setup();
-    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "other" });
-    const base = await start({ ...s.config, landrunBin: lr.bin });
-    let res = await render(base);
-    expect(res.status).toBe(422);
-    expect(slicerContract.renderError.parse(await res.json()).message).toMatch(/sandbox/i);
+    // the one self-test ran and no render did
     expect(lines(lr.runsLog)).toBe(1);
-
-    lr.setProbe("blocked");
-    res = await render(base);
-    expect(res.status).toBe(200);
-    // a second self-test, which passed, then the render
-    expect(lines(lr.runsLog)).toBe(3);
-
-    // the pass is remembered: no third self-test
-    lr.setProbe("read");
-    res = await render(base);
-    expect(res.status).toBe(200);
-    expect(lines(lr.runsLog)).toBe(4);
-  });
-
-  test("a self-test render that times out proves nothing and is checked again", async () => {
-    const s = setup({ scadTimeoutSeconds: 1 });
-    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "hang" });
-    const base = await start({ ...s.config, landrunBin: lr.bin });
-    let res = await render(base);
-    expect(res.status).toBe(422);
-    expect(slicerContract.renderError.parse(await res.json()).message).toMatch(/sandbox/i);
-
-    lr.setProbe("blocked");
-    res = await render(base);
-    expect(res.status).toBe(200);
-    expect(lines(lr.runsLog)).toBe(3);
+    expect(() => readFileSync(lr.argsLog)).toThrow();
     expect(readdirSync(s.workDir)).toEqual([]);
   });
 
-  test("a missing probe file refuses every render, since the self-test would prove nothing", async () => {
+  test("a self-test render that fails for another reason is check_failed, and the retry passes once it can", async () => {
+    const s = setup({ sandboxRetry: { initialMs: 60, maxMs: 60, busyMs: 20 } });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "other" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    expect(await sandboxOfHealth(base)).toMatchObject({ state: "off", reason: "check_failed" });
+
+    lr.setProbe("blocked");
+    await waitFor(async () => (await sandboxOfHealth(base)).state === "on");
+    expect((await render(base)).status).toBe(200);
+  });
+
+  test("a self-test render that times out proves nothing: check_failed, then checked again", async () => {
+    const s = setup({
+      scadTimeoutSeconds: 1,
+      sandboxRetry: { initialMs: 60, maxMs: 60, busyMs: 20 },
+    });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "hang" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const state = await sandboxOfHealth(base);
+    expect(state).toMatchObject({ state: "off", reason: "check_failed" });
+    expect(state.detail).toMatch(/took longer than 1 s/);
+
+    lr.setProbe("blocked");
+    await waitFor(async () => (await sandboxOfHealth(base)).state === "on");
+    expect((await render(base)).status).toBe(200);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("a missing probe file is check_failed, since the self-test would prove nothing", async () => {
     const s = setup();
     const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
     const base = await start({
@@ -644,9 +675,9 @@ describe("sandbox self-test", () => {
       landrunBin: lr.bin,
       sandboxProbe: join(s.stubs, "no-such-probe.stl"),
     });
-    const res = await render(base);
-    expect(res.status).toBe(422);
-    expect(slicerContract.renderError.parse(await res.json()).message).toMatch(/sandbox/i);
+    const body = await refusal(await render(base));
+    expect(body.reason).toBe("check_failed");
+    expect(body.detail).toMatch(/probe .* is missing/);
   });
 
   // A probe the slicer user cannot read makes OpenSCAD print "Can't open
@@ -655,22 +686,29 @@ describe("sandbox self-test", () => {
   // test cannot make the probe unreadable when it runs as root; CI runs it
   // as the runner user.)
   test.skipIf(process.getuid?.() === 0)(
-    "a probe the server cannot read makes the self-test inconclusive and refuses the render",
+    "a probe the server cannot read makes the self-test inconclusive: check_failed",
     async () => {
       const s = setup();
       const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
       chmodSync(s.config.sandboxProbe, 0o000);
       const base = await start({ ...s.config, landrunBin: lr.bin });
-      const res = await render(base);
-      expect(res.status).toBe(422);
-      const message = slicerContract.renderError.parse(await res.json()).message;
-      expect(message).toMatch(/sandbox/i);
-      expect(message).toMatch(/cannot be read/);
-      expect(message).toMatch(/inconclusive/);
+      const body = await refusal(await render(base));
+      expect(body.reason).toBe("check_failed");
+      expect(body.detail).toMatch(/cannot be read/);
+      expect(body.detail).toMatch(/inconclusive/);
       // nothing was rendered, and the probe import never ran
       expect(() => readFileSync(lr.runsLog)).toThrow();
     },
   );
+
+  test("a job folder that cannot be made fails the check as check_failed, not the process", async () => {
+    const s = setup();
+    writeFileSync(join(s.stubs, "work-is-a-file"), "x");
+    const base = await start({ ...s.config, workDir: join(s.stubs, "work-is-a-file") });
+    const state = await sandboxOfHealth(base);
+    expect(state).toMatchObject({ state: "off", reason: "check_failed" });
+    expect(state.detail).toMatch(/could not start/);
+  });
 
   test("SANDBOX_PROBE defaults to the file the image ships", () => {
     const c = loadConfig({ ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" });
@@ -678,15 +716,290 @@ describe("sandbox self-test", () => {
   });
 });
 
-// The self-test also refuses renders on a kernel whose Landlock ABI is below
-// 6 (the maintainer, 2026-11-11; the test host runs kernel 6.17). landrun runs best effort, so
-// it would sandbox OpenSCAD with whatever an old kernel offers; ABI 6 is the
-// first with every right this sandbox counts on (signal and abstract socket
-// scoping, on top of TCP and the filesystem rules). landrun reports the ABI
-// only when it runs without --best-effort, so the check runs it that way.
+// The start-up check holds the heavy-job lock, so a job that arrives while it
+// runs is 409 busy (the caller retries) and never a sandbox answer.
+describe("start-up sandbox check: the lock and the retries", () => {
+  const lines = (file: string) => readFileSync(file, "utf8").trim().split("\n").length;
+  const healthOf = async (base: string) =>
+    slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+  const routes = (base: string) => [
+    () => postSlice(base, sliceable()),
+    () => fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" }),
+    () => fetch(`${base}/v1/scad/png`, { method: "POST", body: "cube(10);" }),
+    () => fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(10);" }),
+    () =>
+      fetch(`${base}/v1/stl/png`, {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: "solid x\nendsolid x\n",
+      }),
+  ];
+
+  test("while the check runs, health says checking and busy, and every heavy route is 409 busy", async () => {
+    const s = setup({ scadTimeoutSeconds: 2 });
+    // The probe render hangs until the cap, so the check holds the lock.
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "hang" });
+    const base = await start({ ...s.config, landrunBin: lr.bin }, false);
+    await waitForFile(lr.runsLog);
+    const during = await healthOf(base);
+    expect(during.busy).toBe(true);
+    expect(during.sandbox).toEqual({
+      state: "checking",
+      reason: null,
+      detail: null,
+      allowUnsandboxed: false,
+    });
+    for (const send of routes(base)) {
+      const res = await send();
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: "busy" });
+    }
+    // nothing but the check ran
+    expect(() => readFileSync(s.fake.argsLog)).toThrow();
+    expect(lines(lr.runsLog)).toBe(1);
+
+    await waitFor(async () => (await healthOf(base)).sandbox.state !== "checking");
+    const after = await healthOf(base);
+    expect(after.busy).toBe(false);
+    expect(after.sandbox).toMatchObject({ state: "off", reason: "check_failed" });
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("after a pass health is on and not busy, and a job is not delayed by a second check", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const health = await healthOf(base);
+    expect(health.busy).toBe(false);
+    expect(health.sandbox.state).toBe("on");
+    expect((await postSlice(base, sliceable())).status).toBe(200);
+    expect(lines(lr.abiLog)).toBe(1);
+    expect(lines(lr.runsLog)).toBe(1);
+  });
+
+  test("an old kernel is final: every heavy route is 503 old_kernel without running a program, and no second check runs", async () => {
+    const s = setup({ sandboxRetry: { initialMs: 30, maxMs: 30, busyMs: 10 } });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: 5 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const health = await healthOf(base);
+    expect(health.busy).toBe(false);
+    expect(health.sandbox).toMatchObject({ state: "off", reason: "old_kernel" });
+    expect(health.sandbox.detail).toContain("the kernel's Landlock ABI is 5, below the 6");
+    for (const send of routes(base)) {
+      const res = await send();
+      expect(res.status).toBe(503);
+      expect(slicerContract.sandboxOff.parse(await res.json())).toEqual({
+        error: "sandbox_off",
+        reason: "old_kernel",
+        detail: health.sandbox.detail,
+      });
+    }
+    // well past the retry delay: still one strict run, and no program ran
+    await new Promise((r) => setTimeout(r, 300));
+    expect(lines(lr.abiLog)).toBe(1);
+    expect(() => readFileSync(lr.runsLog)).toThrow();
+    expect(() => readFileSync(lr.argsLog)).toThrow();
+    expect(() => readFileSync(s.fake.argsLog)).toThrow();
+    expect(readdirSync(s.workDir)).toEqual([]);
+    expect((await healthOf(base)).sandbox.reason).toBe("old_kernel");
+  });
+
+  test("a 503 comes before the body is read, so a large body is not waited for", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: 5 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const res = await headersOnly(sliceUrl(base, P1S, 1), {
+      "content-type": "application/octet-stream",
+      "content-length": String(LIMITS.sliceBodyBytes),
+    });
+    expect(res.status).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({ error: "sandbox_off", reason: "old_kernel" });
+  });
+
+  test("a check_failed is tried again after the back-off, until a check passes", async () => {
+    const s = setup({ sandboxRetry: { initialMs: 50, maxMs: 100, busyMs: 10 } });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "other" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    expect((await healthOf(base)).sandbox.reason).toBe("check_failed");
+    expect(lines(lr.runsLog)).toBe(1);
+    // retries at 50 ms, then 100 ms, then every 100 ms: three more checks
+    await waitFor(() => lines(lr.runsLog) >= 4);
+    lr.setProbe("blocked");
+    await waitFor(async () => (await healthOf(base)).sandbox.state === "on");
+    const runs = lines(lr.runsLog);
+    // a pass is final: no more checks
+    await new Promise((r) => setTimeout(r, 250));
+    expect(lines(lr.runsLog)).toBe(runs);
+  });
+
+  test("the retry delays are 60 s, doubling up to 900 s, and a busy lock is tried again after 5 s", () => {
+    expect(SANDBOX_RETRY).toEqual({ initialMs: 60_000, maxMs: 900_000, busyMs: 5_000 });
+    expect([1, 2, 3, 4, 5, 6, 40].map((n) => retryDelayMs(n))).toEqual([
+      60_000, 120_000, 240_000, 480_000, 900_000, 900_000, 900_000,
+    ]);
+  });
+
+  test("a retry that falls due while a job holds the lock waits for it, then runs", async () => {
+    const s = setup(
+      {
+        sliceTimeoutSeconds: 2,
+        allowUnsandboxed: true,
+        sandboxRetry: { initialMs: 800, maxMs: 800, busyMs: 20 },
+      },
+      { kind: "sleep" },
+    );
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "other" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    expect(lines(lr.runsLog)).toBe(1);
+    // an unsandboxed slice takes the lock and holds it to its 1 s cap
+    const slice = postSlice(base, sliceable());
+    await waitForFile(s.fake.pids);
+    lr.setProbe("blocked");
+    await new Promise((r) => setTimeout(r, 1200));
+    // the retry fell due meanwhile, and did not run
+    expect(lines(lr.runsLog)).toBe(1);
+    expect((await healthOf(base)).sandbox.state).toBe("off");
+    expect((await slice).status).toBe(200);
+    await waitFor(async () => (await healthOf(base)).sandbox.state === "on");
+    expect(lines(lr.runsLog)).toBe(2);
+  }, 15_000);
+
+  test("close() cancels a pending retry", async () => {
+    const s = setup({ sandboxRetry: { initialMs: 60, maxMs: 60, busyMs: 20 } });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "other" });
+    await start({ ...s.config, landrunBin: lr.bin });
+    expect(lines(lr.runsLog)).toBe(1);
+    await running.pop()?.close();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(lines(lr.runsLog)).toBe(1);
+  });
+
+  test("close() while the check runs stops it, leaves no folder and starts no retry", async () => {
+    const s = setup({
+      scadTimeoutSeconds: 20,
+      sandboxRetry: { initialMs: 30, maxMs: 30, busyMs: 10 },
+    });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "hang" });
+    await start({ ...s.config, landrunBin: lr.bin }, false);
+    await waitForFile(lr.runsLog);
+    await running.pop()?.close();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(lines(lr.runsLog)).toBe(1);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("health reports the time caps and the upload time", async () => {
+    const s = setup({ sliceTimeoutSeconds: 31, scadTimeoutSeconds: 32, stepTimeoutSeconds: 33 });
+    const base = await start(s.config);
+    expect((await healthOf(base)).timeouts).toEqual({
+      sliceSeconds: 31,
+      scadSeconds: 32,
+      stepSeconds: 33,
+      uploadSeconds: 600,
+    });
+  });
+});
+
+// With SLICER_ALLOW_UNSANDBOXED a slice and a STEP conversion still run while
+// the sandbox is off; renders and STL pictures never do.
+describe("SLICER_ALLOW_UNSANDBOXED", () => {
+  const VERSIONS = { ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" };
+  const logged = () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    return { lines, restore: () => spy.mockRestore() };
+  };
+
+  test("is false unless it is set to true, and refuses any other value, naming the key", () => {
+    expect(loadConfig(VERSIONS).allowUnsandboxed).toBe(false);
+    expect(loadConfig({ ...VERSIONS, SLICER_ALLOW_UNSANDBOXED: "false" }).allowUnsandboxed).toBe(
+      false,
+    );
+    expect(loadConfig({ ...VERSIONS, SLICER_ALLOW_UNSANDBOXED: "true" }).allowUnsandboxed).toBe(
+      true,
+    );
+    for (const bad of ["1", "yes", "TRUE", ""]) {
+      expect(() => loadConfig({ ...VERSIONS, SLICER_ALLOW_UNSANDBOXED: bad })).toThrow(
+        /SLICER_ALLOW_UNSANDBOXED/,
+      );
+    }
+  });
+
+  test("an old kernel with it set: a slice and a STEP conversion run, renders and STL pictures are 503", async () => {
+    const s = setup({ allowUnsandboxed: true });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: 5 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+    expect(health.sandbox).toMatchObject({
+      state: "off",
+      reason: "old_kernel",
+      allowUnsandboxed: true,
+    });
+    const log = logged();
+    try {
+      const slice = await postSlice(base, sliceable());
+      expect(slice.status).toBe(200);
+      expect(slicerContract.sliceResult.parse(await slice.json()).status).toBe("ok");
+      const step = await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
+      expect(step.status).toBe(200);
+      expect(await step.text()).toBe("glTF");
+    } finally {
+      log.restore();
+    }
+    // each unsandboxed run is logged once
+    expect(log.lines.filter((l) => l.includes("runs without the sandbox"))).toHaveLength(2);
+    for (const url of ["scad/png", "scad/stl"]) {
+      const res = await fetch(`${base}/v1/${url}`, { method: "POST", body: "cube(10);" });
+      expect(res.status).toBe(503);
+      expect(slicerContract.sandboxOff.parse(await res.json()).reason).toBe("old_kernel");
+    }
+    const stl = await fetch(`${base}/v1/stl/png`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: "solid x\nendsolid x\n",
+    });
+    expect(stl.status).toBe(503);
+    // no render ran
+    expect(() => readFileSync(lr.runsLog)).toThrow();
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("with it set and the sandbox on, nothing is logged as unsandboxed", async () => {
+    const s = setup({ allowUnsandboxed: true });
+    const base = await start(s.config);
+    const log = logged();
+    try {
+      expect((await postSlice(base, sliceable())).status).toBe(200);
+    } finally {
+      log.restore();
+    }
+    expect(log.lines.some((l) => l.includes("without the sandbox"))).toBe(false);
+  });
+
+  test("without it set, a slice and a STEP conversion are 503 while the sandbox is off", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: 5 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    expect((await postSlice(base, sliceable())).status).toBe(503);
+    const step = await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
+    expect(step.status).toBe(503);
+  });
+});
+
+// The self-test also fails on a kernel whose Landlock ABI is below 6 (the
+// maintainer, 2026-11-11; the test host runs kernel 6.17), as old_kernel.
+// landrun runs best effort, so it would sandbox OpenSCAD with whatever an old
+// kernel offers; ABI 6 is the first with every right this sandbox counts on
+// (signal and abstract socket scoping, on top of TCP and the filesystem
+// rules). landrun reports the ABI only when it runs without --best-effort, so
+// the check runs it that way. Only a number below 6 is old_kernel: an answer
+// that names no ABI is check_failed.
 describe("sandbox self-test: Landlock ABI", () => {
-  const render = (base: string, kind = "stl") =>
-    fetch(`${base}/v1/scad/${kind}`, { method: "POST", body: "cube(10);" });
+  const healthOf = async (base: string) =>
+    slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
   const logged = () => {
     const lines: string[] = [];
     const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
@@ -697,22 +1010,21 @@ describe("sandbox self-test: Landlock ABI", () => {
   };
 
   test.each([0, 5])(
-    "a kernel with Landlock ABI %i refuses every render, saying why in the answer and the log",
+    "a kernel with Landlock ABI %i is old_kernel, saying why in health and the log",
     async (abi) => {
       const s = setup();
       const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi });
-      const base = await start({ ...s.config, landrunBin: lr.bin });
       const log = logged();
+      let base: string;
       try {
-        for (const kind of ["stl", "png"]) {
-          const res = await render(base, kind);
-          expect(res.status).toBe(422);
-          const message = slicerContract.renderError.parse(await res.json()).message;
-          expect(message).toContain(`the kernel's Landlock ABI is ${abi}, below the 6`);
-        }
+        base = await start({ ...s.config, landrunBin: lr.bin });
       } finally {
         log.restore();
       }
+      const { sandbox } = await healthOf(base);
+      expect(sandbox.state).toBe("off");
+      expect(sandbox.reason).toBe("old_kernel");
+      expect(sandbox.detail).toContain(`the kernel's Landlock ABI is ${abi}, below the 6`);
       expect(
         log.lines.some(
           (l) =>
@@ -720,25 +1032,23 @@ describe("sandbox self-test: Landlock ABI", () => {
             l.includes(`the kernel's Landlock ABI is ${abi}, below the 6`),
         ),
       ).toBe(true);
-      // the ABI check ran before each request, and neither the probe import
-      // nor a render ran
-      expect(readFileSync(lr.abiLog, "utf8").trim().split("\n")).toHaveLength(2);
+      // the ABI check ran once, and neither the probe import nor a render ran
+      expect(readFileSync(lr.abiLog, "utf8").trim().split("\n")).toHaveLength(1);
       expect(() => readFileSync(lr.runsLog)).toThrow();
     },
   );
 
-  test.each([6, 8, 9])("a kernel with Landlock ABI %i renders", async (abi) => {
+  test.each([6, 8, 9])("a kernel with Landlock ABI %i is on", async (abi) => {
     const s = setup();
     const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi });
-    const base = await start({ ...s.config, landrunBin: lr.bin });
     const log = logged();
-    let res: Response;
+    let base: string;
     try {
-      res = await render(base);
-      expect(res.status).toBe(200);
+      base = await start({ ...s.config, landrunBin: lr.bin });
     } finally {
       log.restore();
     }
+    expect((await healthOf(base)).sandbox.state).toBe("on");
     // ABI 9 is what landrun asks for, so it only shows the kernel has at least 9
     const shown = abi >= 9 ? "Landlock ABI 9 or newer" : `Landlock ABI ${abi};`;
     expect(log.lines.some((l) => l.includes("sandbox self-test: ok") && l.includes(shown))).toBe(
@@ -747,26 +1057,25 @@ describe("sandbox self-test: Landlock ABI", () => {
     expect(readFileSync(lr.abiLog, "utf8").trim().split("\n")).toHaveLength(1);
   });
 
-  test("an answer that names no ABI proves nothing: the render is refused and the next one checks again", async () => {
-    const s = setup();
+  test("an answer that names no ABI proves nothing: check_failed, never old_kernel, and checked again", async () => {
+    const s = setup({ sandboxRetry: { initialMs: 60, maxMs: 60, busyMs: 20 } });
     const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: "garbled" });
     const base = await start({ ...s.config, landrunBin: lr.bin });
-    let res = await render(base);
-    expect(res.status).toBe(422);
-    const message = slicerContract.renderError.parse(await res.json()).message;
-    expect(message).toMatch(/inconclusive/);
-    expect(message).toMatch(/Landlock ABI/);
+    const { sandbox } = await healthOf(base);
+    expect(sandbox.state).toBe("off");
+    expect(sandbox.reason).toBe("check_failed");
+    expect(sandbox.detail).toMatch(/inconclusive/);
+    expect(sandbox.detail).toMatch(/Landlock ABI/);
     lr.setAbi(7);
-    res = await render(base);
+    await waitFor(async () => (await healthOf(base)).sandbox.state === "on");
+    const res = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(10);" });
     expect(res.status).toBe(200);
-    expect(readFileSync(lr.abiLog, "utf8").trim().split("\n")).toHaveLength(2);
   });
 
   test("the ABI check runs landrun with the render's own rules, without --best-effort, under prlimit", async () => {
     const s = setup();
     const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: "garbled" });
-    const base = await start({ ...s.config, landrunBin: lr.bin });
-    expect((await render(base)).status).toBe(422);
+    await start({ ...s.config, landrunBin: lr.bin });
     // the garbled ABI answer stops the self-test there, so prlimit's latest
     // run is the ABI check
     const args = readFileSync(s.prlimit.argsLog, "utf8").trimEnd().split("\n");
@@ -964,7 +1273,30 @@ describe("OpenSCAD and STEP", () => {
     const res = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(" });
     expect(res.status).toBe(422);
     const body = slicerContract.renderError.parse(await res.json());
-    expect(body.message).toContain("Parser error");
+    expect(body.message).toBe("OpenSCAD said: ERROR: Parser error in file input.scad, line 1");
+  });
+
+  // OpenSCAD's output is shown to the user as the reason a file failed. It is
+  // led in with "OpenSCAD said: ", so whatever it prints reads as OpenSCAD's
+  // words and never as one of the slicer's own messages.
+  test("a render whose OpenSCAD output reads like a slicer message is led in as OpenSCAD's own words", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "fail", stderr: "OpenSCAD renders are off: nope" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const res = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(" });
+    expect(res.status).toBe(422);
+    const body = slicerContract.renderError.parse(await res.json());
+    expect(body.message).toBe("OpenSCAD said: OpenSCAD renders are off: nope");
+  });
+
+  test("the slicer's own render sentences carry no lead-in", async () => {
+    const s = setup({ scadTimeoutSeconds: 1 });
+    const lr = fakeLandrun(s.stubs, { kind: "fsize" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const res = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(10);" });
+    expect(res.status).toBe(422);
+    const message = slicerContract.renderError.parse(await res.json()).message;
+    expect(message).toMatch(/^OpenSCAD's STL went over the/);
   });
 
   test("a .scad over 1 MiB is 413", async () => {
@@ -987,7 +1319,9 @@ describe("OpenSCAD and STEP", () => {
     base = await start({ ...s.config, stepWorker: failing });
     res = await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
     expect(res.status).toBe(422);
-    expect(slicerContract.convertError.parse(await res.json()).message).toContain("no shapes");
+    expect(slicerContract.convertError.parse(await res.json()).message).toBe(
+      "The converter said: no shapes in the file",
+    );
   });
 
   // Review of PR #409, follow-up: the app never holds a slicer answer whole,
@@ -1117,7 +1451,9 @@ describe("STL previews", () => {
     const res = await preview(base, binaryStl());
     expect(res.status).toBe(422);
     const body = slicerContract.renderError.parse(await res.json());
-    expect(body.message).toContain("unexpected end of file");
+    expect(body.message).toBe(
+      "OpenSCAD said: ERROR: STL import: unexpected end of file in input.stl",
+    );
     expect(readdirSync(s.workDir)).toEqual([]);
   });
 
@@ -1164,14 +1500,14 @@ describe("STL previews", () => {
     expect(JSON.parse(res.body)).toEqual({ error: "too_large" });
   });
 
-  test("stl/png waits for the sandbox self-test and is refused while it fails, as a .scad render is", async () => {
+  test("stl/png is 503 sandbox_off while the sandbox check has failed, as a .scad render is", async () => {
     const s = setup();
     const lr = fakeLandrun(s.stubs, { kind: "inputs" }, { probe: "read" });
     const base = await start({ ...s.config, landrunBin: lr.bin });
     const res = await preview(base, binaryStl());
-    expect(res.status).toBe(422);
-    const body = slicerContract.renderError.parse(await res.json());
-    expect(body.message.startsWith("OpenSCAD renders are off:")).toBe(true);
+    expect(res.status).toBe(503);
+    const body = slicerContract.sandboxOff.parse(await res.json());
+    expect(body.reason).toBe("check_failed");
     // the self-test ran and no render did
     expect(readFileSync(lr.runsLog, "utf8").trim().split("\n")).toHaveLength(1);
     expect(() => readFileSync(lr.argsLog)).toThrow();
@@ -1188,26 +1524,6 @@ describe("STL previews", () => {
     expect(slicerContract.error.parse(await busy.json())).toEqual({ error: "busy" });
     expect((await first).status).toBe(200);
     expect((await preview(base, binaryStl())).status).toBe(200);
-  });
-
-  test("a slice, a STEP and a .scad render are 409 busy while an STL preview runs", async () => {
-    const s = setup({ scadTimeoutSeconds: 2 });
-    // The self-test hangs until the cap, so the preview holds the lock.
-    const lr = fakeLandrun(s.stubs, { kind: "inputs" }, { probe: "hang" });
-    const base = await start({ ...s.config, landrunBin: lr.bin });
-    const first = preview(base, binaryStl());
-    await waitForFile(lr.runsLog);
-    for (const res of [
-      await postSlice(base, sliceable()),
-      await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" }),
-      await fetch(`${base}/v1/scad/png`, { method: "POST", body: "cube(10);" }),
-      await preview(base, binaryStl()),
-    ]) {
-      expect(res.status).toBe(409);
-      await res.body?.cancel();
-    }
-    expect((await first).status).toBe(422);
-    expect(readdirSync(s.workDir)).toEqual([]);
   });
 });
 
@@ -1235,8 +1551,8 @@ describe("one heavy job at a time", () => {
     await expectBusy(await step(base));
     await expectBusy(await scad(base, "stl"));
     await expectBusy(await scad(base, "png"));
-    // no render or self-test ran
-    expect(() => readFileSync(lr.runsLog)).toThrow();
+    // no render ran, only the start-up self-test
+    expect(readFileSync(lr.runsLog, "utf8").trim().split("\n")).toHaveLength(1);
     expect((await first).status).toBe(200);
     // and once the slice is done, a render runs again
     expect((await scad(base, "stl")).status).toBe(200);
@@ -1258,22 +1574,6 @@ describe("one heavy job at a time", () => {
     expect((await first).status).toBe(200);
     const after = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
     expect(after.busy).toBe(false);
-  });
-
-  test("a slice, a STEP and a second render are 409 busy while a render runs", async () => {
-    const s = setup({ scadTimeoutSeconds: 2 });
-    // The self-test hangs until the cap, so the first render holds the lock.
-    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "hang" });
-    const base = await start({ ...s.config, landrunBin: lr.bin });
-    const first = scad(base, "stl");
-    await waitForFile(lr.runsLog);
-    await expectBusy(await postSlice(base, sliceable()));
-    await expectBusy(await step(base));
-    await expectBusy(await scad(base, "png"));
-    expect(() => readFileSync(s.fake.argsLog)).toThrow();
-    expect((await first).status).toBe(422);
-    expect(readFileSync(lr.runsLog, "utf8").trim().split("\n")).toHaveLength(1);
-    expect(readdirSync(s.workDir)).toEqual([]);
   });
 
   test("a busy answer comes at once, while the running job still runs", async () => {
@@ -1422,6 +1722,8 @@ wait
       },
     });
     const base = await start({ ...s.config, orcaBin: orca });
+    // the start-up check released its own job too
+    const before = reaps.length;
     let helper = 0;
     try {
       // Job 1 starts, and its client goes away: released at once.
@@ -1429,7 +1731,7 @@ wait
       await waitForFile(helperFile);
       helper = Number(readFileSync(helperFile, "utf8"));
       first.destroy();
-      await waitFor(() => reaps.length === 1, 2000);
+      await waitFor(() => reaps.length === before + 1, 2000);
       // Job 2 takes the lock at once and runs its program.
       const second = await send(`${base}/v1/step/glb`, "ISO-10303-21;");
       await waitForFile(workerFile);
@@ -1439,7 +1741,7 @@ wait
       // Job 1's code resumes once the pipe grace is up (2 s) and releases
       // again; give it time, and check that job 2 is untouched.
       await new Promise((r) => setTimeout(r, PIPE_GRACE_MS + 800));
-      expect(reaps).toHaveLength(1);
+      expect(reaps).toHaveLength(before + 1);
       expect(alive(worker)).toBe(true);
       expect(readdirSync(s.workDir)).toEqual(folders);
       const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
@@ -1681,10 +1983,10 @@ describe("leftover job folders and /work space", () => {
     const base = await start({ ...s.config, landrunBin: lr.bin });
     rmFails.under = s.workDir;
     expect((await postSlice(base, sliceable())).status).toBe(200);
-    // a render leaves its own folder and its self-test's
+    // a render leaves its own folder as well
     const render = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(1);" });
     expect(render.status).toBe(200);
-    expect(readdirSync(s.workDir)).toHaveLength(3);
+    expect(readdirSync(s.workDir)).toHaveLength(2);
     rmFails.under = null;
     expect((await postSlice(base, sliceable())).status).toBe(200);
     expect(readdirSync(s.workDir)).toEqual([]);

@@ -45,7 +45,14 @@ const P1S: Printer = {
 };
 const ORCA = "2.5.0";
 const CONTEXT: DisplayContext = { printerId: P1S.id, orcaVersion: ORCA, printers: [P1S] };
-const HEALTHY = { contract: 1, orca: ORCA, openscad: "2026.10.01", busy: false } as Health;
+const HEALTHY: Health = {
+  contract: 2,
+  orca: ORCA,
+  openscad: "2026.10.01",
+  busy: false,
+  sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+  timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+};
 
 /** A token shaped like the app's own: ph_ and 43 base64url characters, made by the run. */
 const TOKEN_IN_DETAIL = ["ph", randomBytes(43).toString("base64url").slice(0, 43)].join("_");

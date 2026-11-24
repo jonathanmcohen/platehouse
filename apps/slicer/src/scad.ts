@@ -252,12 +252,14 @@ export async function renderScad(
       };
     }
   }
-  const message = tailLines(output);
+  // OpenSCAD's own words are led in, so they read as what it said and never
+  // as one of the slicer's sentences; its exit status is the slicer's own.
+  const said = tailLines(output);
   return {
     ok: false,
-    message:
-      message ||
-      `OpenSCAD exited with ${run.signal ?? run.code} and wrote no ${kind.toUpperCase()}.`,
+    message: said
+      ? `OpenSCAD said: ${said}`
+      : `OpenSCAD exited with ${run.signal ?? run.code} and wrote no ${kind.toUpperCase()}.`,
     output,
   };
 }
@@ -265,6 +267,12 @@ export async function renderScad(
 export interface SandboxCheck {
   ok: boolean;
   detail: string;
+  /**
+   * Why a failed check failed: old_kernel exactly when landrun reported a
+   * Landlock ABI below MIN_LANDLOCK_ABI, and check_failed for every other
+   * failure, inconclusive ones included. null when the check passed.
+   */
+  reason: "old_kernel" | "check_failed" | null;
 }
 
 /** OpenSCAD's warning for a file import() cannot open (src/io/import_stl.cc). */
@@ -278,7 +286,7 @@ const CANNOT_OPEN = "Can't open import file";
 const ABI_CHECK_SECONDS = 30;
 
 /**
- * Proves the sandbox works before a render runs. landrun runs best effort,
+ * Proves the sandbox works; the server runs it at start-up. landrun runs best effort,
  * which would sandbox OpenSCAD with whatever an older kernel offers, or not
  * at all, so this checks three things, in order, and passes only when all
  * three do:
@@ -298,8 +306,7 @@ const ABI_CHECK_SECONDS = 30;
  *    start, a full /work) proves nothing, so it is inconclusive too.
  *
  * Every failure, inconclusive or not, refuses renders; the detail says why
- * in plain words, and the server puts it in its log and in the render's
- * error.
+ * in plain words, and the server puts it in its log and in health.
  */
 export async function sandboxSelfTest(
   config: ScadConfig,
@@ -310,6 +317,7 @@ export async function sandboxSelfTest(
   if (!existsSync(probe) || statSync(probe).size === 0) {
     return {
       ok: false,
+      reason: "check_failed",
       detail: `the sandbox probe ${probe} is missing, so the sandbox cannot be checked`,
     };
   }
@@ -319,6 +327,7 @@ export async function sandboxSelfTest(
     const code = (err as NodeJS.ErrnoException).code ?? "an error";
     return {
       ok: false,
+      reason: "check_failed",
       detail: `the check was inconclusive: the sandbox probe ${probe} cannot be read by the server (${code}), so OpenSCAD failing to open it would prove nothing`,
     };
   }
@@ -332,12 +341,14 @@ export async function sandboxSelfTest(
   if (abi.abi === null) {
     return {
       ok: false,
+      reason: "check_failed",
       detail: `the check was inconclusive: landrun did not report the kernel's Landlock ABI (${abi.detail})`,
     };
   }
   if (abi.abi < MIN_LANDLOCK_ABI) {
     return {
       ok: false,
+      reason: "old_kernel",
       detail: `the kernel's Landlock ABI is ${abi.abi}, below the ${MIN_LANDLOCK_ABI} this sandbox needs, so OpenSCAD would run with fewer restrictions than it is built for`,
     };
   }
@@ -348,6 +359,7 @@ export async function sandboxSelfTest(
   if (r.ok) {
     return {
       ok: false,
+      reason: "check_failed",
       detail: `OpenSCAD read ${probe} from outside its job folder under landrun`,
     };
   }
@@ -358,11 +370,13 @@ export async function sandboxSelfTest(
   if (refusal) {
     return {
       ok: true,
+      reason: null,
       detail: `${abiText}; landrun blocked a read of ${probe}: ${refusal.trim()}`,
     };
   }
   return {
     ok: false,
+    reason: "check_failed",
     detail: `the check was inconclusive: OpenSCAD did not report that it could not open ${probe} (${r.message.split("\n").at(-1) ?? ""})`,
   };
 }

@@ -77,7 +77,7 @@ describe("a non-zero return code", () => {
   ] as const)("%i with its clean exit status keeps its reason, %s", (code, reason) => {
     const body = outcome(code, { code: clean(code) }, "Orca's text");
     expect(body).toEqual({
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       plate: 1,
       status: "failed",

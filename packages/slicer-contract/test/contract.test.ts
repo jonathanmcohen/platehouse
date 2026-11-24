@@ -1,4 +1,4 @@
-// Slicer HTTP contract v1. The examples are the ones the contract was
+// Slicer HTTP contract v2. The examples are the ones the contract was
 // written with, so a schema that drifts from it fails here.
 import { describe, expect, test } from "vitest";
 import {
@@ -9,9 +9,9 @@ import {
   slicerContract,
 } from "../src/index.js";
 
-describe("slicer contract v1", () => {
-  test("is version 1 with the contract's body and answer limits", () => {
-    expect(CONTRACT_VERSION).toBe(1);
+describe("slicer contract v2", () => {
+  test("is version 2 with the contract's body and answer limits", () => {
+    expect(CONTRACT_VERSION).toBe(2);
     expect(LIMITS).toEqual({
       sliceBodyBytes: 536_870_912,
       scadBodyBytes: 1_048_576,
@@ -39,16 +39,83 @@ describe("slicer contract v1", () => {
     );
   });
 
+  const HEALTH = {
+    contract: 2,
+    orca: "2.5.0",
+    openscad: "2026.11-RC0",
+    busy: false,
+    sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+    timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+  };
+
   test("health parses the contract's example and rejects another contract number", () => {
-    const ok = { contract: 1, orca: "2.5.0", openscad: "2026.11-RC0", busy: false };
-    expect(slicerContract.health.parse(ok)).toEqual(ok);
-    expect(slicerContract.health.safeParse({ ...ok, contract: 2 }).success).toBe(false);
-    expect(slicerContract.health.safeParse({ ...ok, extra: 1 }).success).toBe(false);
+    expect(slicerContract.health.parse(HEALTH)).toEqual(HEALTH);
+    expect(slicerContract.health.safeParse({ ...HEALTH, contract: 1 }).success).toBe(false);
+    expect(slicerContract.health.safeParse({ ...HEALTH, contract: 3 }).success).toBe(false);
+  });
+
+  test("a health body of contract 1, with no sandbox or timeouts, is refused", () => {
+    const v1 = { contract: 1, orca: "2.5.0", openscad: "2026.11-RC0", busy: false };
+    expect(slicerContract.health.safeParse(v1).success).toBe(false);
+    const { sandbox: _s, timeouts: _t, ...v2Without } = HEALTH;
+    expect(slicerContract.health.safeParse(v2Without).success).toBe(false);
+  });
+
+  test("health refuses an extra key at every level", () => {
+    expect(slicerContract.health.safeParse({ ...HEALTH, extra: 1 }).success).toBe(false);
+    expect(
+      slicerContract.health.safeParse({ ...HEALTH, sandbox: { ...HEALTH.sandbox, extra: 1 } })
+        .success,
+    ).toBe(false);
+    expect(
+      slicerContract.health.safeParse({ ...HEALTH, timeouts: { ...HEALTH.timeouts, extra: 1 } })
+        .success,
+    ).toBe(false);
+  });
+
+  test("health takes the three sandbox states and a reason and detail when it is off", () => {
+    for (const state of ["checking", "on", "off"]) {
+      const sandbox = { state, reason: null, detail: null, allowUnsandboxed: true };
+      expect(slicerContract.health.safeParse({ ...HEALTH, sandbox }).success).toBe(true);
+    }
+    const off = {
+      state: "off",
+      reason: "old_kernel",
+      detail: "the kernel is too old",
+      allowUnsandboxed: false,
+    };
+    expect(slicerContract.health.parse({ ...HEALTH, sandbox: off }).sandbox).toEqual(off);
+    for (const bad of [
+      { ...off, state: "broken" },
+      { ...off, reason: "other" },
+      { ...off, allowUnsandboxed: "no" },
+    ]) {
+      expect(slicerContract.health.safeParse({ ...HEALTH, sandbox: bad }).success).toBe(false);
+    }
+  });
+
+  test("health timeouts are positive whole seconds", () => {
+    for (const bad of [0, -1, 1.5, "180"]) {
+      const timeouts = { ...HEALTH.timeouts, scadSeconds: bad };
+      expect(slicerContract.health.safeParse({ ...HEALTH, timeouts }).success).toBe(false);
+    }
+  });
+
+  test("sandboxOff parses both reasons and refuses an unknown one", () => {
+    for (const reason of ["old_kernel", "check_failed"]) {
+      const body = { error: "sandbox_off", reason, detail: "why" };
+      expect(slicerContract.sandboxOff.parse(body)).toEqual(body);
+    }
+    const body = { error: "sandbox_off", reason: "old_kernel", detail: "why" };
+    expect(slicerContract.sandboxOff.safeParse({ ...body, reason: "gone" }).success).toBe(false);
+    expect(slicerContract.sandboxOff.safeParse({ ...body, detail: undefined }).success).toBe(false);
+    expect(slicerContract.sandboxOff.safeParse({ ...body, extra: 1 }).success).toBe(false);
+    expect(slicerContract.sandboxOff.safeParse({ ...body, error: "busy" }).success).toBe(false);
   });
 
   test("profiles parses printers and filaments, each filament naming its printer", () => {
     const body = {
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       printers: [
         { id: "Bambu Lab P1S 0.4 nozzle", model: "Bambu Lab P1S", modelId: "C12", nozzle: 0.4 },
@@ -69,7 +136,7 @@ describe("slicer contract v1", () => {
 
   test("a profiles filament with no printer, an empty printer or a field beyond the contract is refused", () => {
     const body = (filament: Record<string, unknown>) => ({
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       printers: [],
       filaments: [filament],
@@ -89,7 +156,7 @@ describe("slicer contract v1", () => {
 
   test("an ok slice parses the contract's example", () => {
     const body = {
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       plate: 3,
       status: "ok",
@@ -108,7 +175,7 @@ describe("slicer contract v1", () => {
 
   test("a sliced filament carries only the contract's slot, type, color and grams", () => {
     const body = (filament: Record<string, unknown>) => ({
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       plate: 1,
       status: "ok",
@@ -136,7 +203,7 @@ describe("slicer contract v1", () => {
 
   test("an ok slice needs a time and a weight above zero", () => {
     const body = {
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       plate: 1,
       status: "ok",
@@ -159,7 +226,7 @@ describe("slicer contract v1", () => {
   test("a failed slice parses the contract's example and every reason", () => {
     for (const reason of REASONS) {
       const body = {
-        contract: 1,
+        contract: 2,
         orca: "2.5.0",
         plate: 3,
         status: "failed",
@@ -173,7 +240,7 @@ describe("slicer contract v1", () => {
 
   test("a failed slice with no Orca code (the slicer's own kill) has code null", () => {
     const body = {
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       plate: 1,
       status: "failed",
@@ -186,7 +253,7 @@ describe("slicer contract v1", () => {
 
   test("a failed slice refuses an unknown reason and a detail over 2000 characters", () => {
     const body = {
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       plate: 1,
       status: "failed",

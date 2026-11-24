@@ -1,5 +1,5 @@
 // A slicer stub for the estimate tests, built on the
-// slicer contract package so it cannot drift from contract v1: every answer
+// slicer contract package so it cannot drift from contract v2: every answer
 // it sends is parsed with the contract's own zod schema first, and a test
 // that scripts an answer the contract does not allow fails right there. The
 // query is read with the contract's sliceQuery, the body limit is the
@@ -31,6 +31,7 @@ import {
   LIMITS,
   type Printer,
   type Reason,
+  type SandboxOffBody,
   type SliceFilament,
   slicerContract,
 } from "@platehouse/slicer-contract";
@@ -70,6 +71,32 @@ export interface StubCall {
   bytes: number;
 }
 
+/**
+ * What a route answers while the slicer's sandbox is off: 503 sandbox_off,
+ * before the body is read, connection closed. A slice outcome and a render
+ * answer both take it.
+ */
+export interface SandboxOffAnswer {
+  kind: "sandboxOff";
+  reason: SandboxOffBody["reason"];
+}
+
+/** A 503 sandbox_off answer for a slice outcome or a render answer. */
+export function sandboxOff(reason: SandboxOffBody["reason"]): SandboxOffAnswer {
+  return { kind: "sandboxOff", reason };
+}
+
+function sandboxOffBody(answer: SandboxOffAnswer): SandboxOffBody {
+  return slicerContract.sandboxOff.parse({
+    error: "sandbox_off",
+    reason: answer.reason,
+    detail:
+      answer.reason === "old_kernel"
+        ? "the kernel's Landlock ABI is below what the sandbox needs"
+        : "the sandbox check failed",
+  });
+}
+
 /** What the stub does with one slice request. */
 export type StubOutcome =
   /** 200 ok with numbers; time and weight default from the plate number. */
@@ -78,12 +105,14 @@ export type StubOutcome =
   | { kind: "failed"; code: number | null; reason: Reason; detail: string }
   /** 409 busy, before the body is read, connection closed. */
   | { kind: "busy" }
+  /** 503 sandbox_off, before the body is read, connection closed. */
+  | SandboxOffAnswer
   /** The connection is cut once the body is in, as when the slicer restarts mid-slice. */
   | { kind: "drop" }
   /** Nothing is answered until the stub stops. */
   | { kind: "hang" };
 
-/** A render route of contract v1 (OpenSCAD, STEP, and the STL preview of issue #316). */
+/** A render route of contract v2 (OpenSCAD, STEP, and the STL preview of issue #316). */
 export type RenderRoute = "/v1/scad/stl" | "/v1/scad/png" | "/v1/step/glb" | "/v1/stl/png";
 
 const RENDER_ROUTES: readonly RenderRoute[] = [
@@ -101,6 +130,8 @@ export type RenderAnswer =
   | { kind: "failed"; message: string }
   /** 409 busy, before the body is read, connection closed. */
   | { kind: "busy" }
+  /** 503 sandbox_off, before the body is read, connection closed. */
+  | SandboxOffAnswer
   /** The connection is cut once the body is in, as when the slicer restarts mid-render. */
   | { kind: "drop" };
 
@@ -332,6 +363,7 @@ export async function startSlicerStub(
     if (outcome.kind === "busy") {
       return refuseEarly(res, 409, slicerContract.error.parse({ error: "busy" }));
     }
+    if (outcome.kind === "sandboxOff") return refuseEarly(res, 503, sandboxOffBody(outcome));
     if (length > LIMITS.sliceBodyBytes) {
       return refuseEarly(res, 413, slicerContract.error.parse({ error: "too_large" }));
     }
@@ -420,6 +452,10 @@ export async function startSlicerStub(
       renderCalls.push({ route, contentType, body: Buffer.alloc(0), answer: answer.kind });
       return refuseEarly(res, 409, slicerContract.error.parse({ error: "busy" }));
     }
+    if (answer.kind === "sandboxOff") {
+      renderCalls.push({ route, contentType, body: Buffer.alloc(0), answer: answer.kind });
+      return refuseEarly(res, 503, sandboxOffBody(answer));
+    }
     const chunks: Buffer[] = [];
     let total = 0;
     for await (const chunk of req) {
@@ -498,6 +534,13 @@ export async function startSlicerStub(
               orca,
               openscad: "2026.11-RC0",
               busy: false,
+              sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+              timeouts: {
+                sliceSeconds: 180,
+                scadSeconds: 120,
+                stepSeconds: 120,
+                uploadSeconds: 600,
+              },
             }),
           );
         case "GET /v1/profiles":

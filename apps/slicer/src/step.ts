@@ -196,9 +196,14 @@ export async function runStepWorker(
     }
     return { ok: true, bytes: readFileSync(output) };
   }
+  // The worker's own words are led in, so they read as what it said and never
+  // as one of the slicer's sentences; its exit status is the slicer's own.
+  const said = tailLines(run.stderrTail);
   return {
     ok: false,
-    message: tailLines(run.stderrTail) || `The converter exited with ${run.signal ?? run.code}.`,
+    message: said
+      ? `The converter said: ${said}`
+      : `The converter exited with ${run.signal ?? run.code}.`,
   };
 }
 

@@ -2,8 +2,12 @@
 // three.js-style arrays, and the slicer packs them into one binary glTF 2.0
 // file. Ported from the slicing gate's lib/glb.mjs and its tests; gate item
 // (h) proved the path on NIST CTC-01.
-import { describe, expect, test } from "vitest";
-import { meshesToGlb, type OcctMesh } from "../src/step.js";
+import { afterEach, describe, expect, test } from "vitest";
+import { meshesToGlb, type OcctMesh, runStepWorker } from "../src/step.js";
+import { fakeStepWorker, stubDir } from "./support/stubs.js";
+import { removeTempDirs, tempDir } from "./support/tmp.js";
+
+afterEach(removeTempDirs);
 
 function parse(glb: Buffer) {
   expect(glb.subarray(0, 4).toString("ascii")).toBe("glTF");
@@ -53,5 +57,39 @@ describe("meshesToGlb", () => {
 
   test("no meshes is an error, not an empty file", () => {
     expect(() => meshesToGlb([])).toThrow(/no meshes/);
+  });
+});
+
+// A conversion's message is shown to the user as the reason a file failed.
+// When it is the worker's own output, it says so, so it reads as what the
+// converter said and never as a sentence of the slicer's.
+describe("runStepWorker messages", () => {
+  const run = (worker: string, over: { timeoutSeconds?: number; maxOutputBytes?: number } = {}) =>
+    runStepWorker(
+      { worker, timeoutSeconds: 30, maxOutputBytes: 1024, ...over },
+      tempDir("slicer-step-"),
+    );
+
+  test("a failed conversion's message from the worker's output starts with the converter lead-in", async () => {
+    const r = await run(
+      fakeStepWorker(stubDir(), { kind: "fail", stderr: "no shapes in the file" }),
+    );
+    expect(r).toEqual({ ok: false, message: "The converter said: no shapes in the file" });
+  });
+
+  test("the slicer's own sentences carry no lead-in", async () => {
+    const big = await run(fakeStepWorker(stubDir(), { kind: "big", bytes: 2048 }));
+    expect(big.ok).toBe(false);
+    if (!big.ok) {
+      expect(big.message).toMatch(/^The converted mesh is 1 MiB, over the 0 MiB limit/);
+    }
+    const slow = await run(
+      fakeStepWorker(stubDir(), { kind: "sleep", pidFile: `${tempDir("slicer-pid-")}/pid` }),
+      { timeoutSeconds: 1 },
+    );
+    expect(slow).toEqual({
+      ok: false,
+      message: "The conversion took longer than 1 s and was stopped.",
+    });
   });
 });

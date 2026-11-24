@@ -12,14 +12,17 @@ beforeAll(async () => {
 afterAll(() => slicer?.stop());
 
 describe("slicer image", () => {
-  test("health reports orca 2.5.0, OpenSCAD 2026.11-RC0, contract 1 and not busy", async () => {
+  test("health reports orca 2.5.0, OpenSCAD 2026.11-RC0, contract 2, the sandbox on and the time caps", async () => {
     const res = await fetch(`${slicer.base}/v1/health`);
     expect(res.status).toBe(200);
     expect(slicerContract.health.parse(await res.json())).toEqual({
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       openscad: "2026.11-RC0",
       busy: false,
+      // CI's kernel is new enough for the sandbox.
+      sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+      timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
     });
   });
 

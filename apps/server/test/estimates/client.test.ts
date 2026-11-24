@@ -1,5 +1,5 @@
 // The app's slicer client against a slicer stub that
-// answers only what slicer contract v1 allows. A 409 busy and a lost
+// answers only what slicer contract v2 allows. A 409 busy and a lost
 // connection are told apart from a refusal, because the slice job retries the
 // first two and records the third.
 import { Readable } from "node:stream";
@@ -46,7 +46,7 @@ beforeEach(() => {
 describe("slicer client", () => {
   test("the HTTP timeout is the slicer's own kill time plus 30 s", () => {
     // The slicer kills a plate at SLICE_TIMEOUT_SECONDS, --mstpp + 60 by
-    // default, and the app waits 30 s longer (Slicer HTTP contract v1).
+    // default, and the app waits 30 s longer (Slicer HTTP contract v2).
     expect(sliceTimeoutMs(120)).toBe(210_000);
     expect(sliceTimeoutMs(600)).toBe(690_000);
   });
@@ -54,10 +54,12 @@ describe("slicer client", () => {
   test("health and profiles come back as the contract has them", async () => {
     const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
     expect(await client.health()).toEqual({
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       openscad: "2026.11-RC0",
       busy: false,
+      sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+      timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
     });
     const profiles = await client.profiles();
     expect(profiles.printers).toEqual(STUB_PRINTERS);
@@ -208,11 +210,11 @@ describe("slicer client", () => {
 
   test("an answer outside the contract is a refusal, not a result", async () => {
     // A slicer of another contract version, simulated by a stub that is not
-    // the contract's: health reports contract 2.
+    // the contract's: health reports contract 1.
     const { createServer } = await import("node:http");
     const server = createServer((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ contract: 2, orca: "9.9.9", openscad: "x", busy: false }));
+      res.end(JSON.stringify({ contract: 1, orca: "9.9.9", openscad: "x", busy: false }));
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
