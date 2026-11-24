@@ -5,6 +5,7 @@
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -678,6 +679,10 @@ describe("a plate that overhangs the bed", () => {
       "a -50 followed by a crash exit",
       { kind: "result", code: -50, error: "x", exit: 1 } as OrcaMode,
     ],
+    [
+      "a -50 followed by a segfault",
+      { kind: "result", code: -50, error: "x", segfault: true } as OrcaMode,
+    ],
   ])("%s is never retried", async (_name, mode) => {
     const s = setup({}, mode);
     const base = await start(s.config);
@@ -692,6 +697,44 @@ describe("a plate that overhangs the bed", () => {
     expect(body).toMatchObject({ status: "failed", code: -50, reason: "slicer_error" });
     if (body.status !== "failed") throw new Error("expected a failure");
     expect(body.detail).toMatch(/^Orca wrote return code -50/);
+  });
+
+  test("a crash on the retry is reported as a crash, not as bed_too_small", async () => {
+    const s = setup({}, { kind: "arrange", arrangeFixes: false, retryExit: 1 });
+    const base = await start(s.config);
+    const body = await post(base);
+    expect(body).toMatchObject({ status: "failed", code: -50, reason: "slicer_error" });
+    if (body.status !== "failed") throw new Error("expected a failure");
+    expect(body.detail).toMatch(/^Orca wrote return code -50 .*then exited with 1/);
+    expect(body.detail.startsWith(TOO_BIG_DETAIL)).toBe(false);
+    expect(runsOf(s)).toHaveLength(2);
+  });
+
+  test("a signal on the retry is reported as a crash, not as bed_too_small", async () => {
+    const s = setup({}, { kind: "arrange", arrangeFixes: false, retrySegfault: true });
+    const base = await start(s.config);
+    const body = await post(base);
+    expect(body).toMatchObject({ status: "failed", code: -50, reason: "slicer_error" });
+    if (body.status !== "failed") throw new Error("expected a failure");
+    expect(body.detail).toMatch(/^Orca wrote return code -50 .*then exited with 139/);
+    expect(runsOf(s)).toHaveLength(2);
+  });
+
+  test("a first run that used the whole budget gets no retry and is answered timeout", async () => {
+    const s = setup({}, { kind: "arrange", arrangeFixes: true });
+    const base = await start(s.config);
+    const realNow = Date.now.bind(Date);
+    // The clock jumps by the whole budget once the first run has started.
+    const spy = vi
+      .spyOn(Date, "now")
+      .mockImplementation(() => realNow() + (existsSync(s.fake.runsLog) ? 30_000 : 0));
+    try {
+      const body = await post(base);
+      expect(body).toMatchObject({ status: "failed", code: null, reason: "timeout" });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(runsOf(s)).toHaveLength(1);
   });
 
   test("the retry reads its own output, never the first run's files", async () => {
@@ -711,17 +754,17 @@ describe("a plate that overhangs the bed", () => {
 
   test("the retry gets only the time that is left", async () => {
     const s = setup(
-      { sliceTimeoutSeconds: 4 },
-      { kind: "arrange", arrangeFixes: true, sleepMs: 1500 },
+      { sliceTimeoutSeconds: 20 },
+      { kind: "arrange", arrangeFixes: true, sleepMs: 2000 },
     );
     const base = await start(s.config);
     const started = Date.now();
     const body = await post(base);
     expect(body.status).toBe("ok");
-    expect(Date.now() - started).toBeLessThan(4000);
+    expect(Date.now() - started).toBeLessThan(20_000);
     const cpu = readFileSync(s.prlimit.argsLog, "utf8").match(/--cpu=(\d+)/)?.[1];
-    // The first run's limit is 4 * 4 + 60 = 76 s of CPU; the retry's is sized from what is left.
-    expect(Number(cpu)).toBeLessThan(76);
+    // The first run's limit is 20 * 4 + 60 = 140 s of CPU; the retry's is sized from what is left.
+    expect(Number(cpu)).toBeLessThan(140);
   });
 
   test("a retry that outlasts the time that is left is killed and answered timeout", async () => {

@@ -90,10 +90,7 @@ type Failed = Extract<SliceResult, { status: "failed" }>;
  */
 export function isCleanOffBed(result: SliceResult, run: GroupResult): result is Failed {
   return (
-    result.status === "failed" &&
-    result.code === OFF_BED_CODE &&
-    !run.signal &&
-    (run.code === null || run.code === cleanStatusOf(OFF_BED_CODE))
+    result.status === "failed" && result.code === OFF_BED_CODE && isCleanExit(OFF_BED_CODE, run)
   );
 }
 
@@ -102,9 +99,13 @@ export function bedTooSmall(retry: Failed): SliceResult {
   return { ...retry, reason: "bed_too_small", detail: cut(`${TOO_BIG_DETAIL} ${retry.detail}`) };
 }
 
-/** The exit status of a clean refusal with this code: (256 + code) & 0xff. */
-function cleanStatusOf(code: number): number {
-  return ((code % 256) + 256) % 256;
+/**
+ * Whether a run that wrote refusal `code` ended the way a refusal does: no
+ * signal, and an exit status of (256 + code) & 0xff (or none known). Any other
+ * known status, or a signal, means Orca died after it wrote the code.
+ */
+function isCleanExit(code: number, run: GroupResult): boolean {
+  return !run.signal && (run.code === null || run.code === ((code % 256) + 256) % 256);
 }
 
 /** The environment Orca runs with: everything it writes stays in the job folder. */
@@ -334,8 +335,7 @@ export function sliceOutcome(
     // after it wrote the code: a crash, whatever the code says, as the
     // slicing gate rules (tools/slicing-gate/lib/classify.mjs). An unknown
     // status is no evidence.
-    const cleanStatus = cleanStatusOf(code);
-    if (run.signal || (run.code !== null && run.code !== cleanStatus)) {
+    if (!isCleanExit(code, run)) {
       const end = run.signal ? `was killed by ${run.signal}` : `exited with ${run.code}`;
       return failed(
         code,

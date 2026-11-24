@@ -45,6 +45,12 @@ export type OrcaMode =
       arrangeFixes: boolean;
       firstStats?: boolean;
       retryStats?: boolean;
+      /** With arrangeFixes false: the retry writes -50, then exits with this status. */
+      retryExit?: number;
+      /** With arrangeFixes false: the retry writes -50, then dies of SIGSEGV. */
+      retrySegfault?: boolean;
+      /** The first run writes -50, then dies of SIGSEGV. */
+      firstSegfault?: boolean;
       sleepMs?: number;
     };
 
@@ -113,7 +119,7 @@ exit 0
       body = `${nap}if [ "$arranged" = no ]; then
   ${refusal}
   ${mode.firstStats ? stats : ":"}
-  exit 206
+  ${mode.firstSegfault ? "kill -SEGV $$" : "exit 206"}
 fi
 ${
   mode.arrangeFixes
@@ -121,7 +127,7 @@ ${
 ${mode.retryStats === false ? ":" : stats}
 exit 0`
     : `${refusal}
-exit 206`
+${mode.retrySegfault ? "kill -SEGV $$" : `exit ${mode.retryExit ?? 206}`}`
 }
 `;
       break;
