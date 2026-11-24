@@ -1,5 +1,5 @@
 -- Platehouse schema 0016: job and database fixes (0.1.1 step 6). Hand-written;
--- every statement is read in review (lesson 14). Never edit it once applied
+-- every statement is read in review. Never edit it once applied
 -- anywhere: a change is a new file.
 --
 -- - Partial indexes on the blob references the delete and purge paths look up
