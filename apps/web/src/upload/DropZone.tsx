@@ -13,6 +13,7 @@
 // for that model, each with the dialog's Choose files button
 // (issue #202).
 import { type DragEvent, type ReactNode, useRef, useState } from "react";
+import { droppedFiles } from "./dropped";
 
 export interface DropZoneProps {
   onFiles(files: File[]): void;
@@ -59,7 +60,7 @@ export function DropZone({ onFiles, children }: DropZoneProps) {
         event.preventDefault();
         depth.current = 0;
         setActive(false);
-        const files = Array.from(event.dataTransfer.files ?? []);
+        const files = droppedFiles(event.dataTransfer);
         if (files.length > 0) onFiles(files);
       }}
     >

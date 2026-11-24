@@ -71,6 +71,7 @@ import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import "../settings/organise.css";
 import { useInertOutside } from "../settings/useInertOutside";
 import "./upload.css";
+import { droppedFiles } from "./dropped";
 import {
   ACCEPT,
   type DuplicateMatch,
@@ -405,7 +406,7 @@ export function UploadDialog({
   function onDrop(event: DragEvent<HTMLDivElement>) {
     if (!carriesFiles(event)) return;
     event.preventDefault();
-    const dropped = Array.from(event.dataTransfer.files ?? []);
+    const dropped = droppedFiles(event.dataTransfer);
     if (dropped.length > 0) addFiles(dropped);
   }
 

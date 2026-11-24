@@ -1,5 +1,6 @@
-// The Settings page, /settings. It holds, in order: the red banner when
-// bucket versioning is not on, My printers (PrinterMenu), the API tokens,
+// The Settings page, /settings. It holds, in order: the Accent colour and
+// Language pickers, the red banner when bucket versioning is not on, My
+// printers (PrinterMenu), the API tokens,
 // Model names (the one-off "Use file titles", TitleNames.tsx), and the trash.
 // Everything comes from the session-class app API under /app/api
 // (apps/server/src/app-api); every dialog is the app's own themed one.

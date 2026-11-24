@@ -24,7 +24,15 @@
 import { type FormEvent, type RefObject, useId, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useI18n } from "../i18n/I18n";
-import { appApi, needsSignIn, SIGN_IN_AGAIN_URL, segment, useAppApi, useErrorText } from "./api";
+import {
+  AppApiError,
+  appApi,
+  needsSignIn,
+  SIGN_IN_AGAIN_URL,
+  segment,
+  useAppApi,
+  useErrorText,
+} from "./api";
 import { ConfirmDialog, Dialog } from "./Dialog";
 import { useRowFocus } from "./focus";
 import { SignOutEverywhere, userLabel } from "./SignOutEverywhere";
@@ -156,6 +164,11 @@ export function Tokens() {
     try {
       await appApi("DELETE", `/tokens/${segment(item.id)}`);
     } catch (failure) {
+      // Already revoked elsewhere (404): what was asked for is done.
+      if (failure instanceof AppApiError && failure.status === 404) {
+        finishRevoke(item);
+        return;
+      }
       if (!needsSignIn(failure)) throw failure;
       // Revoking someone else's token needs a recent sign-in: close the
       // dialog and offer the sign-in, keeping the token listed.
@@ -163,6 +176,10 @@ export function Tokens() {
       setSignInAct("revoke");
       return;
     }
+    finishRevoke(item);
+  }
+
+  function finishRevoke(item: ListedToken) {
     // Its own button is gone with it; the dialog hands focus to its neighbour.
     revokeReturn.current = focus.after(item.id);
     list.set((prev) => ({ tokens: prev.tokens.filter((r) => r.id !== item.id) }));

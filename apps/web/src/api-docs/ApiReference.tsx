@@ -59,11 +59,13 @@ const DOC = raw as unknown as ApiDocument;
  */
 const MAX_DEPTH = 5;
 
-function Paragraphs({ text }: { text: string }) {
+export function Paragraphs({ text }: { text: string }) {
   return (
     <>
-      {paragraphs(text).map((p) => (
-        <p key={p}>{p}</p>
+      {paragraphs(text).map((p, i) => (
+        // A description can repeat a paragraph, so the text alone is not a key.
+        // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are fixed for a build.
+        <p key={`${i}-${p}`}>{p}</p>
       ))}
     </>
   );

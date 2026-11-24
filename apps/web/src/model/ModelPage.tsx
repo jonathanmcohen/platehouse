@@ -721,6 +721,10 @@ function ModelDetail({
               id={`${base}-panel-${name}`}
               aria-labelledby={`${base}-tab-${name}`}
               className="studio-panel"
+              // A panel can hold nothing a keyboard reaches yet still scroll or be read; it
+              // is a tab stop so the keyboard can reach its content (APG tabs).
+              // biome-ignore lint/a11y/noNoninteractiveTabindex: the APG tabs pattern gives a panel tabindex 0 when it may hold no focusable control.
+              tabIndex={0}
               hidden={tab !== name}
             >
               {name === "plates" ? (

@@ -212,7 +212,9 @@ function EventBody({
             <strong>{t("activity.event.inboxFailed")}</strong>
             <When at={event.at} />
           </div>
-          <p className="ph-activity-line">{event.name}</p>
+          <p className="ph-activity-line">
+            {event.name === "" ? t("activity.unnamedFile") : <bdi>{event.name}</bdi>}
+          </p>
           <p className="ph-activity-line ph-activity-detail studio-muted">
             {inboxReasonIn(i18n, event)}
           </p>

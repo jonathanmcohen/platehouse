@@ -551,6 +551,13 @@ describe("the model page layout", () => {
     expect(container.querySelector('[role="tablist"]')).not.toBeNull();
   });
 
+  test("every tab panel can be reached by keyboard (tabIndex 0), so a panel with no control in it can be scrolled", async () => {
+    await render(pageAt(MODEL_ID));
+    const panels = [...container.querySelectorAll<HTMLElement>('[role="tabpanel"]')];
+    expect(panels).toHaveLength(3);
+    for (const p of panels) expect(p.tabIndex).toBe(0);
+  });
+
   test("the page asks only the model's app API to render", async () => {
     await render(pageAt(MODEL_ID));
     expect(requests).toEqual([`GET /app/api/models/${MODEL_ID}`]);

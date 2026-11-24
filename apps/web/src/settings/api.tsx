@@ -171,8 +171,9 @@ export interface Loaded<T> {
    * Changes the data the page shows, after a change it made. Give it an
    * updater (prev => next) whenever the next value is built from the current
    * one: it gets the data as it is when the change lands, so two changes in
-   * flight never undo each other. An updater does nothing while nothing is
-   * loaded.
+   * flight never undo each other. An updater given while the first answer is
+   * still on its way is kept and applied to that answer when it lands, so a
+   * change made meanwhile is merged in, not overwritten.
    */
   set(next: T | ((prev: T) => T)): void;
   /**
@@ -199,22 +200,33 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
   const sent = useRef(0);
   /** The number of the GET whose answer is on screen. */
   const shown = useRef(0);
+  /** Whether an answer for the path is on screen. */
+  const loaded = useRef(false);
+  /** Updaters given before the first answer, applied to it when it lands. */
+  const early = useRef<Array<(prev: T) => T>>([]);
 
   useEffect(() => {
     current.current = path;
     if (path === null) return;
     let live = true;
     const mine = ++sent.current;
+    loaded.current = false;
+    early.current = [];
     setData(undefined);
     setError(undefined);
     appApi<T>("GET", path).then(
       (value) => {
         if (!live || mine < shown.current) return;
         shown.current = mine;
-        setData(value);
+        loaded.current = true;
+        const merged = early.current.reduce((now, update) => update(now), value);
+        early.current = [];
+        setData(merged);
+        setError(undefined);
       },
       (failure: unknown) => {
-        if (live) setError(errorText(failure, words.current));
+        // A newer answer is on screen: data and "could not load" never show together.
+        if (live && mine >= shown.current) setError(errorText(failure, words.current));
       },
     );
     return () => {
@@ -224,10 +236,16 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
 
   const set = useCallback((next: T | ((prev: T) => T)) => {
     if (typeof next !== "function") {
+      loaded.current = true;
+      early.current = [];
       setData(next);
       return;
     }
     const update = next as (prev: T) => T;
+    if (!loaded.current) {
+      early.current.push(update);
+      return;
+    }
     setData((prev) => (prev === undefined ? prev : update(prev)));
   }, []);
 
@@ -235,12 +253,15 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
     if (path === null) return false;
     const mine = ++sent.current;
     try {
-      const value = await appApi<T>("GET", path);
+      const value = (await appApi<T>("GET", path)) as T;
       if (current.current !== path) return false;
       // A newer answer is already on screen: it holds at least what this one would.
       if (mine < shown.current) return true;
       shown.current = mine;
-      setData(value);
+      loaded.current = true;
+      const merged = early.current.reduce((now, update) => update(now), value);
+      early.current = [];
+      setData(merged);
       setError(undefined);
       return true;
     } catch (failure) {
