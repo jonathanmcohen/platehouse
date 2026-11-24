@@ -714,8 +714,35 @@ describe("tag filter narrows the grid", () => {
     const narrowed = await library(`?tag=${encodeURIComponent(tag.toUpperCase())}`);
     expect(narrowed.models.map((m) => m.id)).toEqual([tagged.modelId]);
 
-    const tags = (await get("/app/api/library/tags")).json() as { tags: string[] };
-    expect(tags.tags).toContain(tag);
+    const tags = (await get("/app/api/library/tags")).json() as {
+      tags: Array<{ name: string; models: number }>;
+    };
+    expect(tags.tags.map((t) => t.name)).toContain(tag);
+  });
+
+  test("the tags come with their live model counts, most-used first", async () => {
+    const word = marker();
+    const first = await ingest(`First ${word}.stl`, ASCII_STL);
+    const second = await ingest(`Second ${word}.stl`, ASCII_STL);
+    const gone = await ingest(`Gone ${word}.stl`, ASCII_STL);
+    const common = `Zzz common ${word}`;
+    const rare = `Aaa rare ${word}`;
+    const tags = createTags(env.db);
+    await tags.addTag(first.modelId, common);
+    await tags.addTag(second.modelId, common);
+    await tags.addTag(gone.modelId, common);
+    await tags.addTag(first.modelId, rare);
+    expect(await env.repos.models.trash(gone.modelId)).toBe(true);
+    const answer = (await get("/app/api/library/tags")).json() as {
+      tags: Array<{ name: string; models: number }>;
+    };
+    const mine = answer.tags.filter((t) => t.name.endsWith(word));
+    expect(mine).toEqual([
+      { name: common, models: 2 },
+      { name: rare, models: 1 },
+    ]);
+    const counts = answer.tags.map((t) => t.models);
+    expect(counts).toEqual([...counts].sort((a, b) => b - a));
   });
 
   test("a tag only trashed models carry is not offered, and trashed models are not listed", async () => {
@@ -726,8 +753,10 @@ describe("tag filter narrows the grid", () => {
     expect(await env.repos.models.trash(gone.modelId)).toBe(true);
     expect((await library(`?q=${word}`)).models).toEqual([]);
     expect((await library(`?tag=${encodeURIComponent(tag)}`)).models).toEqual([]);
-    const tags = (await get("/app/api/library/tags")).json() as { tags: string[] };
-    expect(tags.tags).not.toContain(tag);
+    const tags = (await get("/app/api/library/tags")).json() as {
+      tags: Array<{ name: string; models: number }>;
+    };
+    expect(tags.tags.map((t) => t.name)).not.toContain(tag);
   });
 });
 

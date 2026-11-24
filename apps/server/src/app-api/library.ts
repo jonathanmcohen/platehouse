@@ -11,7 +11,8 @@
 //   GET /app/api/library/ids?q&tag&collection&creator&printer&sort
 //       { ids: string[], capped }  every match's id, for Select all matching
 //   GET /app/api/library/tags
-//       { tags: string[] }      the tag names live models carry
+//       { tags: [{ name, models }] }  the tags live models carry, with how many
+//       each has, most-used first (then by name)
 //
 // - Every route is session-class (the route classes table in auth/gate.ts:
 //   /app/api is unlisted, so session). The gate refuses a request without
@@ -399,7 +400,7 @@ export interface AppLibrary {
    */
   ids(query: AppLibraryQuery): Promise<MatchingIds>;
   /** Tag names live models carry, for the tag filter, alphabetical ignoring case. */
-  tags(): Promise<string[]>;
+  tags(): Promise<Array<{ name: string; models: number }>>;
 }
 
 export interface AppLibraryDeps {
@@ -683,22 +684,20 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
     },
 
     async tags() {
-      const rows = await db
+      // Live models only: a tag only trashed models carry is left out, as a
+      // restore brings it back. Most-used first, so the web app's first 30 are
+      // the ones that narrow the library most (issue #458).
+      return db
         .selectFrom("tags")
-        .select("tags.name")
-        .where(({ exists, selectFrom }) =>
-          exists(
-            selectFrom("modelTags")
-              .innerJoin("models", "models.id", "modelTags.modelId")
-              .select("modelTags.tagId")
-              .whereRef("modelTags.tagId", "=", "tags.id")
-              .where("models.trashedAt", "is", null),
-          ),
-        )
+        .innerJoin("modelTags", "modelTags.tagId", "tags.id")
+        .innerJoin("models", "models.id", "modelTags.modelId")
+        .where("models.trashedAt", "is", null)
+        .select(["tags.name", sql<number>`count(models.id)::int`.as("models")])
+        .groupBy(["tags.id", "tags.name"])
+        .orderBy(sql`count(models.id)`, "desc")
         .orderBy(sql`lower(tags.name)`)
         .orderBy("tags.name")
         .execute();
-      return rows.map((r) => r.name);
     },
   };
 }

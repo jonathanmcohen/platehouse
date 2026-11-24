@@ -76,7 +76,8 @@ function stubServer(all: LibraryCard[]) {
     vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), "https://platehouse.test");
       requests.push(`${url.pathname}${url.search}`);
-      if (url.pathname === "/app/api/library/tags") return json({ tags: ["PLA"] });
+      if (url.pathname === "/app/api/library/tags")
+        return json({ tags: [{ name: "PLA", models: 1 }] });
       if (url.pathname !== "/app/api/library") return new Response("no", { status: 404 });
       const asked = Number(url.searchParams.get("page"));
       // The server's querystring schema allows page 1 to 1,000,000 and answers 400 past it.
@@ -513,7 +514,7 @@ describe("View all", () => {
   test("a tag chip keeps View all", async () => {
     await render(
       <MemoryRouter initialEntries={["/?view=all&page=2"]}>
-        <Filters tags={["PLA"]} />
+        <Filters tags={[{ name: "PLA", models: 1 }]} />
       </MemoryRouter>,
     );
     const hrefs = [...container.querySelectorAll("a.studio-chip")].map((a) =>

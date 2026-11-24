@@ -134,7 +134,7 @@ function stubServer(all: LibraryCard[]) {
       if (url.pathname === "/app/api/library/tags") {
         if (holdingTags) await new Promise<void>((resolve) => heldTags.push(resolve));
         if (failingTags) return new Response("no", { status: 500 });
-        return json({ tags: serverTags });
+        return json({ tags: serverTags.map((name, i) => ({ name, models: 10 - i })) });
       }
       if (url.pathname === "/app/api/collections") {
         return json({ collections: [{ name: "Shelf", models: 3 }] });

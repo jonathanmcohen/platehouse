@@ -59,7 +59,7 @@
 //   opens the upload dialog. refreshKey reloads the grid (after an upload).
 // - Loading, an empty library, no results and a failed load each say so in
 //   words, and a failed load can be tried again.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useI18n } from "../i18n/I18n";
 import { type PrinterChoice, PrinterSwitch, usePrinterChoice } from "../settings/PrinterSwitch";
@@ -228,7 +228,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const selectButton = useRef<HTMLButtonElement>(null);
   const [load, setLoad] = useState<Load>({ state: "loading" });
-  const [tags, setTags] = useState<string[]>([]);
+  const [tags, setTags] = useState<Array<{ name: string; models: number }>>([]);
+  const tagNames = useMemo(() => tags.map((tag) => tag.name), [tags]);
   /** Whether tags is the server's answer yet, or its last read failed. */
   const [tagsState, setTagsState] = useState<TagsState>("loading");
   /** Bumped after a bulk action, which can change which tags live models carry. */
@@ -596,7 +597,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey and tagsKey only trigger a reload.
   useEffect(() => {
     const controller = new AbortController();
-    getJson<{ tags: string[] }>("/app/api/library/tags", controller.signal)
+    getJson<{ tags: Array<{ name: string; models: number }> }>(
+      "/app/api/library/tags",
+      controller.signal,
+    )
       .then((answer) => {
         setTags(answer.tags);
         setTagsState("ready");
@@ -737,7 +741,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           totalCapped={ready?.totalCapped ?? false}
           matching={matching()}
           view={notesView}
-          tags={tags}
+          tags={tagNames}
           tagsState={tagsState}
           check={check.state === "checking" || check.state === "failed" ? check.state : null}
           left={left}
