@@ -81,6 +81,7 @@ import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB } from "../db/types.js";
 import { QUEUE, SLICER_RETRY, type SlicerJob, type SlicerJobHandlers } from "../jobs/queues.js";
+import { BOSS_JOB } from "../repos/activity.js";
 import type { Estimate } from "../repos/estimates.js";
 import { createRepos, type Repos } from "../repos/index.js";
 import { PrintersChanged } from "../repos/settings.js";
@@ -356,6 +357,9 @@ export interface Estimates {
 
 /** A failed estimate's detail is cut to the contract's length. */
 const DETAIL_CHARS = 2000;
+
+/** Queued slice jobs cancelled in one call. */
+const CANCEL_BATCH = 1000;
 
 /** Most jobs read back when looking through the slicer queue. */
 const JOB_PAGE = 100_000;
@@ -725,8 +729,20 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
    * finishes and is kept; one that starts later drops itself (runSliceJob).
    */
   async function dropUnlisted(myPrinters: readonly string[]): Promise<void> {
-    const ids = await queuedSliceJobs((job) => !myPrinters.includes(job.data.printerId));
-    if (ids.length > 0) await boss.cancel(QUEUE.slicer, ids);
+    // Only the ids are read: the jobs themselves never come into memory.
+    const { rows } = await sql<{ id: string }>`
+      select id from ${BOSS_JOB}
+       where name = ${QUEUE.slicer}
+         and state < 'active'
+         and data->>'kind' = ${SLICE_JOB_KIND}
+         and coalesce(data->>'printerId', '') <> all(${[...myPrinters]}::text[])
+    `.execute(db);
+    for (let i = 0; i < rows.length; i += CANCEL_BATCH) {
+      await boss.cancel(
+        QUEUE.slicer,
+        rows.slice(i, i + CANCEL_BATCH).map((row) => row.id),
+      );
+    }
     await db
       .deleteFrom("estimates")
       .where("source", "=", "platehouse")
@@ -1209,99 +1225,23 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       log(`queued ${queued} estimate(s) again that a sandbox that was off had failed`);
   }
 
-  /**
-   * Every slice job waiting in the queue (created, or waiting for a retry),
-   * read a page at a time. Only queued jobs are read, so the finished jobs
-   * pg-boss keeps never crowd out a live one.
-   */
-  async function queuedSlices(): Promise<
-    Array<{ id: string; data: SliceJobData; priority: number; createdOn: Date }>
-  > {
-    const jobs: Array<{ id: string; data: SliceJobData; priority: number; createdOn: Date }> = [];
-    let after: string | undefined;
-    for (;;) {
-      const page = await boss.findJobs<SliceJobData>(QUEUE.slicer, {
-        queued: true,
-        data: { kind: SLICE_JOB_KIND },
-        limit: JOB_PAGE,
-        ...(after === undefined ? {} : { after }),
-      });
-      for (const job of page) {
-        jobs.push({
-          id: job.id,
-          data: job.data,
-          priority: job.priority,
-          createdOn: new Date(job.createdOn),
-        });
-      }
-      const last = page.at(-1);
-      if (page.length < JOB_PAGE || last === undefined) return jobs;
-      after = last.id;
-    }
-  }
-
-  /**
-   * Every job waiting in the slicer queue, of any kind: the slices, and the
-   * render and mesh jobs (derived.ts) that run on the same one-at-a-time
-   * queue. A slice job carries its printer and estimate; the others carry
-   * neither. Read a page at a time, queued jobs only, as queuedSlices.
-   */
-  async function queuedSlicerWork(): Promise<QueuedWork[]> {
-    const jobs: QueuedWork[] = [];
-    let after: string | undefined;
-    for (;;) {
-      const page = await boss.findJobs<Partial<SliceJobData>>(QUEUE.slicer, {
-        queued: true,
-        limit: JOB_PAGE,
-        ...(after === undefined ? {} : { after }),
-      });
-      for (const job of page) {
-        const slice = job.data?.kind === SLICE_JOB_KIND;
-        jobs.push({
-          id: job.id,
-          ...(slice && typeof job.data.printerId === "string"
-            ? { printerId: job.data.printerId }
-            : {}),
-          ...(slice && typeof job.data.estimateId === "string"
-            ? { estimateId: job.data.estimateId }
-            : {}),
-          priority: job.priority,
-          createdOn: new Date(job.createdOn),
-        });
-      }
-      const last = page.at(-1);
-      if (page.length < JOB_PAGE || last === undefined) return jobs;
-      after = last.id;
-    }
-  }
-
-  /** The ids of the queued slice jobs that match. */
-  async function queuedSliceJobs(
-    match: (job: { data: SliceJobData }) => boolean,
-  ): Promise<string[]> {
-    return (await queuedSlices()).filter(match).map((job) => job.id);
-  }
-
-  /** The estimate ids of every slice job waiting in the queue. */
-  async function queuedSliceEstimates(): Promise<Set<string>> {
-    return new Set((await queuedSlices()).map((job) => job.data.estimateId));
-  }
-
-  /** Whether the estimate has a job queued or active now: its own jobs only. */
-  async function hasLiveJob(estimateId: string): Promise<boolean> {
-    const jobs = await boss.findJobs<SliceJobData>(QUEUE.slicer, {
-      data: { kind: SLICE_JOB_KIND, estimateId },
-      limit: JOB_PAGE,
-    });
-    return jobs.some((j) => j.state === "created" || j.state === "retry" || j.state === "active");
+  /** The estimate ids that have a slice job queued, waiting for a retry, or running now. */
+  async function estimatesWithLiveJob(): Promise<Set<string>> {
+    const { rows } = await sql<{ id: string }>`
+      select distinct data->>'estimateId' as id from ${BOSS_JOB}
+       where name = ${QUEUE.slicer}
+         and state in ('created', 'retry', 'active')
+         and data->>'kind' = ${SLICE_JOB_KIND}
+         and data->>'estimateId' is not null
+    `.execute(db);
+    return new Set(rows.map((row) => row.id));
   }
 
   /**
    * Estimates that say pending or running while no job of theirs is queued
    * or active: a running one fails with slicer_error, a pending one is
-   * queued again. pg-boss cannot list active jobs alone, so an estimate with
-   * no queued job has its own jobs read; that is the one slicing now, and
-   * any that were lost.
+   * queued again. One query lists every estimate that has a live job, the
+   * one slicing now included.
    */
   async function recoverLost(): Promise<void> {
     const waiting = await db
@@ -1311,9 +1251,9 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       .where("status", "in", ["pending", "running"])
       .execute();
     if (waiting.length === 0) return;
-    const queued = await queuedSliceEstimates();
+    const live = await estimatesWithLiveJob();
     for (const row of waiting) {
-      if (queued.has(row.id) || (await hasLiveJob(row.id))) continue;
+      if (live.has(row.id)) continue;
       if (row.status === "running") {
         await db
           .updateTable("estimates")
@@ -1353,9 +1293,44 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     return { orca, changed };
   }
 
+  /**
+   * For each printer with a slice queued, the place of its last one among the
+   * queued slicer jobs, counted from 1 (slicesThrough, worked out in SQL so
+   * no job is read into memory): highest priority first, then oldest, then by
+   * id; a job that is not a slice, or a slice with no estimate, always counts,
+   * and an estimate with several jobs counts once, at its first.
+   */
+  async function queuePositions(): Promise<Map<string, number>> {
+    const { rows } = await sql<{ printerId: string; through: number }>`
+      with q as (
+        select id, priority, created_on,
+               coalesce(data->>'kind' = ${SLICE_JOB_KIND}, false) as is_slice,
+               data->>'printerId' as printer_id,
+               data->>'estimateId' as estimate_id
+          from ${BOSS_JOB}
+         where name = ${QUEUE.slicer} and state < 'active'
+      ), firsts as (
+        select *, row_number() over (
+                 partition by case when is_slice then estimate_id end
+                 order by priority desc, created_on, id) as nth
+          from q
+      ), counted as (
+        select printer_id, is_slice,
+               row_number() over (order by priority desc, created_on, id) as pos
+          from firsts
+         where not is_slice or estimate_id is null or nth = 1
+      )
+      select printer_id as "printerId", max(pos)::int as through
+        from counted
+       where is_slice and printer_id is not null
+       group by printer_id
+    `.execute(db);
+    return new Map(rows.map((row) => [row.printerId, row.through]));
+  }
+
   async function queueByPrinter(): Promise<Map<string, PrinterQueue>> {
     const { myPrinters, lastOrcaVersion } = await repos.settings.get();
-    const [rows, running, jobs] = await Promise.all([
+    const [rows, running, positions] = await Promise.all([
       db
         .selectFrom("estimates")
         .select(["printerId", sql<number>`count(*)::int`.as("n")])
@@ -1378,16 +1353,15 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         .executeTakeFirstOrThrow(),
       // Render and mesh jobs too: they share the queue, and the ones ahead
       // of a printer's slices are part of its wait.
-      queuedSlicerWork(),
+      queuePositions(),
     ]);
-    const through = slicesThrough(jobs, running.n);
     return new Map(
       rows.map((r) => [
         r.printerId,
         // A printer whose only work is the slice running now is through at
         // the running count; an estimate whose job was lost (the poll queues
         // it again) still counts as its own waiting plate.
-        { waiting: r.n, through: Math.max(through.get(r.printerId) ?? running.n, r.n) },
+        { waiting: r.n, through: Math.max(running.n + (positions.get(r.printerId) ?? 0), r.n) },
       ]),
     );
   }

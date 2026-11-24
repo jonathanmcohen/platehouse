@@ -98,8 +98,11 @@ export interface FailedDerived {
 
 const FILE_KINDS: readonly FileKind[] = ["3mf", "stl", "step", "scad"];
 
+/** pg-boss's job table, schema-qualified. */
+export const BOSS_JOB = sql.id(BOSS_SCHEMA, "job");
+
 export function activityRepo(db: Kysely<DB>) {
-  const job = sql.id(BOSS_SCHEMA, "job");
+  const job = BOSS_JOB;
 
   return {
     async libraryCounts(): Promise<LibraryCounts> {
