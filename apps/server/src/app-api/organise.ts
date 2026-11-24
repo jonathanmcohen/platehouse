@@ -403,6 +403,8 @@ async function trashListing(
   pageCount: number;
   total: number;
 }> {
+  // The count and the page are separate reads, so total can differ from the
+  // page by a model trashed between them; safety comes from readAt, not total.
   const pageSize = query.limit ?? TRASH_PAGE_SIZE;
   const counted = await db
     .selectFrom("models")

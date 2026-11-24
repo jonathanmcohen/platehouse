@@ -594,7 +594,7 @@
   "tokens.signInRequired": "Para crear un token de API, vuelve a iniciar sesi\u00f3n primero. Platehouse comprueba al iniciar sesi\u00f3n que sigues teniendo acceso.",
   "tokens.signInRequiredRevoke": "Para revocar un token creado por otra persona, vuelve a iniciar sesi\u00f3n primero. Platehouse comprueba al iniciar sesi\u00f3n que sigues teniendo acceso.",
   "trash.by": "De {creator}.",
-  "trash.confirmMessage": "{count, plural, one {El # modelo que aparece aqu\u00ed se elimina definitivamente, con sus archivos. No se puede deshacer.} many {Los # modelos que aparecen aqu\u00ed se eliminan definitivamente, con sus archivos. No se puede deshacer.} other {Los # modelos que aparecen aqu\u00ed se eliminan definitivamente, con sus archivos. No se puede deshacer.}}",
+  "trash.confirmMessage": "{count, plural, one {El # modelo de la papelera se elimina definitivamente, con sus archivos. No se puede deshacer.} many {Los # modelos de la papelera, en todas las p\u00e1ginas, se eliminan definitivamente, con sus archivos. No se puede deshacer.} other {Los # modelos de la papelera, en todas las p\u00e1ginas, se eliminan definitivamente, con sus archivos. No se puede deshacer.}}",
   "trash.confirmTitle": "\u00bfVaciar la papelera?",
   "trash.deleted": "Se {count, plural, one {elimin\u00f3 definitivamente # modelo} many {eliminaron definitivamente # modelos} other {eliminaron definitivamente # modelos}}.",
   "trash.empty": "Vaciar la papelera",

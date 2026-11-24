@@ -1162,7 +1162,7 @@ describe("deleting tags and collections", () => {
   });
 });
 
-/** What GET /app/api/trash answers now, as the trash page holds it. */
+/** What GET /app/api/trash answers now, as the trash page holds it: page 1 only. */
 async function listedTrash(): Promise<{ ids: string[]; readAt: string }> {
   const res = await call("GET", "/app/api/trash");
   expect(res.status, res.text).toBe(200);
@@ -1382,6 +1382,21 @@ describe("the trash", () => {
     await call("POST", `/app/api/models/${unseen.model.id}/trash`);
 
     const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: first.readAt } });
+    expect(res.status, res.text).toBe(200);
+    expect((res.json() as { purged: number }).purged).toBe(3);
+    expect((await listedTrash()).ids).toEqual([unseen.model.id]);
+    expect((await call("POST", `/app/api/trash/${unseen.model.id}/restore`)).status).toBe(204);
+  });
+
+  test("empty trash with page 2's readAt leaves a model trashed after that read", async () => {
+    await seedTrashOf(3);
+    const second = (await call("GET", "/app/api/trash?page=2&limit=2")).json() as TrashPageBody;
+    expect(second.page).toBe(2);
+    const unseen = await seedStoredModel(env);
+    await sleep(5);
+    await call("POST", `/app/api/models/${unseen.model.id}/trash`);
+
+    const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: second.readAt } });
     expect(res.status, res.text).toBe(200);
     expect((res.json() as { purged: number }).purged).toBe(3);
     expect((await listedTrash()).ids).toEqual([unseen.model.id]);

@@ -587,7 +587,7 @@
   "tokens.signInRequired": "To create an API token, sign in again first. Platehouse checks that you are still allowed in when you sign in.",
   "tokens.signInRequiredRevoke": "To revoke a token someone else made, sign in again first. Platehouse checks that you are still allowed in when you sign in.",
   "trash.by": "By {creator}.",
-  "trash.confirmMessage": "{count, plural, one {The # model listed here is deleted for good, with its files. This cannot be undone.} other {The # models listed here are deleted for good, with their files. This cannot be undone.}}",
+  "trash.confirmMessage": "{count, plural, one {The # model in the trash is deleted for good, with its files. This cannot be undone.} other {All # models in the trash, on every page, are deleted for good, with their files. This cannot be undone.}}",
   "trash.confirmTitle": "Empty the trash?",
   "trash.deleted": "Deleted {count} {count, plural, one {model} other {models}} for good.",
   "trash.empty": "Empty trash",

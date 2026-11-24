@@ -1698,7 +1698,9 @@ describe("the trash", () => {
     expect(callsTo("GET", "/app/api/trash?page=2").length).toBeGreaterThan(1);
     expect(text()).toContain("Model 101");
     await click(button("Empty trash"));
-    expect(dialog()?.textContent).toContain("The 101 models listed here are deleted for good");
+    expect(dialog()?.textContent).toContain(
+      "All 101 models in the trash, on every page, are deleted for good",
+    );
     await click(button("Empty trash", dialog() as HTMLElement));
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
       { cutoff: "2026-11-12T09:00:00.000Z" },
@@ -1790,7 +1792,9 @@ describe("the trash", () => {
       },
     ];
     await click(button("Empty trash"));
-    expect(dialog()?.textContent).toContain("The 2 models listed here are deleted for good");
+    expect(dialog()?.textContent).toContain(
+      "All 2 models in the trash, on every page, are deleted for good",
+    );
     await click(button("Empty trash", dialog() as HTMLElement));
     // It sends the time the server read the list, not the models' ids.
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
@@ -1806,7 +1810,7 @@ describe("the trash", () => {
     await show("/trash", <TrashPage />);
     await click(button("Restore Old benchy"));
     await click(button("Empty trash"));
-    expect(dialog()?.textContent).toContain("The 1 model listed here is deleted for good");
+    expect(dialog()?.textContent).toContain("The 1 model in the trash is deleted for good");
     await click(button("Empty trash", dialog() as HTMLElement));
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
       { cutoff: "2026-11-12T09:00:00.000Z" },
@@ -1825,7 +1829,9 @@ describe("the trash", () => {
     }));
     await show("/trash", <TrashPage />);
     await click(button("Empty trash"));
-    expect(dialog()?.textContent).toContain("The 3000 models listed here are deleted for good");
+    expect(dialog()?.textContent).toContain(
+      "All 3000 models in the trash, on every page, are deleted for good",
+    );
     await click(button("Empty trash", dialog() as HTMLElement));
     const sent = callsTo("POST", "/app/api/trash/empty").map((c) => c.body);
     expect(sent).toEqual([{ cutoff: "2026-11-12T09:00:00.000Z" }]);

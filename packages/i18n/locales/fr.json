@@ -594,7 +594,7 @@
   "tokens.signInRequired": "Pour cr\u00e9er un jeton d'API, reconnectez-vous d'abord. Platehouse v\u00e9rifie \u00e0 la connexion que vous avez toujours acc\u00e8s.",
   "tokens.signInRequiredRevoke": "Pour r\u00e9voquer un jeton cr\u00e9\u00e9 par quelqu'un d'autre, reconnectez-vous d'abord. Platehouse v\u00e9rifie \u00e0 la connexion que vous avez toujours acc\u00e8s.",
   "trash.by": "Par {creator}.",
-  "trash.confirmMessage": "{count, plural, one {Le # mod\u00e8le list\u00e9 ici est supprim\u00e9 d\u00e9finitivement, avec ses fichiers. Cette action est irr\u00e9versible.} many {Les # de mod\u00e8les list\u00e9s ici sont supprim\u00e9s d\u00e9finitivement, avec leurs fichiers. Cette action est irr\u00e9versible.} other {Les # mod\u00e8les list\u00e9s ici sont supprim\u00e9s d\u00e9finitivement, avec leurs fichiers. Cette action est irr\u00e9versible.}}",
+  "trash.confirmMessage": "{count, plural, one {Le # mod\u00e8le de la corbeille est supprim\u00e9 d\u00e9finitivement, avec ses fichiers. Cette action est irr\u00e9versible.} many {Les # de mod\u00e8les de la corbeille, sur toutes les pages, sont supprim\u00e9s d\u00e9finitivement, avec leurs fichiers. Cette action est irr\u00e9versible.} other {Les # mod\u00e8les de la corbeille, sur toutes les pages, sont supprim\u00e9s d\u00e9finitivement, avec leurs fichiers. Cette action est irr\u00e9versible.}}",
   "trash.confirmTitle": "Vider la corbeille ?",
   "trash.deleted": "{count, plural, one {# mod\u00e8le supprim\u00e9} many {# de mod\u00e8les supprim\u00e9s} other {# mod\u00e8les supprim\u00e9s}} d\u00e9finitivement.",
   "trash.empty": "Vider la corbeille",
