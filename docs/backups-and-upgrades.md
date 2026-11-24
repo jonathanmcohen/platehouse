@@ -151,7 +151,9 @@ The slicer image is tagged with the release version, `platehouse-slicer:X.Y.Z`, 
 app image, and that version tag is the pin. `orca-X.Y.Z` follows the newest build of that
 OrcaSlicer version from main or a release, never a release candidate, and `stable` the newest such
 build of any OrcaSlicer version. You move to a new release with the Upgrading steps above, which
-change both tags together.
+change both tags together. From 0.1.1 on, upgrade them together in any case: the 0.1.1 app refuses
+an older slicer, pictures and OpenSCAD renders need Linux 6.12 or newer, and on Linux older than
+6.12 estimates and STEP previews stop unless `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer.
 
 When the slicer's OrcaSlicer version changes, Platehouse re-estimates the library in the
 background, since a new version can give different numbers. From 0.1.1 on, to go back, set both
