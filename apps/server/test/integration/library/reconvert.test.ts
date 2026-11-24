@@ -587,7 +587,7 @@ describe("a description found unproven", () => {
     const m = await foundUnproven();
     await env.db
       .updateTable("blobs")
-      .set({ state: "deleting" })
+      .set({ state: "pending" })
       .where(
         "id",
         "in",
