@@ -99,6 +99,7 @@ jobs:
       # aptsnapshot.test.mjs: this workflow, .node-version, release.yml,
       # slicer-image.yml, rc-tag.yml, apt-snapshot.yml, docs-pages.yml,
       # .github/scripts/rc-target.mjs, .github/scripts/apt-snapshot.mjs,
+      # .github/scripts/release-gate.mjs,
       # docker/app.Dockerfile, docker/check-image-labels.sh (the slicer
       # image's label check step runs it), docker/test-app-image.sh, the root
       # tsconfig.json and tools/brand/tsconfig.json (workflowpins.test.mjs),
@@ -131,7 +132,7 @@ jobs:
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|docs-pages)\.yml$|\.github/scripts/(rc-target|apt-snapshot)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|tsconfig\.json$|tools/brand/tsconfig\.json$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|docs-pages)\.yml$|\.github/scripts/(rc-target|apt-snapshot|release-gate)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|tsconfig\.json$|tools/brand/tsconfig\.json$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
               echo "The slicing gate or a file its tests read changed; the gate tests run."
             else
               tests=false

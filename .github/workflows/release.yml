@@ -31,10 +31,15 @@
 # three back from the registry (docker/check-image-labels.sh).
 #
 # Tags come from docker/metadata-action with type=semver,pattern={{version}}
-# alone: v0.1.0 gives 0.1.0 and latest, and a prerelease such as v0.0.0-test
-# gives 0.0.0-test and no latest, so latest moves only on a stable tag. There
-# is no hand-written latest entry: it would publish latest even for a tag that
-# is not valid semver.
+# and flavor latest=false: v0.1.0 gives 0.1.0, and a prerelease such as
+# v0.0.0-test gives 0.0.0-test. latest is a separate raw entry, enabled only
+# when the gate job found the tag to be the highest stable vX.Y.Z in the
+# repository (.github/scripts/release-gate.mjs), so a backport such as v0.1.2
+# after v0.2.0 never moves it back, and an rc never takes it.
+#
+# The gate also holds the release back unless the tagged commit is on main or
+# a release/ branch and has a successful ci run (#450); a ci run still going is
+# waited for, up to an hour.
 #
 # This workflow never moves rc. .github/workflows/rc-tag.yml runs after every
 # run of this workflow or slicer-image.yml and points both images' rc at the
@@ -77,7 +82,13 @@ jobs:
   gate:
     name: Check the tag
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 75
+    # actions: read lets the job list the ci runs of the tagged commit.
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      latest: ${{ steps.latest.outputs.latest }}
     steps:
       - name: The ref is a semver tag
         env:
@@ -89,6 +100,44 @@ jobs:
             exit 1
           fi
           echo "Releasing ${REF#refs/tags/}"
+
+      # Full history, so the branch check and the tag list below see every
+      # branch and tag.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A release is only built from a commit on main or a release branch.
+      - name: The commit is on main or a release branch
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          if ! git branch -r --contains "$SHA" | grep -Eq '^[[:space:]]*origin/(main$|release/)'; then
+            echo "::error::${SHA} is on neither origin/main nor an origin/release/ branch; nothing is built"
+            exit 1
+          fi
+          echo "${SHA} is on a branch that takes releases"
+
+      # The tagged commit must have a successful ci run (the push to main or
+      # the release branch ran it); a running one is waited for, up to an hour.
+      - name: CI passed for the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: node .github/scripts/release-gate.mjs ci "$SHA"
+
+      # latest only for the highest stable tag in the repository.
+      - name: Is this tag the latest release
+        id: latest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          latest="$(git tag -l 'v*' | node .github/scripts/release-gate.mjs latest "$TAG")"
+          echo "latest=${latest}" >>"$GITHUB_OUTPUT"
+          echo "${TAG}: latest=${latest}"
 
   build:
     name: Build, check and push (${{ matrix.arch }})
@@ -132,6 +181,8 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
 
@@ -274,7 +325,7 @@ jobs:
 
   merge:
     name: Tag the multi-arch image
-    needs: build
+    needs: [gate, build]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -301,8 +352,11 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ needs.gate.outputs.latest == 'true' }}
 
       # The same OCI keys as the images' labels, as annotations on the index
       # (issue #317), so the multi-arch tag itself says its version, commit
@@ -314,6 +368,8 @@ jobs:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:
           images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
 
