@@ -6,6 +6,7 @@ import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { signedQueryValues } from "../src/manyfold.js";
 import {
+  ENV,
   MANYFOLD,
   manyfoldCalls,
   OBJECTS,
@@ -515,12 +516,125 @@ describe("file downloads", () => {
     const data = library();
     data.models[2]?.files.push({ id: "f9", filename: "big.3mf", bytes: big });
     const s = setup(data);
+    // Served as a stream of 32 chunks, so every chunk lands at its own offset.
+    server.use(
+      http.get(`${OBJECTS}/manyfold/m3/f9`, () => {
+        let at = 0;
+        return new HttpResponse(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (at >= big.length) return controller.close();
+              controller.enqueue(new Uint8Array(big.subarray(at, at + 8192)));
+              at += 8192;
+            },
+          }),
+        );
+      }),
+    );
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(0);
     const m3 = [...s.platehouse.models.values()].find((m) => m.externalRef === "manyfold:m3");
     const stored = s.platehouse.filesOf(m3?.id ?? "").find((f) => f.originalName === "big.3mf");
     expect(stored?.size).toBe(big.length);
     expect(stored?.sha256).toBe(sha256(big));
+  });
+
+  it("import an empty file", async () => {
+    const data = library();
+    data.models[2]?.files.push({ id: "f8", filename: "empty.3mf", bytes: Buffer.alloc(0) });
+    const s = setup(data);
+    const r = await s.run(["--apply"]);
+    const file = r.report?.models
+      .find((m) => m.manyfoldId === "m3")
+      ?.files.find((f) => f.name === "empty.3mf");
+    expect(file?.status).not.toBe("failed");
+  });
+
+  it("refuse a private address the object store redirects to", async () => {
+    const s = setup(library());
+    server.use(
+      http.get(
+        `${OBJECTS}/manyfold/m3/f5`,
+        () => new HttpResponse(null, { status: 302, headers: { location: "https://10.0.0.5/x" } }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3?.files[0]?.status).toBe("failed");
+    expect(m3?.files[0]?.reason).toMatch(/private address/);
+    expect(seen.some((x) => x.url.includes("10.0.0.5"))).toBe(false);
+  });
+
+  describe("--allow-redirect-host", () => {
+    const lan = (target: string) =>
+      http.get(
+        `${MANYFOLD}/models/m3/model_files/f5.3mf`,
+        () => new HttpResponse(null, { status: 302, headers: { location: target } }),
+      );
+    const lanStore = (origin: string, auth: Array<string | null>) =>
+      http.get(`${origin}/x`, ({ request }) => {
+        auth.push(request.headers.get("authorization"));
+        return new HttpResponse(new Uint8Array(bytesOf("f5", 5000)));
+      });
+
+    it("follows an allowed LAN host without the token", async () => {
+      const s = setup(library());
+      const auth: Array<string | null> = [];
+      server.use(lan("https://192.168.1.20:9000/x"), lanStore("https://192.168.1.20:9000", auth));
+      const r = await s.run(["--apply", "--allow-redirect-host", "192.168.1.20"]);
+      expect(r.code).toBe(0);
+      expect(auth).toEqual([null]);
+    });
+
+    it("still refuses a different private host, naming the way out", async () => {
+      const s = setup(library());
+      server.use(lan("https://192.168.1.99/x"));
+      const r = await s.run(["--apply", "--allow-redirect-host", "192.168.1.20"]);
+      const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
+      expect(m3?.files[0]?.reason).toContain("(allow it with --allow-redirect-host 192.168.1.99)");
+      expect(seen.some((x) => x.url.includes("192.168.1.99"))).toBe(false);
+    });
+
+    it("still refuses an allowed host that is not https", async () => {
+      const s = setup(library());
+      server.use(lan("http://minio/x"));
+      const r = await s.run(["--apply", "--allow-redirect-host", "minio"]);
+      expect(r.report?.models.find((m) => m.manyfoldId === "m3")?.files[0]?.reason).toMatch(
+        /not https/,
+      );
+    });
+
+    it("reads MANYFOLD_ALLOW_REDIRECT_HOSTS, comma-separated and case-insensitive", async () => {
+      const s = setup(library());
+      const auth: Array<string | null> = [];
+      server.use(lan("https://minio/x"), lanStore("https://minio", auth));
+      const r = await s.run(["--apply"], {
+        ...ENV,
+        MANYFOLD_ALLOW_REDIRECT_HOSTS: "other.lan, MinIO.",
+      });
+      expect(r.code).toBe(0);
+      expect(auth).toEqual([null]);
+    });
+
+    it.each([["https://minio"], ["minio:9000"], ["a..b"]])(
+      "refuses %j at start-up with exit 2",
+      async (entry) => {
+        const s = setup(library());
+        const r = await s.run(["--allow-redirect-host", entry]);
+        expect(r.code).toBe(2);
+        expect(r.stderr).toContain(
+          "--allow-redirect-host takes a host name or address, with no scheme, port or path",
+        );
+        expect(s.manyfold.tokenRequests).toHaveLength(0);
+      },
+    );
+
+    it("refuses a bad MANYFOLD_ALLOW_REDIRECT_HOSTS entry with exit 2, naming the variable", async () => {
+      const s = setup(library());
+      const r = await s.run([], { ...ENV, MANYFOLD_ALLOW_REDIRECT_HOSTS: "ok.lan,minio:9000" });
+      expect(r.code).toBe(2);
+      expect(r.stderr.join("\n")).toContain("MANYFOLD_ALLOW_REDIRECT_HOSTS takes a host name");
+    });
   });
 
   it("follow at most a few redirects", async () => {

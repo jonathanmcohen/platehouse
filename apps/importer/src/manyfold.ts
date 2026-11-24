@@ -29,7 +29,8 @@
 //   (refused, not upgraded). A redirect to another host is also refused when
 //   that host is a private, loopback or link-local address (IPv4-mapped IPv6
 //   included) or a name with no dot or ending .localhost; names are not
-//   looked up for this (private-host.ts). At most 3 redirects. Every redirect's query,
+//   looked up for this (private-host.ts), unless the host was named with
+//   --allow-redirect-host. At most 3 redirects. Every redirect's query,
 //   one back to Manyfold's own host included, goes to the sensitive callback
 //   before the redirect is followed or refused, and each sensitive value of
 //   such a query (a signature, a credential, a session token) is handed to
@@ -55,7 +56,7 @@
 //   Doorkeeper's error code.
 
 import { type IdleWatch, idleReason, idleWatch } from "./idle.js";
-import { fileNameFor } from "./plan.js";
+import { fileNameFor, MAX_UPLOAD_BYTES } from "./plan.js";
 import { isPrivateHost } from "./private-host.js";
 import { quoteBody } from "./redact.js";
 
@@ -131,6 +132,12 @@ export interface ManyfoldOptions {
    * (0.1.0 release review). DEFAULT_DOWNLOAD_IDLE_MS when not given.
    */
   downloadTimeoutMs?: number;
+  /**
+   * Hostnames (as normaliseAllowedHost writes them) a download redirect may
+   * go to even though they are private, for a Manyfold whose object store is
+   * on the same network. Every other redirect check still applies.
+   */
+  allowRedirectHosts?: readonly string[];
 }
 
 /** A download's idle limit when none is given: 2 minutes without a byte. */
@@ -289,6 +296,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
   const attempts = options.retries ?? 4;
   const timeoutMs = options.timeoutMs ?? 30_000;
   const downloadIdleMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_IDLE_MS;
+  const allowedRedirectHosts = new Set(options.allowRedirectHosts ?? []);
   const now = options.now ?? Date.now;
   let token: string | null = null;
   let asked = false;
@@ -682,6 +690,13 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
 
   /** download(), under one idle watch for every hop and attempt. */
   async function downloadWith(watch: IdleWatch, link: string, expectedSize: number) {
+    if (
+      !Number.isSafeInteger(expectedSize) ||
+      expectedSize < 0 ||
+      expectedSize > MAX_UPLOAD_BYTES
+    ) {
+      throw new ManyfoldError(`refusing to download a file of ${expectedSize} bytes`);
+    }
     let url = safeUrl(link);
     for (let hop = 0; ; hop++) {
       const res = await request(url, "*/*", downloadIdleMs, downloadPath, watch);
@@ -701,9 +716,14 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
         for (const value of signedQueryValues(next.search, { requireSigned: sameHost })) {
           sensitive(value);
         }
-        if (!sameHost && isPrivateHost(next.hostname)) {
+        if (
+          !sameHost &&
+          isPrivateHost(next.hostname) &&
+          !allowedRedirectHosts.has(next.hostname.toLowerCase().replace(/\.+$/, ""))
+        ) {
           throw new ManyfoldError(
-            `GET ${downloadPath(url)}: refusing a redirect to a private address, to ${next.host}`,
+            `GET ${downloadPath(url)}: refusing a redirect to a private address, to ${next.host} ` +
+              `(allow it with --allow-redirect-host ${next.hostname})`,
           );
         }
         if (next.protocol !== "https:") {

@@ -16,7 +16,9 @@ happy with the result.
 - Both servers on **https**. The importer refuses a plain http address, and it sends its tokens only
   to the two addresses you give it (a file download that Manyfold redirects to its object store is
   fetched with no token at all). A redirect to a private, loopback or link-local address, or to a name
-  without a dot, is refused. Names are not looked up for this check.
+  without a dot or ending in `.local`, `.localhost`, `.home.arpa`, `.internal` or `.localdomain`, is
+  refused unless you name it with `--allow-redirect-host` (see the options below). Names are not
+  looked up for this check.
 - A Manyfold OAuth application that allows the client credentials grant with the `read` scope. Its
   client id and client secret are what the importer signs in with. The importer stops before reading
   anything if Manyfold grants it more than `read`. The token is renewed during a long import, shortly
@@ -67,6 +69,11 @@ Other options:
   arriving.
 - `--upload-idle-timeout <seconds>` (or `PLATEHOUSE_UPLOAD_IDLE_TIMEOUT`) is the same limit for an
   upload that Platehouse stops taking.
+- `--allow-redirect-host <host>` (repeatable, or `MANYFOLD_ALLOW_REDIRECT_HOSTS`, comma-separated)
+  lets a file download be redirected to that private host, for a Manyfold whose object store is on
+  your own network, such as `--allow-redirect-host minio.lan` or `--allow-redirect-host 192.168.1.20`.
+  Give the host only, with no scheme, port or path. The redirect is still https only, still
+  fetched with no token, and still counts toward the 3-redirect limit.
 
 ## Running it again
 
