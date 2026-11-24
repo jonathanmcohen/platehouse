@@ -142,6 +142,133 @@ describe("the viewer's renderer", () => {
   });
 });
 
+describe("the viewer draws on demand (issue #469)", () => {
+  /** The real defaultLoadThree over a stub renderer and stub controls, with frames run by hand. */
+  async function shown(reduced: boolean) {
+    const log = { renders: 0, controls: undefined as unknown };
+    const listeners = new Map<string, () => void>();
+    const frames: Array<() => void> = [];
+    vi.doMock("three", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("three")>();
+      class StubRenderer {
+        domElement = document.createElement("canvas");
+        setPixelRatio() {}
+        setSize() {}
+        setAnimationLoop() {
+          throw new Error("the viewer must not run an animation loop");
+        }
+        render() {
+          log.renders += 1;
+        }
+        forceContextLoss() {}
+        dispose() {}
+      }
+      return { ...actual, WebGLRenderer: StubRenderer };
+    });
+    vi.doMock("three/addons/controls/OrbitControls.js", async () => {
+      const three = await vi.importActual<typeof import("three")>("three");
+      class StubControls {
+        enableDamping = false;
+        target = new three.Vector3();
+        constructor() {
+          log.controls = this;
+        }
+        update() {
+          return false;
+        }
+        addEventListener(name: string, run: () => void) {
+          listeners.set(name, run);
+        }
+        removeEventListener(name: string) {
+          listeners.delete(name);
+        }
+        dispose() {}
+      }
+      return { OrbitControls: StubControls };
+    });
+    vi.resetModules();
+    let resizeRun: () => void = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(run: () => void) {
+          resizeRun = run;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: reduced && query.includes("reduce"),
+    }));
+    vi.stubGlobal("requestAnimationFrame", (run: () => void) => frames.push(run));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.stubGlobal("fetch", async () => new Response(STL, { status: 200 }));
+    const fresh = await import("../src/model/Viewer3d");
+    const viewer = await fresh.defaultLoadThree();
+    const el = document.createElement("div");
+    Object.defineProperty(el, "clientWidth", { value: 300 });
+    Object.defineProperty(el, "clientHeight", { value: 200 });
+    const handle = await viewer.show(el, { kind: "stl", url: SOURCE.url });
+    /** Runs the frames asked for so far; how many ran. */
+    const flush = () => {
+      const run = frames.splice(0);
+      for (const f of run) f();
+      return run.length;
+    };
+    return { handle, log, listeners, flush, resize: () => resizeRun() };
+  }
+
+  test("draws once after load and then not at all while idle", async () => {
+    const v = await shown(false);
+    expect(v.log.renders).toBe(0);
+    v.flush();
+    expect(v.log.renders).toBe(1);
+    expect(v.flush()).toBe(0);
+  });
+
+  test("a change event from the controls asks for a draw", async () => {
+    const v = await shown(false);
+    v.flush();
+    v.listeners.get("change")?.();
+    expect(v.flush()).toBe(1);
+    expect(v.log.renders).toBe(2);
+  });
+
+  test("a resize draws again", async () => {
+    const v = await shown(false);
+    v.flush();
+    v.resize();
+    v.flush();
+    expect(v.log.renders).toBe(2);
+  });
+
+  test.each(["rotate", "zoom", "reset"] as const)("%s asks for a draw", async (action) => {
+    const v = await shown(false);
+    v.flush();
+    if (action === "rotate") v.handle.rotate(0.3);
+    else if (action === "zoom") v.handle.zoom(0.8);
+    else v.handle.reset();
+    v.flush();
+    expect(v.log.renders).toBe(2);
+  });
+
+  test("a disposed view draws no more and drops the change listener", async () => {
+    const v = await shown(false);
+    v.handle.dispose();
+    expect(v.listeners.has("change")).toBe(false);
+    v.flush();
+    expect(v.log.renders).toBe(0);
+  });
+
+  test("easing is on by default and off for reduced motion", async () => {
+    const easy = await shown(false);
+    expect((easy.log.controls as { enableDamping: boolean }).enableDamping).toBe(true);
+    const still = await shown(true);
+    expect((still.log.controls as { enableDamping: boolean }).enableDamping).toBe(false);
+  });
+});
+
 describe("Viewer3d while the view loads", () => {
   test("announces the loading placeholder as a status", async () => {
     const host = document.createElement("div");

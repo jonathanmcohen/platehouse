@@ -74,7 +74,7 @@ import { DropZone } from "../upload/DropZone";
 import { isHidden } from "../visibility";
 import "./model.css";
 import { AboutTab, MakerWorldLink, makerWorldHref } from "./AboutTab";
-import { derivedMessageIn, FilesTab, formatSize, viewable } from "./FilesTab";
+import { derivedMessageIn, FilesTab, formatSize, previewStatusWords, viewable } from "./FilesTab";
 import type { Platform } from "./OpenInSlicer";
 import { PlatesTab } from "./PlatesTab";
 import { PlateViewer } from "./PlateViewer";
@@ -319,6 +319,8 @@ export function ModelPage({
   const [reload, setReload] = useState(0);
   /** The model id whose model is on screen, so a failed poll keeps it. */
   const shownFor = useRef<string | null>(null);
+  /** When the last answer arrived (ms), so showing the tab again within POLL_MS asks nothing. */
+  const answeredAt = useRef(0);
   /** Whether the model on screen needs polling (needsPolling), so a failed poll is asked again. */
   const polling = useRef(false);
   /** Why the model on screen could not be refreshed, for that model's id. */
@@ -404,6 +406,7 @@ export function ModelPage({
         forgetting.current = choice !== null && model.printer !== "" && model.printer !== choice;
         shownFor.current = id;
         polling.current = needsPolling(model);
+        answeredAt.current = Date.now();
         setNotice(null);
         setLoad({ id, status: "ready", model });
         settlePrinter(model.printer);
@@ -422,7 +425,9 @@ export function ModelPage({
         timer = undefined;
       } else if (polling.current && !inFlight) {
         if (timer !== undefined) clearTimeout(timer);
-        void fetchModel();
+        const wait = POLL_MS - (Date.now() - answeredAt.current);
+        if (wait > 0) timer = setTimeout(fetchModel, wait);
+        else void fetchModel();
       }
     }
 
@@ -759,6 +764,8 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
   /** The large STL the person asked to see in 3D, by file id. */
   const [asked, setAsked] = useState<string | null>(null);
   const derived = file === null ? null : derivedMessageIn(i18n, file);
+  // Another file shown forgets the ask: coming back to a large STL asks again.
+  if (asked !== null && asked !== (file?.id ?? null)) setAsked(null);
   if (file === null) {
     return (
       <div className="studio-viewer-frame">
@@ -766,6 +773,11 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
       </div>
     );
   }
+  const showIn3d = (
+    <button type="button" className="studio-button" onClick={() => setAsked(file.id)}>
+      {t("model.showIn3d", { size: formatSize(file.size, i18n.fmt) })}
+    </button>
+  );
   if (file.kind === "3mf") {
     return (
       <PlateViewer
@@ -777,15 +789,14 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
       />
     );
   }
-  const holdBack =
-    file.kind === "stl" &&
-    file.size > STL_3D_THRESHOLD_BYTES &&
-    file.preview !== null &&
-    asked !== file.id;
+  // A large STL is held back by its size alone, picture or not: fetching and
+  // parsing it is the work asked of the person first.
+  const holdBack = file.kind === "stl" && file.size > STL_3D_THRESHOLD_BYTES && asked !== file.id;
   if (file.view !== null && !holdBack) {
     return (
       <Viewer3d
         key={file.id}
+        focusOnShow={asked === file.id}
         source={file.view}
         label={file.name}
         download={file.download}
@@ -801,11 +812,17 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
           src={file.preview}
           alt={t("model.previewOf", { name: file.name })}
         />
-        {file.view !== null ? (
-          <button type="button" className="studio-button" onClick={() => setAsked(file.id)}>
-            {t("model.showIn3d", { size: formatSize(file.size, i18n.fmt) })}
-          </button>
-        ) : null}
+        {file.view !== null ? showIn3d : null}
+      </div>
+    );
+  }
+  if (holdBack && file.view !== null) {
+    return (
+      <div className="studio-viewer-frame">
+        <p className="studio-placeholder">
+          {previewStatusWords(file, i18n) ?? t("model.noViewYet", { name: file.name })}
+        </p>
+        {showIn3d}
       </div>
     );
   }

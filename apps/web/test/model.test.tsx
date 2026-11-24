@@ -3254,10 +3254,46 @@ describe("the model page's unasked work (issue #469)", () => {
     expect(loads).toHaveLength(1);
   });
 
-  test("a large STL with no picture yet still opens in 3D at once", async () => {
-    models.set(MODEL_ID, model([{ ...BIG_STL, preview: null }]));
+  test("a large STL with no picture yet loads nothing until Show in 3D is pressed", async () => {
+    models.set(
+      MODEL_ID,
+      model([{ ...BIG_STL, preview: null, previewStatus: "pending", previewMessage: null }]),
+    );
     await render(pageAt(MODEL_ID));
-    expect(loads).toHaveLength(1);
+    expect(loads).toEqual([]);
+    expect(loadThree).not.toHaveBeenCalled();
+    expect(container.querySelector(".studio-viewer img.studio-plate-large")).toBeNull();
+    expect(container.querySelector(".studio-viewer .studio-placeholder")).not.toBeNull();
+    await click(button(/^show in 3d/i, container.querySelector(".studio-viewer") as HTMLElement));
+    expect(loads).toEqual([{ kind: "stl", url: BIG_STL.view?.url }]);
+  });
+
+  test("pressing Show in 3D moves focus to the 3D view", async () => {
+    models.set(MODEL_ID, model([BIG_STL]));
+    await render(pageAt(MODEL_ID));
+    await click(button(/^show in 3d/i, container.querySelector(".studio-viewer") as HTMLElement));
+    const view = container.querySelector("[data-viewer3d]");
+    expect(view).not.toBeNull();
+    expect(document.activeElement).toBe(view);
+  });
+
+  test("asking for 3D is forgotten when the file changes: A, then B, then A shows A's picture again", async () => {
+    const OTHER_STL = "0198f0c4-0000-7000-8000-00000000b0bb";
+    const second: ModelFile = { ...BIG_STL, id: OTHER_STL, name: "Second.stl" };
+    models.set(MODEL_ID, model([BIG_STL, second]));
+    await render(pageAt(MODEL_ID));
+    const view = (name: RegExp) => {
+      const row = [...panel().querySelectorAll("li")].find((li) => name.test(text(li)));
+      return button(/^view/i, row as HTMLElement);
+    };
+    await click(button(/^show in 3d/i, container.querySelector(".studio-viewer") as HTMLElement));
+    expect(container.querySelector("[data-viewer3d]")).not.toBeNull();
+    await click(tab("Files"));
+    await click(view(/Second\.stl/));
+    expect(container.querySelector("[data-viewer3d]")).toBeNull();
+    await click(view(/Bracket\.stl/));
+    expect(container.querySelector("[data-viewer3d]")).toBeNull();
+    expect(container.querySelector(".studio-viewer img.studio-plate-large")).not.toBeNull();
   });
 
   function modelRequests(id = MODEL_ID): number {
@@ -3270,7 +3306,9 @@ describe("the model page's unasked work (issue #469)", () => {
   }
 
   test("the model page does not poll while the tab is hidden, and fetches once when it is shown", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
+    });
     try {
       models.set(
         MODEL_ID,
@@ -3300,7 +3338,20 @@ describe("the model page's unasked work (issue #469)", () => {
       expect(modelRequests()).toBe(3);
     } finally {
       setVisibility("visible");
+      vi.useRealTimers();
     }
+  });
+
+  test("a polling model answered less than POLL_MS ago is not fetched again by a quick hide and show", async () => {
+    models.set(MODEL_ID, model([{ ...STL_FILE, previewStatus: "pending", previewMessage: null }]));
+    await render(pageAt(MODEL_ID));
+    const before = modelRequests();
+    await act(async () => {
+      setVisibility("hidden");
+      setVisibility("visible");
+    });
+    await settle();
+    expect(modelRequests()).toBe(before);
   });
 
   test("a model that needs no polling is not fetched again when the tab is shown", async () => {

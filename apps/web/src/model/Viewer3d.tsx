@@ -255,7 +255,8 @@ export const defaultLoadThree: ThreeLoader = async () => {
         renderer.setSize(w, h);
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
-        scheduler.request();
+        // Drawn at once: a resized canvas is blank until it is.
+        renderer.render(scene, camera);
       });
       resize.observe(el);
       scheduler.request();
@@ -325,9 +326,19 @@ export interface Viewer3dProps {
   onFailed?: ((error: unknown) => void) | undefined;
   /** The caller's buttons, between the view and its controls. */
   actions?: ReactNode;
+  /** Moves focus to the view when it is shown, for a caller whose button this view replaced. */
+  focusOnShow?: boolean | undefined;
 }
 
-export function Viewer3d({ source, label, download, loadThree, onFailed, actions }: Viewer3dProps) {
+export function Viewer3d({
+  source,
+  label,
+  download,
+  loadThree,
+  onFailed,
+  actions,
+  focusOnShow,
+}: Viewer3dProps) {
   const { t, rich } = useI18n();
   const host = useRef<HTMLDivElement>(null);
   const [handle, setHandle] = useState<ViewerHandle | null>(null);
@@ -338,6 +349,12 @@ export function Viewer3d({ source, label, download, loadThree, onFailed, actions
   failedRef.current = onFailed;
   const kind = source?.kind;
   const url = source?.url;
+
+  // The button that asked for this view has gone: focus lands on the view,
+  // whose status line says it is loading.
+  useEffect(() => {
+    if (focusOnShow) host.current?.focus();
+  }, [focusOnShow]);
 
   useEffect(() => {
     let cancelled = false;
@@ -381,6 +398,7 @@ export function Viewer3d({ source, label, download, loadThree, onFailed, actions
       <div className="studio-viewer-frame">
         <div
           ref={host}
+          tabIndex={-1}
           className="ph-viewer3d"
           data-viewer3d=""
           role="img"
