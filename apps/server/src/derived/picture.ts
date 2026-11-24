@@ -56,6 +56,18 @@ export const PREVIEW_RETRIED: readonly string[] = [
   DERIVED_MESSAGES.previewTempFailed,
 ];
 
+/**
+ * The failures of a picture the slicer refused because its sandbox is off.
+ * Unlike PREVIEW_RETRIED they are not tried again on every backfill: the
+ * backfill takes them only while the slicer reports its sandbox on
+ * (backfillCandidates in derived.ts), and a picture refused again then is
+ * written again and waits out the grace period like any other.
+ */
+export const PREVIEW_SANDBOX_OFF: readonly string[] = [
+  DERIVED_MESSAGES.sandboxOffKernel,
+  DERIVED_MESSAGES.sandboxOffCheck,
+];
+
 /** The stored facts a file's picture status is worked out from. */
 export interface PreviewFacts {
   kind: FileKind;

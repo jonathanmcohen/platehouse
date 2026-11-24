@@ -85,6 +85,10 @@ const DERIVED_KEYS: Readonly<Record<string, MessageKey>> = {
   previewFailed: "derived.previewFailed",
   previewRejected: "derived.previewRejected",
   stlTooLarge: "derived.stlTooLarge",
+  sandboxOffKernel: "derived.sandboxOffKernel",
+  sandboxOffCheck: "derived.sandboxOffCheck",
+  convertSandboxOffKernel: "derived.convertSandboxOffKernel",
+  convertSandboxOffCheck: "derived.convertSandboxOffCheck",
 };
 
 /**

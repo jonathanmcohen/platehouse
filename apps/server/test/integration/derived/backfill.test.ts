@@ -10,6 +10,7 @@
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SandboxState } from "@platehouse/slicer-contract";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { TempFileError } from "../../../src/derived/client.js";
@@ -21,8 +22,9 @@ import {
   type DerivedJob,
   RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
+import type { SlicerState } from "../../../src/estimates/slicer-state.js";
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
-import { renderedBytes } from "../../support/slicer-stub.js";
+import { renderedBytes, sandboxOff } from "../../support/slicer-stub.js";
 import {
   blobsOf,
   type DerivedEnv,
@@ -30,8 +32,9 @@ import {
   readObject,
   settledFile,
   startDerivedEnv,
+  until,
 } from "../support/derived.js";
-import { STEP_TEXT, writeUpload } from "../support/ingest.js";
+import { SCAD_TEXT, STEP_TEXT, writeUpload } from "../support/ingest.js";
 
 let env: DerivedEnv;
 
@@ -531,5 +534,164 @@ describe("the preview backfill (issue #316)", () => {
         previewMessage: message,
       });
     }
+  });
+});
+
+// A slicer whose sandbox is off refuses pictures, renders and STEP previews
+// and says so in its health. What the app does with the files it refused
+// depends on that health: nothing while it is off or unknown, and a second
+// try once it is on (STEP conversions also when the slicer allows them
+// without the sandbox).
+const ON: SandboxState = { state: "on", reason: null, detail: null, allowUnsandboxed: false };
+const CHECKING: SandboxState = {
+  state: "checking",
+  reason: null,
+  detail: null,
+  allowUnsandboxed: false,
+};
+const off = (allowUnsandboxed: boolean): SandboxState => ({
+  state: "off",
+  reason: "old_kernel",
+  detail: "the kernel is too old",
+  allowUnsandboxed,
+});
+
+/** A derived whose slicer health reports sandbox (null: health has not answered). */
+function derivedReporting(sandbox: SandboxState | null, batch?: number) {
+  const slicerState: SlicerState = {
+    current: async () => ({
+      timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+      sandbox,
+    }),
+  };
+  return createDerived({
+    db: env.db,
+    store: env.store,
+    slicerUrl: env.stub.url,
+    queue: env.boss,
+    retryDelaySeconds: 1,
+    slicerState,
+    ...(batch === undefined ? {} : { backfillBatch: batch }),
+  });
+}
+
+/** Jobs of a file, every kind. */
+async function jobsOf(fileId: string) {
+  return env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
+}
+
+describe("files a slicer with its sandbox off refused", () => {
+  test("a picture refused for the sandbox is a backfill candidate only while health says it is on, and not again right after a new refusal", async () => {
+    const stl = await legacyStl("Sandbox bracket");
+    const old = new Date(Date.now() - 2 * RENDER_CHECK_GRACE_MS);
+    await env.db
+      .updateTable("files")
+      .set((eb) => ({
+        previewFailureSourceBlobId: eb.ref("blobId"),
+        previewFailureMessage: DERIVED_MESSAGES.sandboxOffKernel,
+        previewStatus: "failed",
+        previewMessage: DERIVED_MESSAGES.sandboxOffKernel,
+        updatedAt: old,
+      }))
+      .where("id", "=", stl.fileId)
+      .execute();
+
+    for (const sandbox of [off(false), off(true), CHECKING, null]) {
+      const run = await derivedReporting(sandbox).backfillPreviews(later());
+      expect(run.queued).not.toContain(stl.fileId);
+    }
+    expect(await previewJobs(stl.fileId)).toHaveLength(0);
+
+    // The slicer is on, but refuses this one again: recorded again, then
+    // left alone until the grace period has passed once more.
+    env.stub.renders.always("/v1/stl/png", sandboxOff("old_kernel"));
+    const on = derivedReporting(ON);
+    expect((await on.backfillPreviews(later())).queued).toContain(stl.fileId);
+    const again = await until(
+      () => env.repos.files.get(stl.fileId),
+      (f) => f?.previewStatus === "failed" && f.updatedAt.getTime() > old.getTime(),
+    );
+    expect(again).toMatchObject({ previewMessage: DERIVED_MESSAGES.sandboxOffKernel });
+    expect((await on.backfillPreviews(new Date())).queued).not.toContain(stl.fileId);
+    expect(await previewJobs(stl.fileId)).toHaveLength(1);
+
+    // Once the sandbox is on for real, the next pass makes the picture.
+    env.stub.renders.reset();
+    await env.db
+      .updateTable("files")
+      .set({ updatedAt: old })
+      .where("id", "=", stl.fileId)
+      .execute();
+    expect((await on.backfillPreviews(new Date())).queued).toContain(stl.fileId);
+    expect(await settledFile(env, stl.fileId)).toMatchObject({ previewStatus: "ok" });
+  });
+
+  /** A .scad or STEP file that a refused render or conversion left failed with message. */
+  async function refused(kind: "scad" | "step", message: string) {
+    const text =
+      kind === "scad"
+        ? `// ${randomBytes(6).toString("hex")}\n${SCAD_TEXT}`
+        : uniqueStep("Refused conversion");
+    const stored = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, text),
+      originalName: kind === "scad" ? "Refused.scad" : "Refused.step",
+      target: "new",
+    });
+    await env.db
+      .updateTable("files")
+      .set({ derivedStatus: "failed", derivedMessage: message })
+      .where("id", "=", stored.fileId)
+      .execute();
+    return stored.fileId;
+  }
+
+  test("a render or conversion refused for the sandbox is queued only when health allows it, and once", async () => {
+    const scad = await refused("scad", DERIVED_MESSAGES.sandboxOffCheck);
+    const step = await refused("step", DERIVED_MESSAGES.convertSandboxOffKernel);
+
+    // Unknown, still being checked, or off and not allowed: nothing.
+    for (const sandbox of [null, CHECKING, off(false)]) {
+      expect(await derivedReporting(sandbox).requeueSandboxOff(new Date())).toBe(0);
+    }
+    expect(await jobsOf(scad)).toHaveLength(0);
+    expect(await jobsOf(step)).toHaveLength(0);
+
+    // Off but the slicer allows STEP conversions without it: the STEP file
+    // only, never a render.
+    expect(await derivedReporting(off(true)).requeueSandboxOff(new Date())).toBe(1);
+    expect((await jobsOf(step)).map((j) => j.data.kind)).toContain(DERIVED_KINDS.convertStep);
+    expect(await jobsOf(scad)).toHaveLength(0);
+    expect(await env.repos.files.get(scad)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.sandboxOffCheck,
+    });
+
+    // On: the render too. The STEP file is pending or done, so not again.
+    const on = derivedReporting(ON);
+    expect(await on.requeueSandboxOff(new Date())).toBe(1);
+    expect((await jobsOf(scad)).map((j) => j.data.kind)).toEqual([DERIVED_KINDS.renderScad]);
+    expect(await settledFile(env, scad)).toMatchObject({ derivedStatus: "ok" });
+    expect(await settledFile(env, step)).toMatchObject({ derivedStatus: "ok" });
+
+    // A second run right after queues nothing.
+    expect(await on.requeueSandboxOff(new Date())).toBe(0);
+    expect(await jobsOf(scad)).toHaveLength(1);
+  });
+
+  test("it queues at most one batch per run", async () => {
+    const first = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    const second = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    const batched = derivedReporting(ON, 1);
+    expect(await batched.requeueSandboxOff(new Date())).toBe(1);
+    expect(await batched.requeueSandboxOff(new Date())).toBe(1);
+    expect(await jobsOf(first)).toHaveLength(1);
+    expect(await jobsOf(second)).toHaveLength(1);
+    expect(await batched.requeueSandboxOff(new Date())).toBe(0);
+  });
+
+  test("a render refused for another reason is left alone", async () => {
+    const other = await refused("scad", `${DERIVED_MESSAGES.previousRendersScad} ERROR: bad file`);
+    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(0);
+    expect(await jobsOf(other)).toHaveLength(0);
   });
 });

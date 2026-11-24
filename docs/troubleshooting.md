@@ -137,9 +137,24 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
 
 ## Renders and STEP files
 
-- **OpenSCAD renders are refused because the sandbox self-test failed**: the host
-  kernel is older than Linux 6.12 (Landlock ABI 6), or the slicer's settings were changed from the
-  example. Slicing and STEP files still work. The slicer's log says which.
+- **"Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12."**:
+  the slicer's sandbox is off because the host kernel has no Landlock ABI 6, so the slicer refuses
+  STL pictures, STEP files' preview pictures and OpenSCAD renders, and the files keep their icon.
+  Upgrade the host to Linux 6.12 or newer and restart the slicer. The files are picked up again by
+  themselves once the slicer reports its sandbox on. `SLICER_ALLOW_UNSANDBOXED` does not cover
+  these.
+- **"Pictures and OpenSCAD renders are off on this server: its sandbox check failed."**: the
+  kernel is new enough, but the slicer's check of its sandbox failed, for example because the
+  slicer's container settings were changed from the example. The slicer's log says what failed,
+  and it checks again by itself, after a minute at first and then less often. Restore the example's
+  settings; the files are picked up again once the check passes.
+- **"STEP previews are off on this server: its kernel is older than Linux 6.12."**: the same
+  kernel limit, for converting a STEP file. Upgrade the kernel, or set
+  `SLICER_ALLOW_UNSANDBOXED=true` on the slicer to convert STEP files without the sandbox. The
+  files are picked up again once conversions can run.
+- **"STEP previews are off on this server: its sandbox check failed."**: the same as the sandbox
+  check above, for a STEP file. Fix the slicer's settings, or set `SLICER_ALLOW_UNSANDBOXED=true`
+  on the slicer to convert STEP files without the sandbox.
 - **"The slicer is not answering. The render will need to be started again."**: the slicer was down
   for over 2 hours. Bring it back and upload the file again.
 - **"The slicer is not answering, so the preview picture could not be made. It will be tried again

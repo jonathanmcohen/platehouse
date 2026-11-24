@@ -5,17 +5,18 @@
 // the job decides (derived.ts). A 409 busy or a lost connection is
 // retryable, and pg-boss retries the job under its own settings
 // (SLICER_RETRY); a 422 is the program's own answer and final. A slicer
-// that takes no connection, answers that OpenSCAD renders are off because
-// its sandbox self-test failed, or answers 404 because its image is older
+// that takes no connection, or answers 404 because its image is older
 // than this app and lacks the route, is SlicerDown: not the file's
 // doing, so the job waits for the slicer without using a retry, for up to
-// 2 hours (SLICER_DOWN_LIMIT_MS in derived.ts). A streamed body that fails
+// 2 hours (SLICER_DOWN_LIMIT_MS in derived.ts). A 503 sandbox_off is
+// SandboxOff: the slicer's sandbox is off, which the job records once with
+// its reason instead of waiting. A streamed body that fails
 // partway (the store went away while a STEP file was read from it) rejects
 // with the body's own error, a StoreUnavailable for an outage or a
 // StoreError for a store that refused, never as a lost slicer connection.
 import { open, rm } from "node:fs/promises";
 import { Readable } from "node:stream";
-import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
+import { LIMITS, type SandboxOffBody, slicerContract } from "@platehouse/slicer-contract";
 
 /**
  * The sentence that says the renders a file shows are from an earlier
@@ -122,6 +123,20 @@ export const DERIVED_MESSAGES = {
    */
   previewTempFailed:
     "Platehouse could not write a temporary file; it will be tried again automatically.",
+  /**
+   * The slicer's sandbox is off (HTTP 503 sandbox_off), so it refuses
+   * pictures and OpenSCAD renders: its kernel is too old, or its check
+   * failed. Recorded once with the real reason; the file is queued again
+   * when the slicer says the sandbox is on (requeueSandboxOff).
+   */
+  sandboxOffKernel:
+    "Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12.",
+  sandboxOffCheck:
+    "Pictures and OpenSCAD renders are off on this server: its sandbox check failed.",
+  /** The same for a STEP conversion, which can also run unsandboxed when the slicer allows it. */
+  convertSandboxOffKernel:
+    "STEP previews are off on this server: its kernel is older than Linux 6.12.",
+  convertSandboxOffCheck: "STEP previews are off on this server: its sandbox check failed.",
   /** An STL over the contract's 256 MiB limit is never sent, and has no preview. */
   stlTooLarge:
     "This STL file is larger than the 256 MiB the preview renderer takes, so it has no preview picture.",
@@ -223,13 +238,39 @@ export class SlicerUnreachable extends Error {
 }
 
 /**
- * The start of the 422 render_failed message the slicer sends when its
- * OpenSCAD sandbox self-test failed (apps/slicer/src/server.ts): renders are
- * off on the slicer, which says nothing about the file. Contract v1 gives
- * it no error code of its own, so the message is matched; a test pins it to
- * the slicer's source.
+ * The slicer answered 503 sandbox_off: its sandbox is off, so it refuses
+ * this route, and says why. Says nothing about the file. Not retried and
+ * not an outage: the job records sandboxMessage once, and the file is
+ * queued again when the sandbox is on.
  */
-export const SANDBOX_OFF_PREFIX = "OpenSCAD renders are off:";
+export class SandboxOff extends Error {
+  readonly reason: SandboxOffBody["reason"];
+
+  constructor(route: string, reason: SandboxOffBody["reason"]) {
+    super(`The slicer's sandbox is off (${route}): ${reason}`);
+    this.name = "SandboxOff";
+    this.reason = reason;
+  }
+}
+
+/**
+ * The message a file shows when the sandbox is off, by the kind of job
+ * refused: a picture of an STL or STEP mesh ("preview"), an OpenSCAD render
+ * and an STL's picture share one pair, a STEP conversion has its own.
+ */
+export function sandboxMessage(
+  kind: "scad" | "step" | "stl" | "preview",
+  reason: SandboxOffBody["reason"],
+): string {
+  if (kind === "step") {
+    return reason === "old_kernel"
+      ? DERIVED_MESSAGES.convertSandboxOffKernel
+      : DERIVED_MESSAGES.convertSandboxOffCheck;
+  }
+  return reason === "old_kernel"
+    ? DERIVED_MESSAGES.sandboxOffKernel
+    : DERIVED_MESSAGES.sandboxOffCheck;
+}
 
 /**
  * The network codes that mean no connection was made at all: the slicer is
@@ -259,8 +300,8 @@ function noConnectionCode(error: unknown): string | undefined {
 
 /**
  * The slicer cannot render right now, and the file is not why: it took no
- * connection (stopped, restarting or being re-pulled), or it answered that
- * OpenSCAD renders are off because its sandbox self-test failed. Not a
+ * connection (stopped, restarting or being re-pulled), or it has no such
+ * route (an image older than this app). Not a
  * pg-boss retry: the job waits for the slicer without using one, for up to
  * 2 hours (runJob).
  */
@@ -621,10 +662,18 @@ async function postRenderTo(
         req.refusal === "render" ? slicerContract.renderError : slicerContract.convertError;
       const refusal = schema.safeParse(parsed);
       if (!refusal.success) throw new SlicerFault(req.route, "422 outside the contract");
-      if (req.refusal === "render" && refusal.data.message.startsWith(SANDBOX_OFF_PREFIX)) {
-        throw new SlicerDown(req.route, refusal.data.message);
-      }
       throw new RenderFailed(refusal.data.message);
+    }
+    case 503: {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(bytes.toString("utf8"));
+      } catch {
+        throw new SlicerFault(req.route, "503 with a body that is not JSON");
+      }
+      const off = slicerContract.sandboxOff.safeParse(parsed);
+      if (!off.success) throw new SlicerFault(req.route, "503 outside the contract");
+      throw new SandboxOff(req.route, off.data.reason);
     }
     default:
       throw new SlicerFault(req.route, String(status));

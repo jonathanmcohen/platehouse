@@ -449,6 +449,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       onIngested,
       checkRenders: (now: Date) => derived.checkRenders(now),
       backfillPreviews: (now: Date) => derived.backfillPreviews(now),
+      requeueSandboxOff: (now: Date) => derived.requeueSandboxOff(now),
       purgeSessions: (now: Date) => repos.sessions.deleteExpired(now),
       reconvertDescriptions: (stop: () => boolean, signal: AbortSignal) =>
         reconvert.run(stop, signal),

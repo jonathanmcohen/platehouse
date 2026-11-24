@@ -23,7 +23,7 @@ import {
   RENDER_TIMEOUT_MS,
   RENDER_UPLOAD_TIMEOUT_MS,
   RenderFailed,
-  SANDBOX_OFF_PREFIX,
+  SandboxOff,
   SlicerDown,
   SlicerUnreachable,
 } from "../../../src/derived/client.js";
@@ -263,14 +263,28 @@ describe("a slicer that cannot render right now", () => {
     expect(isRetryable(error)).toBe(true);
   });
 
-  test("a 422 saying OpenSCAD renders are off is the slicer's fault, not the file's", async () => {
-    const message = `${SANDBOX_OFF_PREFIX} the sandbox self-test failed (the probe was readable).`;
+  test("a 503 sandbox_off is the slicer's sandbox, not the file's: SandboxOff with its reason", async () => {
+    const baseUrl = await answering(503, {
+      error: "sandbox_off",
+      reason: "old_kernel",
+      detail: "the kernel is too old",
+    });
+    const error = await failure(postRender(target(baseUrl), scadRequest()));
+    expect(error).toBeInstanceOf(SandboxOff);
+    expect((error as SandboxOff).reason).toBe("old_kernel");
+    expect(error).not.toBeInstanceOf(SlicerDown);
+    expect(error).not.toBeInstanceOf(RenderFailed);
+    expect(isRetryable(error)).toBe(false);
+  });
+
+  test("a 422 that starts with the old sandbox sentence is OpenSCAD's verdict now: RenderFailed", async () => {
+    const message =
+      "OpenSCAD renders are off: the sandbox self-test failed (the probe was readable).";
     const baseUrl = await answering(422, { error: "render_failed", message });
     const error = await failure(postRender(target(baseUrl), scadRequest()));
-    expect(error).toBeInstanceOf(SlicerDown);
-    expect(error).not.toBeInstanceOf(RenderFailed);
-    expect((error as Error).message).toContain(message);
-    expect(isRetryable(error)).toBe(false);
+    expect(error).toBeInstanceOf(RenderFailed);
+    expect(error).not.toBeInstanceOf(SlicerDown);
+    expect((error as Error).message).toBe(message);
   });
 
   test("OpenSCAD's own render error is still the file's: RenderFailed with its message", async () => {
@@ -303,11 +317,12 @@ describe("a slicer that cannot render right now", () => {
     expect(isRetryable(error)).toBe(false);
   });
 
-  test("the sandbox-off prefix is the one the slicer writes in apps/slicer/src/server.ts", async () => {
+  test("the slicer answers sandbox_off in apps/slicer/src/server.ts", async () => {
     const slicerServer = await readFile(
       fileURLToPath(new URL("../../../../slicer/src/server.ts", import.meta.url)),
       "utf8",
     );
-    expect(slicerServer).toContain(`message: \`${SANDBOX_OFF_PREFIX} `);
+    expect(slicerServer).toContain('error: "sandbox_off"');
+    expect(slicerServer).not.toContain("OpenSCAD renders are off:");
   });
 });

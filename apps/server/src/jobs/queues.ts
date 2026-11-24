@@ -317,6 +317,12 @@ export interface QueueDeps {
    * and run once at startup by startQueues itself.
    */
   backfillPreviews?(now: Date): Promise<unknown>;
+  /**
+   * Queues again the files a slicer with its sandbox off refused (derived/
+   * derived.ts's requeueSandboxOff), when given: run right after each
+   * preview backfill, on the same schedule and at startup.
+   */
+  requeueSandboxOff?(now: Date): Promise<unknown>;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */
@@ -593,6 +599,7 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
         case MAINTENANCE_TASKS.backfillPreviews:
           if (!deps.backfillPreviews) throw new Error("No preview backfill is registered");
           await deps.backfillPreviews(new Date());
+          await deps.requeueSandboxOff?.(new Date());
           return;
         default:
           throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);
@@ -657,6 +664,12 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`queues: startup preview backfill: ${message.slice(0, 200)}`);
+    }
+    try {
+      await deps.requeueSandboxOff?.(new Date());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`queues: startup sandbox requeue: ${message.slice(0, 200)}`);
     }
   }
 }
