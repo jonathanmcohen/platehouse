@@ -816,6 +816,26 @@ describe("bulk actions", () => {
     expect(libraryQueries().length).toBeGreaterThan(before);
   });
 
+  test("Select results are in a status region that exists before any action", async () => {
+    await twoSelected();
+    const regions = () =>
+      [...container.querySelectorAll('[role="status"]')].filter(
+        (el) => el.id !== "ph-selection-count",
+      );
+    const before = regions();
+    expect(before).toHaveLength(1);
+    expect(before[0]?.textContent).toBe("");
+    await click(button("Add tags"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    await type(input, "PLA");
+    await submit(input.form);
+    await click(dialogButton("Add tags"));
+    const after = regions();
+    expect(after).toHaveLength(1);
+    expect(after[0]).toBe(before[0]);
+    expect(after[0]?.textContent).toContain("Added PLA to 2 models.");
+  });
+
   test("after Add tags the new tag is in the tag filter, Remove tag and Add tags without a reload", async () => {
     serverTags = [];
     await twoSelected();

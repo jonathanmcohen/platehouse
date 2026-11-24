@@ -1287,7 +1287,10 @@ describe("failed plate shows the plain reason and a retry button", () => {
 
   /** The page's one status region, where a refused Retry is said. */
   function pageStatus(): Element {
-    const regions = container.querySelectorAll('[role="status"]');
+    // The plates' own "Estimating for" lines are statuses too; they sit in a plate.
+    const regions = [...container.querySelectorAll('[role="status"]')].filter(
+      (el) => el.closest("[data-plate]") === null,
+    );
     expect(regions).toHaveLength(1);
     return regions[0] as Element;
   }
@@ -1329,6 +1332,37 @@ describe("failed plate shows the plain reason and a retry button", () => {
       `GET /app/api/models/${MODEL_ID}`,
     ]);
     expect(text(plateItems()[1])).toMatch(/estimating/i);
+  });
+
+  test("after a successful Retry, focus is on that plate's heading", async () => {
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    const retry = button(/retry/i, plateItems()[1] as HTMLElement);
+    retry.focus();
+    models.set(
+      MODEL_ID,
+      model([
+        threeMf([
+          plate(1, "Base", { file: fileNumbers(1) }),
+          plate(2, "Huge", { platehouse: estimate("estimating") }),
+          plate(3, "Lid", { file: fileNumbers(3) }),
+        ]),
+      ]),
+    );
+    await click(retry);
+    const heading = plateTitle(plateItems()[1] as HTMLElement);
+    expect(heading?.getAttribute("tabindex")).toBe("-1");
+    expect(document.activeElement).toBe(heading);
+  });
+
+  test("the estimating line is a status", async () => {
+    models.set(
+      MODEL_ID,
+      model([threeMf([plate(1, "Base", { platehouse: estimate("estimating") })])]),
+    );
+    await render(pageAt(MODEL_ID));
+    const regions = [...container.querySelectorAll('[role="status"]')];
+    expect(regions.some((el) => (el.textContent ?? "").includes("Estimating for"))).toBe(true);
   });
 
   test("a retry refused as not retryable says so, naming the plate, and reloads the model, and the words outlive the failure", async () => {

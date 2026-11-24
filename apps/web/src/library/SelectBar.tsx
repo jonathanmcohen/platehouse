@@ -541,12 +541,15 @@ export function SelectBar({
           </button>
         </div>
       ) : null}
-      {note === null ? null : <p className="studio-muted">{note}</p>}
-      {result === null ? null : <p className="studio-muted">{result.done}</p>}
-      {result?.notInView ? <p className="studio-muted">{result.notInView}</p> : null}
-      {left > 0 ? (
-        <p className="studio-muted">{t("library.select.left", { count: left })}</p>
-      ) : null}
+      {/* Always mounted, so text that arrives later is announced. */}
+      <div role="status">
+        {note === null ? null : <p className="studio-muted">{note}</p>}
+        {result === null ? null : <p className="studio-muted">{result.done}</p>}
+        {result?.notInView ? <p className="studio-muted">{result.notInView}</p> : null}
+        {left > 0 ? (
+          <p className="studio-muted">{t("library.select.left", { count: left })}</p>
+        ) : null}
+      </div>
       {result?.failed ? (
         <p role="alert" className="studio-alert studio-alert-alert">
           {result.failed}

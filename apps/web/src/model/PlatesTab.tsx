@@ -10,6 +10,7 @@
 // there is no file heading and the plate names are h2; with several, each
 // file's name is an h2 and its plate names h3.
 
+import { useRef } from "react";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import { PrinterSwitch } from "../settings/PrinterSwitch";
 import type { ModelFile, ModelView, RetryTarget } from "./ModelPage";
@@ -80,6 +81,7 @@ export function PlatesTab({
   const files = model.files.filter((f) => f.kind === "3mf");
   const PlateHeading = files.length > 1 ? "h3" : "h2";
   const shown = switchPrinter(model, chosenPrinter);
+  const headings = useRef(new Map<string, HTMLHeadingElement>());
   return (
     <>
       <PrinterSwitch
@@ -109,7 +111,14 @@ export function PlatesTab({
                       {plate.thumbnail === null ? null : (
                         <img src={plate.thumbnail} alt="" loading="lazy" />
                       )}
-                      <PlateHeading className="ph-plate-title">
+                      <PlateHeading
+                        className="ph-plate-title"
+                        tabIndex={-1}
+                        ref={(el: HTMLHeadingElement | null) => {
+                          if (el === null) headings.current.delete(plate.id);
+                          else headings.current.set(plate.id, el);
+                        }}
+                      >
                         {plateLabel(plate, i18n)}
                       </PlateHeading>
                     </div>
@@ -119,7 +128,12 @@ export function PlatesTab({
                       printerName={model.printerName}
                       projectFilaments={file.filaments}
                       pending={plate.estimatePending}
-                      onRetry={(estimateId) => onRetry(estimateId, { fileName: file.name, plate })}
+                      onRetry={async (estimateId) => {
+                        await onRetry(estimateId, { fileName: file.name, plate });
+                        // The failure block goes when the model reloads, so
+                        // keyboard focus moves to the plate's heading first.
+                        headings.current.get(plate.id)?.focus();
+                      }}
                     />
                   </li>
                 ))}
