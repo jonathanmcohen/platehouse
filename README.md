@@ -66,10 +66,12 @@ To run one test file, name it: `pnpm vitest run apps/server/test/config.test.ts`
 
 CI (`.github/workflows/ci.yml`) runs on every pull request and on every push to main or a release
 branch. It runs Biome, the type check, the unit tests, the integration tests and the end-to-end
-tests in a chain, builds the app image for amd64 and arm64 and checks that it starts healthy and
-passes the Trivy gate, and runs the Ubuntu snapshot pin check. Some jobs run only when what they
-cover changes: the container tests for the slicer image, the slicing gate tests and the gate image
-build, and the docs build. It fails a test job when no test ran.
+tests in a chain, and the end-to-end tests run against the built app image. It also builds the app
+image for amd64 and arm64 and checks that it starts healthy and passes the Trivy gates, runs the
+Ubuntu snapshot pin check and the base image pin check, and audits the production dependencies for
+critical advisories. Some jobs run only when what they cover changes: the container tests for the
+slicer image, the slicing gate tests and the gate image build, and the docs build. It fails a test
+job when no test ran.
 
 The slicing gate in `tools/slicing-gate` is not part of the pnpm workspace and Biome does not
 check it. Its tests use Node's own test runner and need no install:

@@ -113,7 +113,7 @@ server {
   Expect `403` or no connection.
 - **Docker's userland proxy.** Where it applies, it can replace a visitor's address with the bridge
   gateway's: for IPv6 visitors when the proxy's Docker network has no IPv6, and for connections from
-  the host itself. Set `"userland-proxy": false` in `/etc/docker/daemon.json`. Real IPv6 addresses
+  the host itself. Set `"userland-proxy": false` in `/etc/docker/daemon.json` (rootless Docker: `~/.config/docker/daemon.json`). Real IPv6 addresses
   need Docker Engine 27 or newer, where `ip6tables` is on by default; upgrade an older engine first.
   Restart Docker, then recreate the proxy container (`docker compose up -d --force-recreate`, then
   the proxy's service name). The example Compose file's `proxy` network is IPv4 only. `enable_ipv6:

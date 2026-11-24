@@ -91,8 +91,9 @@ set. Keep it that way unless another proxy sits in front of Traefik; if one does
 - **Let the proxy see real addresses.** If the proxy runs in Docker and you use an allowlist, prefer
   `network_mode: host` (Docker Engine on Linux), or run it on the host. With host networking, point
   the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback, as in
-  the example Compose file), and make sure nothing else the proxy listens on, such as Traefik's
-  dashboard on 8080, is exposed. If every visitor, LAN and outside, shows the same address (Docker's
+  the example Compose file). With the file provider, use `http://127.0.0.1:3000`; the Docker labels
+  need no change. Make sure nothing else the proxy listens on, such as Traefik's dashboard on 8080,
+  is exposed. If every visitor, LAN and outside, shows the same address (Docker's
   bridge pools, Swarm's overlay pools in `10.0.0.0/8`, and Docker Desktop's `192.168.65.0/24`), do
   not add that address to the allowlist; the allowlist cannot work on this setup. That is the case
   on Docker Desktop (macOS and Windows), with rootless Docker's builtin port driver before
@@ -127,7 +128,7 @@ set. Keep it that way unless another proxy sits in front of Traefik; if one does
   Expect `403` or no connection.
 - **Docker's userland proxy.** Where it applies, it can replace a visitor's address with the bridge
   gateway's: for IPv6 visitors when the proxy's Docker network has no IPv6, and for connections from
-  the host itself. Set `"userland-proxy": false` in `/etc/docker/daemon.json`. Real IPv6 addresses
+  the host itself. Set `"userland-proxy": false` in `/etc/docker/daemon.json` (rootless Docker: `~/.config/docker/daemon.json`). Real IPv6 addresses
   need Docker Engine 27 or newer, where `ip6tables` is on by default; upgrade an older engine first.
   Restart Docker, then recreate the proxy container (`docker compose up -d --force-recreate`, then
   the proxy's service name). The example Compose file's `proxy` network is IPv4 only. `enable_ipv6:

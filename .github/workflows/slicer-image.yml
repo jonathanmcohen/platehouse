@@ -795,7 +795,7 @@ jobs:
               echo "- digest: \`${DIGEST}\`"
               echo "- tags: ${tags}"
               if [ "$MOVE_ORCA" != "true" ]; then
-                echo "- orca-${VERSION} and stable not moved (a prerelease tag, or a release below the highest one). The next daily run builds orca-${VERSION} if it does not exist yet and moves both; a plain release tag or a run by hand moves them too."
+                echo "- orca-${VERSION} and stable not moved (a prerelease tag, or a release below the highest one). The next daily run builds orca-${VERSION} if it does not exist yet and moves both; the highest plain release tag or a run by hand moves them too."
               fi
             } >>"$GITHUB_STEP_SUMMARY"
             echo "Published ${tags} at ${DIGEST}"
@@ -1002,6 +1002,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           TAGGED: ${{ needs.stable.outputs.tagged || needs.build.outputs.tagged }}
           CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}
+          GATE_RESULT: ${{ needs.gate.result }}
+          REF_NAME: ${{ github.ref_name }}
           DIGEST: ${{ needs.build.outputs.digest }}
           STABLE: ${{ needs.detect.outputs.stable }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1010,6 +1012,13 @@ jobs:
           if [ -z "$version" ] && [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then version="$INPUT_VERSION"; fi
           if [ -z "$version" ]; then version="(version not found)"; fi
           title="Slicer image failed for OrcaSlicer ${version}"
+          # The release gate refusing a tag is not a failed Orca build: its
+          # issue is titled for the tag and says how to get the gate to pass.
+          gate_refused=false
+          if [ "$GATE_RESULT" = "failure" ] || [ "$GATE_RESULT" = "cancelled" ]; then
+            gate_refused=true
+            title="Slicer image release gate refused ${REF_NAME}"
+          fi
           tail=""
           for f in failure/detect.txt failure/build.txt failure/stable.txt; do
             if [ -s "$f" ]; then tail="$(cat "$f")"; fi
@@ -1024,6 +1033,15 @@ jobs:
           # then reports Up to date for this version and never builds it again,
           # so it cannot be the retry. A prerelease tag's run (STABLE false)
           # never creates orca-X.Y.Z, so the daily run still builds it if absent.
+          if [ "$gate_refused" = "true" ]; then
+            {
+              echo "The slicer image workflow's release gate refused ${REF_NAME} (${EVENT} run), so nothing was built or pushed and no tag was created or moved. The gate refuses when the tagged commit is not on main or a release/ branch, when it has no successful push or dispatch ci run, or when the check did not finish."
+              echo ""
+              echo "Run: ${RUN_URL}"
+              echo ""
+              echo "To fix: read the gate job's log for which of these it was. If the commit has no green ci run, get one with "'`gh workflow run ci.yml --ref <branch at that commit>`'" if needed, wait for it to pass, then re-run the failed jobs of this run from its page (Re-run failed jobs)."
+            } >body.md
+          else
           {
             if [ -z "$TAGGED" ]; then
               echo "The slicer image workflow failed for OrcaSlicer ${version} (${EVENT} run). No tag was created or moved, so stable still points at the last image that passed; nothing needs rolling back."
@@ -1068,6 +1086,7 @@ jobs:
               echo "To fix: read the run's log, fix the cause, then run the workflow again (Actions, slicer-image, Run workflow). The next daily run retries this version only if ${orca_tag} is not in the registry yet."
             fi
           } >body.md
+          fi
           existing="$(gh issue list --repo "$REPO" --state open --limit 200 --json number,title | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "$REPO" --body-file body.md

@@ -11,11 +11,11 @@
 #
 # The jobs in this file, in order: changes (Decide which path-scoped jobs
 # run), snapshot-pins (Ubuntu snapshot pin check) and base-image-pins (Base
-# image pin check), both on every run, below, the chain above, gate-tests (Slicing gate tests), gate-image (Slicing
-# gate image build), slicer-image (Slicer image and container tests) and
-# app-image (App image (amd64) and App image (arm64): the
-# image build, its healthy and unhealthy checks, then the release workflow's
-# Trivy gate) and docs (Docs build).
+# image pin check), both on every run, below, the chain above, gate-tests
+# (Slicing gate tests), gate-image (Slicing gate image build), slicer-image
+# (Slicer image and container tests) and app-image (App image (amd64) and
+# App image (arm64): the image build, its healthy and unhealthy checks, then
+# the release workflow's Trivy gates) and docs (Docs build).
 #
 # The docs job builds the user docs site (apps/docs, Docusaurus, reading the
 # pages in docs/) and fails on a broken link or anchor. It runs, by the same
@@ -791,8 +791,9 @@ jobs:
   # beside the built migrate.js be applied (#31). Then the same image with
   # apps/web/dist removed must keep running with /healthz 503 and its
   # HEALTHCHECK reporting unhealthy (#162). Last, the release workflow's Trivy
-  # gate scans the image for fixable OS HIGH or CRITICAL findings. Nothing is
-  # pushed and there is no login anywhere: the images stay on the runner.
+  # gate scans the image for fixable OS HIGH or CRITICAL findings, and the
+  # library gate after it for fixable CRITICAL findings in the npm packages
+  # (#453). Nothing is pushed and there is no login anywhere: the images stay on the runner.
   # Nothing depends on this job.
   app-image:
     name: App image (${{ matrix.arch }})
@@ -877,9 +878,9 @@ jobs:
           version: v0.76.2
 
       # The library gate (issue #453), beside the OS gate: a fixable CRITICAL
-      # finding in a library the image ships (the npm packages and the Node
-      # binary) fails the job. The OS gate above is unchanged, and HIGH
-      # library findings are not gated.
+      # finding in a library the image ships (the npm packages) fails the
+      # job. The OS gate above is unchanged, and HIGH library findings are
+      # not gated.
       - name: Trivy library gate (fail on fixable CRITICAL)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

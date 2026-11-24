@@ -228,8 +228,8 @@ jobs:
           version: v0.76.2
 
       # The library gate (issue #453), beside the OS gate: a fixable CRITICAL
-      # finding in a library the image ships (the npm packages and the Node
-      # binary) fails the job before the push. The OS gate above is
+      # finding in a library the image ships (the npm packages) fails the
+      # job before the push. The OS gate above is
       # unchanged; HIGH library findings are not gated and show in the full
       # report below.
       - name: Trivy library gate (fail on fixable CRITICAL)

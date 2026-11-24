@@ -2757,6 +2757,36 @@ test("slicer-image issue: a cancelled job is named, and a plain failure does not
   assert.doesNotMatch(failed.files["posted.md"], /was cancelled/);
 });
 
+// The release gate refusing a tag is not a failed Orca build: the issue is
+// titled for the tag and says how to get the gate to pass, without the Orca
+// version or the daily run.
+test("slicer-image issue: a refused release gate is titled for the tag and says how to fix the gate", () => {
+  for (const gate of ["failure", "cancelled"]) {
+    const r = reportRun({ EVENT: "push", GATE_RESULT: gate, REF_NAME: "v0.1.1", VERSION: "", CANCELLED: gate === "cancelled" ? "true" : "false" });
+    assert.equal(r.status, 0, r.log);
+    assert.match(
+      r.calls,
+      /^gh issue create --repo jonathanmcohen\/platehouse --title Slicer image release gate refused v0\.1\.1 --body-file body\.md$/m,
+    );
+    const body = r.files["posted.md"];
+    assert.match(body, /not on main or a release\/ branch/);
+    assert.match(body, /no successful push or dispatch ci run/);
+    assert.match(body, /did not finish/);
+    assert.match(body, /gh workflow run ci\.yml --ref <branch at that commit>/);
+    assert.match(body, /re-run the failed jobs/i);
+    assert.match(body, /Run: https:\/\/github\.com\/jonathanmcohen\/platehouse\/actions\/runs\/1/);
+    assert.doesNotMatch(body, /Orca|daily run|orca-/);
+  }
+  const ok = reportRun({ EVENT: "push", GATE_RESULT: "success", REF_NAME: "v0.1.1" });
+  assert.match(ok.calls, /--title Slicer image failed for OrcaSlicer 2\.5\.1 /);
+});
+
+test("slicer-image: the report is told the gate's result and the ref", () => {
+  const issue = stepBlock(jobBlock(slicerText(), "report-failure"), "Open or update the issue");
+  assert.ok(issue.includes("\n          GATE_RESULT: ${{ needs.gate.result }}\n"));
+  assert.ok(issue.includes("\n          REF_NAME: ${{ github.ref_name }}\n"));
+});
+
 test("slicer-image: the report is told whether a job was cancelled", () => {
   const issue = stepBlock(jobBlock(slicerText(), "report-failure"), "Open or update the issue");
   assert.ok(issue.includes("\n          CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}\n"));
