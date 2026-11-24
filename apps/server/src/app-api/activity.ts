@@ -46,6 +46,7 @@ import {
   REASON_SUFFIX,
 } from "../inbox/watch.js";
 import { parseDuplicateMessage } from "../ingest/duplicates.js";
+import { stripFormatChars } from "../ingest/names.js";
 import { MAINTENANCE_TASKS, QUEUE, UPGRADE_TASKS } from "../jobs/queues.js";
 import { activityRepo, type FailedDerived, type QueueCount } from "../repos/activity.js";
 import { descriptionsRepo } from "../repos/descriptions.js";
@@ -435,6 +436,15 @@ async function readStart(
   }
 }
 
+/** What the page calls a failed file whose name is nothing but format characters. */
+const UNNAMED_FILE = "(unnamed file)";
+
+/** A failed file's name as shown: its format characters dropped (issue #473). */
+function shownName(name: string): string {
+  const clean = stripFormatChars(name);
+  return clean.trim() === "" ? UNNAMED_FILE : clean;
+}
+
 /**
  * The inbox's failed files (inbox/watch.ts moves each to failed/<name> with
  * <name>.reason.txt beside it), newest reason file first, at most limit.
@@ -523,7 +533,7 @@ export async function readInboxFailures(
     items.push({
       type: "inbox_failed",
       at: new Date(mtime).toISOString(),
-      name: name.slice(0, -REASON_SUFFIX.length),
+      name: shownName(name.slice(0, -REASON_SUFFIX.length)),
       reason: shown,
       reasonCode: parsed.code,
       ...(duplicate === undefined ? {} : { duplicate }),

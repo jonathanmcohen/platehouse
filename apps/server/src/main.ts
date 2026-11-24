@@ -21,7 +21,8 @@
 //      once, on the first start of a version whose converter changed;
 //   5. the inbox watcher, wired exactly as its own comment and the
 //      #59 changelog line ask, then started;
-//   6. the Fastify app (app.ts), listening on PORT on every interface, with
+//   6. the Fastify app (app.ts), listening on PORT on every interface (IPv6
+//      and IPv4, listenOnAllInterfaces), with
 //      login: sessions in the sessions table, the OIDC client for
 //      OIDC_ISSUER with redirect_uri absoluteUrl('/auth/callback'), and the
 //      login cookie's key derived from LINK_SECRET (loginCookieKey). Pocket
@@ -595,10 +596,32 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     });
     app = startedApp;
     aborted();
-    await startedApp.listen({ port: config.port, host: "0.0.0.0" });
+    await listenOnAllInterfaces(startedApp, config.port);
     return { app: startedApp, stop };
   } catch (error) {
     return stopAfterFailedStart(error, stop);
+  }
+}
+
+/**
+ * Listens on "::", which on a dual-stack host also answers IPv4, so an
+ * IPv6-only Docker network reaches the server too (issue #473). Where the
+ * host has no IPv6 it listens on 0.0.0.0 instead and logs that.
+ */
+export async function listenOnAllInterfaces(
+  app: {
+    listen(options: { port: number; host: string }): Promise<unknown>;
+    log: { warn(message: string): void };
+  },
+  port: number,
+): Promise<void> {
+  try {
+    await app.listen({ port, host: "::" });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EAFNOSUPPORT" && code !== "EADDRNOTAVAIL") throw error;
+    app.log.warn("IPv6 is not available here; listening on 0.0.0.0 (IPv4 only)");
+    await app.listen({ port, host: "0.0.0.0" });
   }
 }
 

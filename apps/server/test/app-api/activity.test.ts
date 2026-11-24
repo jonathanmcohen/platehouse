@@ -301,6 +301,28 @@ describe("readInboxFailures", () => {
     expect(await readInboxFailures(dir, 10)).toEqual({ readable: true, items: [] });
   });
 
+  test("shows a failed file's name without format characters (U+202E, U+200B)", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    const name = `a${String.fromCodePoint(0x202e)}b${String.fromCodePoint(0x200b)}c.stl`;
+    await writeFile(join(failed, name), "x");
+    await writeFile(join(failed, `${name}.reason.txt`), "Gone.");
+    const { items } = await readInboxFailures(dir, 10);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ name: "abc.stl" });
+  });
+
+  test("a failed file named only with format characters is shown as unnamed", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    const name = `${String.fromCodePoint(0x202e)}${String.fromCodePoint(0x200b)}`;
+    await writeFile(join(failed, name), "x");
+    await writeFile(join(failed, `${name}.reason.txt`), "Gone.");
+    const { items } = await readInboxFailures(dir, 10);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ name: "(unnamed file)" });
+  });
+
   test("lists each failed file's name and reason, newest first, with no path", async () => {
     const failed = join(dir, "failed");
     await mkdir(failed);

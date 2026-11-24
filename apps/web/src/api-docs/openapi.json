@@ -286,7 +286,7 @@
                           "license": {
                             "type": "string",
                             "nullable": true,
-                            "description": "An SPDX licence id, such as CC-BY-4.0"
+                            "description": "Usually an SPDX licence id, such as CC-BY-4.0; any string is accepted"
                           },
                           "licenseNote": {
                             "type": "string",
@@ -649,7 +649,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200,
-                    "description": "An SPDX licence id"
+                    "description": "Usually an SPDX licence id; any string is accepted"
                   },
                   "externalRef": {
                     "type": "string",
@@ -730,7 +730,7 @@
                         "license": {
                           "type": "string",
                           "nullable": true,
-                          "description": "An SPDX licence id, such as CC-BY-4.0"
+                          "description": "Usually an SPDX licence id, such as CC-BY-4.0; any string is accepted"
                         },
                         "licenseNote": {
                           "type": "string",
@@ -1040,7 +1040,7 @@
                     "license": {
                       "type": "string",
                       "nullable": true,
-                      "description": "An SPDX licence id, such as CC-BY-4.0"
+                      "description": "Usually an SPDX licence id, such as CC-BY-4.0; any string is accepted"
                     },
                     "licenseNote": {
                       "type": "string",

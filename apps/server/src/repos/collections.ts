@@ -2,6 +2,7 @@ import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB } from "../db/types.js";
+import { SettingsInputError } from "../input-error.js";
 import { deleteLabel, ensureLabels } from "./labels.js";
 
 // Collections are flat (one cannot hold another) and, like tags, matched ignoring case with
@@ -9,7 +10,7 @@ import { deleteLabel, ensureLabels } from "./labels.js";
 
 function collectionName(name: string): string {
   const trimmed = name.trim();
-  if (trimmed === "") throw new RangeError("A collection name must not be empty");
+  if (trimmed === "") throw new SettingsInputError("A collection name must not be empty");
   return trimmed;
 }
 

@@ -2,6 +2,7 @@ import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB } from "../db/types.js";
+import { SettingsInputError } from "../input-error.js";
 import { deleteLabel, ensureLabels } from "./labels.js";
 
 // Tags are matched ignoring case ("PLA" and "pla" are one tag), with
@@ -20,7 +21,7 @@ import { deleteLabel, ensureLabels } from "./labels.js";
 
 function tagName(name: string): string {
   const trimmed = name.trim();
-  if (trimmed === "") throw new RangeError("A tag name must not be empty");
+  if (trimmed === "") throw new SettingsInputError("A tag name must not be empty");
   return trimmed;
 }
 

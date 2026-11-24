@@ -112,7 +112,7 @@ import {
   type IngestTarget,
   UNSUPPORTED_MESSAGE,
 } from "../ingest/ingest.js";
-import { hasControlCharacter } from "../ingest/names.js";
+import { hasControlCharacter, stripFormatChars } from "../ingest/names.js";
 import { QUEUE } from "../jobs/queues.js";
 
 /** The largest upload Platehouse takes, in bytes (512 MiB, the slicer contract's cap). */
@@ -341,7 +341,10 @@ function parseTarget(metadata: Record<string, string | null> | undefined): {
   originalName: string;
   target: IngestTarget;
 } {
-  const name = metadata?.filename;
+  const sent = metadata?.filename;
+  // Invisible format characters are dropped first, so a name made only of
+  // them is an empty name.
+  const name = typeof sent === "string" ? stripFormatChars(sent) : sent;
   if (typeof name !== "string" || name.trim() === "") {
     throw new UploadRefused(400, "Upload-Metadata must carry the file's name as filename");
   }

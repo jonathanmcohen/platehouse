@@ -9,6 +9,7 @@ import {
   MAX_MODEL_NAME_LENGTH,
   nameFromFile,
   newModelName,
+  stripFormatChars,
 } from "../../src/ingest/names.js";
 
 /** Non-ASCII from code points, so this file stays ASCII. */
@@ -136,5 +137,22 @@ describe("hasControlCharacter", () => {
     ["an empty name", ""],
   ])("is false for %s", (_label, name) => {
     expect(hasControlCharacter(name)).toBe(false);
+  });
+});
+
+describe("stripFormatChars", () => {
+  const RLO = String.fromCodePoint(0x202e);
+  const ZWSP = String.fromCodePoint(0x200b);
+
+  test("removes a right-to-left override and a zero-width space", () => {
+    expect(stripFormatChars(`a${RLO}b${ZWSP}c.stl`)).toBe("abc.stl");
+  });
+
+  test("leaves a name with no format characters as it was", () => {
+    expect(stripFormatChars("Benchy (v2).3mf")).toBe("Benchy (v2).3mf");
+  });
+
+  test("a name of only format characters becomes empty", () => {
+    expect(stripFormatChars(`${RLO}${ZWSP}`)).toBe("");
   });
 });

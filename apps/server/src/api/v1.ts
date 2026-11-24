@@ -27,7 +27,7 @@
 //   trash that lands while an upload is under way still wins: ingest refuses
 //   the finished upload (the result says so) and stores nothing.
 // - POST /api/v1/models takes the metadata and externalRef the importer
-//   carries. license is an SPDX id. A taken externalRef, on a
+//   carries. license is usually an SPDX id (any string is accepted). A taken externalRef, on a
 //   live or a trashed model, is 409 {"error":"exists","trashed":<bool>}, so
 //   a re-run import skips a model the user trashed rather than recreating it
 //   or making a duplicate.
@@ -66,6 +66,7 @@
 //   and counts the bytes as they go (exactSize), and a HEAD compares the
 //   HeadObject's size (fileHead), so a HEAD answers 503 where the GET would.
 import { pipeline, Readable, Transform } from "node:stream";
+import { Metadata } from "@tus/server";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import { isUuid } from "../db/ids.js";
@@ -603,16 +604,17 @@ export function createApiLibrary(deps: {
   };
 }
 
-/** The keys and decoded values of a tus Upload-Metadata header; undefined when malformed. */
+/**
+ * The keys and decoded values of a tus Upload-Metadata header, read by tus's
+ * own parser so this check and tus agree; undefined when tus would refuse it.
+ */
 export function uploadMetadata(header: unknown): Map<string, string | null> | undefined {
   if (typeof header !== "string") return undefined;
-  const fields = new Map<string, string | null>();
-  for (const pair of header.split(",")) {
-    const [key, value, extra] = pair.trim().split(" ");
-    if (key === undefined || key === "" || extra !== undefined) return undefined;
-    fields.set(key, value === undefined ? null : Buffer.from(value, "base64").toString("utf8"));
+  try {
+    return new Map(Object.entries(Metadata.parse(header)));
+  } catch {
+    return undefined;
   }
-  return fields;
 }
 
 const NOT_FOUND = { error: "not_found" } as const;
@@ -707,7 +709,10 @@ const MODEL = {
     caption: { ...nullableString, description: "A one-line summary" },
     description: { ...nullableString, description: "Markdown" },
     creator: { ...nullableString, description: "Who designed it" },
-    license: { ...nullableString, description: "An SPDX licence id, such as CC-BY-4.0" },
+    license: {
+      ...nullableString,
+      description: "Usually an SPDX licence id, such as CC-BY-4.0; any string is accepted",
+    },
     licenseNote: { ...nullableString, description: "Licence text that is not an SPDX id" },
     externalRef: {
       ...nullableString,
@@ -890,7 +895,12 @@ const NEW_MODEL = {
       pattern: "\\S",
       description: "Who designed it",
     },
-    license: { type: "string", minLength: 1, maxLength: 200, description: "An SPDX licence id" },
+    license: {
+      type: "string",
+      minLength: 1,
+      maxLength: 200,
+      description: "Usually an SPDX licence id; any string is accepted",
+    },
     externalRef: {
       type: "string",
       minLength: 1,
