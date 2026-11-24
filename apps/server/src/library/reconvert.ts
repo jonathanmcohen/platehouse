@@ -195,6 +195,14 @@ export interface ReconvertStore {
   candidates(after: string | null, limit: number): Promise<StoredDescription[]>;
   sourceFiles(modelId: string): Promise<SourceFile[]>;
   /**
+   * Remembers that this description was read against the model's newest .3mf
+   * and could not be proven to be the converter's own, so a later converter
+   * version does not read the model's files again for it. Only while the
+   * stored description is still the one given; a new .3mf or an edit makes
+   * the model a candidate again by itself.
+   */
+  markUnproven(row: StoredDescription, newestFileId: string): Promise<void>;
+  /**
    * Writes the description, its hash, the current converter and the file,
    * only while the stored description and hash are still the ones read, and
    * counts the outcome given for the model with it, all or nothing. False,
@@ -413,6 +421,10 @@ export function createDescriptionReconvert(deps: {
               // Changed since it was read, so it is left as it is now.
               if (!written) await deps.store.count(RECONVERT_STEP, row.modelId, "kept");
             } else {
+              const newest = files[files.length - 1];
+              if (decision.kind === "unproven" && newest !== undefined) {
+                await deps.store.markUnproven(row, newest.fileId);
+              }
               const outcome = decision.kind === "unreadable" ? "unreadable" : "kept";
               await deps.store.count(RECONVERT_STEP, row.modelId, outcome);
             }

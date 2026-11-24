@@ -500,3 +500,127 @@ describe("a run", () => {
     expect(rows[0]?.n).toBe(1);
   });
 });
+
+describe("a description found unproven", () => {
+  const BY_HAND = "Written by hand, not by the converter";
+
+  /** A run that records which files it read. */
+  function recordingRun() {
+    const read: string[] = [];
+    const inner = storeTextReader(env.store);
+    const run = createDescriptionReconvert({
+      store: descriptionsRepo(env.db),
+      readText: async (file, signal) => {
+        read.push(file.fileId);
+        return inner(file, signal);
+      },
+      log: () => {},
+    });
+    return { run, read };
+  }
+
+  /** The next converter's step: the finished record of this one is gone, as a new step name has none. */
+  async function nextStep() {
+    await env.db.deleteFrom("upgradeSteps").execute();
+  }
+
+  async function unprovenMarker(modelId: string) {
+    return env.db
+      .selectFrom("models")
+      .select(["descriptionUnprovenFileId", "descriptionUnprovenSha256"])
+      .where("id", "=", modelId)
+      .executeTakeFirstOrThrow();
+  }
+
+  async function foundUnproven() {
+    const m = await ingestMakerWorld(HTML);
+    await asBefore011(m.modelId, BY_HAND);
+    const first = recordingRun();
+    await runToEnd(first.run);
+    expect(first.read).toContain(m.fileId);
+    expect(await unprovenMarker(m.modelId)).toEqual({
+      descriptionUnprovenFileId: m.fileId,
+      descriptionUnprovenSha256: descriptionSha256(BY_HAND),
+    });
+    await nextStep();
+    return m;
+  }
+
+  test("is not read again by the next converter's step", async () => {
+    const m = await foundUnproven();
+    const second = recordingRun();
+    const result = await runToEnd(second.run);
+    expect(second.read).not.toContain(m.fileId);
+    expect(result).not.toBeNull();
+    const ids = (await descriptionsRepo(env.db).candidates(null, 10_000)).map((c) => c.modelId);
+    expect(ids).not.toContain(m.modelId);
+    expect((await row(m.modelId)).descriptionMd).toBe(BY_HAND);
+  });
+
+  test("is read again once a newer .3mf arrives", async () => {
+    const m = await foundUnproven();
+    const added = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, build3mf({ plates: 1, nonce: marker() })),
+      originalName: "second.3mf",
+      target: { modelId: m.modelId },
+    });
+    const second = recordingRun();
+    await runToEnd(second.run);
+    expect(second.read).toContain(m.fileId);
+    expect(second.read).toContain(added.fileId);
+  });
+
+  test("is read again once its description changed", async () => {
+    const m = await foundUnproven();
+    await env.db
+      .updateTable("models")
+      .set({ descriptionMd: `${BY_HAND}, edited` })
+      .where("id", "=", m.modelId)
+      .execute();
+    const second = recordingRun();
+    await runToEnd(second.run);
+    expect(second.read).toContain(m.fileId);
+  });
+
+  test("is not marked when its file could not be read, and is checked again", async () => {
+    const m = await ingestMakerWorld(HTML);
+    await asBefore011(m.modelId, BY_HAND);
+    const blob = await env.db
+      .selectFrom("files")
+      .innerJoin("blobs", "blobs.id", "files.blobId")
+      .select("blobs.key")
+      .where("files.id", "=", m.fileId)
+      .executeTakeFirstOrThrow();
+    await env.store.deleteBlobs([blob.key]);
+    const first = recordingRun();
+    const result = await runToEnd(first.run);
+    expect(result?.unreadable).toBeGreaterThanOrEqual(1);
+    expect(await unprovenMarker(m.modelId)).toEqual({
+      descriptionUnprovenFileId: null,
+      descriptionUnprovenSha256: null,
+    });
+    await nextStep();
+    // Still a candidate for the next step: nothing was proven either way.
+    const ids = (await descriptionsRepo(env.db).candidates(null, 10_000)).map((c) => c.modelId);
+    expect(ids).toContain(m.modelId);
+  });
+
+  test("is not marked when it was edited", async () => {
+    const m = await ingestMakerWorld(HTML);
+    await env.db
+      .updateTable("models")
+      .set({ descriptionMd: `${NOW}\n\nMy own notes`, descriptionConverter: 3 })
+      .where("id", "=", m.modelId)
+      .execute();
+    await runToEnd(recordingRun().run);
+    expect((await unprovenMarker(m.modelId)).descriptionUnprovenFileId).toBeNull();
+  });
+
+  test("SQL and JS agree on the description hash", async () => {
+    for (const text of ["plain", "Crème brûlée \u2014 \u30e2\u30c7\u30eb \u{1f9f1}", "a\nb\r\n"]) {
+      const { rows } = await sql<{ h: string }>`
+        select encode(sha256(convert_to(${text}, 'UTF8')), 'hex') as h`.execute(env.db);
+      expect(rows[0]?.h).toBe(descriptionSha256(text));
+    }
+  });
+});

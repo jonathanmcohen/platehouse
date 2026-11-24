@@ -29,6 +29,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Fixed
 
+- A description that can't be proven to be Platehouse's own conversion is remembered as checked, so later converter updates don't re-read every .3mf of models imported through the API or from Manyfold. A new .3mf, or a change to the description, makes the model be checked again. Migration 0016 adds the columns ([#422](https://github.com/jonathanmcohen/platehouse/issues/422)).
 - The description re-conversion holds a renewable lease row instead of a database session lock, so a dropped connection or a connection pooler can't let two servers run it at once. The run renews the lease while it goes and stops after the model it is on if it loses it; a server that dies leaves a lease that runs out within a minute ([#423](https://github.com/jonathanmcohen/platehouse/issues/423)).
 - Start-up and adding a printer no longer wait while estimates are queued for the whole library. Queueing runs in the background and in bulk, so `/healthz` answers at once after an OrcaSlicer upgrade ([#461](https://github.com/jonathanmcohen/platehouse/issues/461)).
 - Settings works out each printer's waiting work with one database query, instead of loading every queued slicer job on each load and every 15-second refresh. Saving My printers and the Orca poll's check for lost estimates also ask the database instead of reading the queue ([#459](https://github.com/jonathanmcohen/platehouse/issues/459)).

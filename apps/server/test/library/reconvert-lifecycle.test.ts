@@ -360,6 +360,9 @@ class World {
         await w.db(epoch);
         return w.lib.files.get(modelId) ?? [];
       },
+      async markUnproven() {
+        await w.db(epoch);
+      },
       async write(row, nextValue, count) {
         await w.db(epoch);
         const r = w.lib.models.get(row.modelId);

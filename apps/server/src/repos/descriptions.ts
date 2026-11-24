@@ -229,6 +229,21 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
         .where("descriptionMd", "is not", null)
         .where("descriptionMd", "<>", "")
         .where("purgeStartedAt", "is", null)
+        // Not one already found unproven against its newest .3mf with this
+        // very text; a new .3mf or an edit makes it a candidate again.
+        .where(
+          sql<boolean>`not (
+            description_unproven_file_id is not null
+            and description_unproven_sha256 = encode(sha256(convert_to(description_md, 'UTF8')), 'hex')
+            and description_unproven_file_id = (
+              select f.id from files f
+              join blobs b on b.id = f.blob_id
+              where f.model_id = models.id and f.kind = '3mf' and b.state = 'stored'
+              order by f.created_at desc, f.id desc
+              limit 1
+            )
+          )`,
+        )
         .where((eb) =>
           eb.or([
             eb("descriptionConverter", "is", null),
@@ -262,6 +277,18 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
         .orderBy("files.id")
         .execute();
       return rows.map((r): SourceFile => ({ fileId: r.fileId, key: r.key, size: r.size ?? 0 }));
+    },
+
+    async markUnproven(row, newestFileId) {
+      await db
+        .updateTable("models")
+        .set({
+          descriptionUnprovenFileId: newestFileId,
+          descriptionUnprovenSha256: descriptionSha256(row.description),
+        })
+        .where("id", "=", row.modelId)
+        .where("descriptionMd", "=", row.description)
+        .execute();
     },
 
     // The write and its count commit together, so a run cut off between
