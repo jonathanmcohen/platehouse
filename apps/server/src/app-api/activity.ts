@@ -38,6 +38,7 @@ import type { DB, FileKind } from "../db/types.js";
 import { derivedParts } from "../derived/client.js";
 import { printerName } from "../estimates/display.js";
 import { isReason, reasonWords } from "../estimates/reasons.js";
+import { nothingToShow, stripFormatChars } from "../format-chars.js";
 import {
   FAILED_DIR,
   INBOX_PASS_LIMIT,
@@ -436,6 +437,16 @@ async function readStart(
 }
 
 /**
+ * A failed file's name as shown: its format characters dropped (joiners
+ * stay), and empty when nothing is left to show, so the page picks its own
+ * placeholder in its own language (issue #473).
+ */
+function shownName(name: string): string {
+  const clean = stripFormatChars(name);
+  return nothingToShow(clean) ? "" : clean;
+}
+
+/**
  * The inbox's failed files (inbox/watch.ts moves each to failed/<name> with
  * <name>.reason.txt beside it), newest reason file first, at most limit.
  * A reason file counts only while something is under <name> beside it in
@@ -523,7 +534,7 @@ export async function readInboxFailures(
     items.push({
       type: "inbox_failed",
       at: new Date(mtime).toISOString(),
-      name: name.slice(0, -REASON_SUFFIX.length),
+      name: shownName(name.slice(0, -REASON_SUFFIX.length)),
       reason: shown,
       reasonCode: parsed.code,
       ...(duplicate === undefined ? {} : { duplicate }),
@@ -602,15 +613,24 @@ async function healthWithin(slicer: AppActivityDeps["slicer"], ms: number): Prom
 export function createAppActivity(deps: AppActivityDeps): AppActivity {
   const clock = deps.now ?? (() => new Date());
   const healthMs = deps.healthTimeoutMs ?? SLICER_HEALTH_TIMEOUT_MS;
-  let inboxCache: { at: number; value: { readable: boolean; items: ActivityEvent[] } } | null =
-    null;
+  type InboxFailures = { readable: boolean; items: ActivityEvent[] };
+  let inboxCache: { at: number; value: InboxFailures } | null = null;
+  /** The read in progress, shared by polls that arrive while it runs. */
+  let inboxReading: Promise<InboxFailures> | null = null;
 
-  async function inboxFailures() {
+  async function inboxFailures(): Promise<InboxFailures> {
     const nowMs = clock().getTime();
     if (inboxCache !== null && nowMs - inboxCache.at < INBOX_CACHE_MS) return inboxCache.value;
-    const value = await readInboxFailures(deps.inboxDir, EVENT_LIMIT);
-    inboxCache = { at: nowMs, value };
-    return value;
+    if (inboxReading !== null) return inboxReading;
+    inboxReading = readInboxFailures(deps.inboxDir, EVENT_LIMIT)
+      .then((value) => {
+        inboxCache = { at: nowMs, value };
+        return value;
+      })
+      .finally(() => {
+        inboxReading = null;
+      });
+    return inboxReading;
   }
 
   async function readDatabase(now: Date) {

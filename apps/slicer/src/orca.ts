@@ -269,7 +269,12 @@ export interface SliceContext {
   timeoutSeconds: number;
 }
 
-const cut = (s: string) => s.slice(0, LIMITS.detailChars);
+/** The first LIMITS.detailChars UTF-16 units of s, never ending on half a surrogate pair. */
+export const cut = (s: string): string => {
+  const out = s.slice(0, LIMITS.detailChars);
+  const last = out.charCodeAt(out.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? out.slice(0, -1) : out;
+};
 
 /**
  * Turns one Orca run and the files it left in outDir into the contract's

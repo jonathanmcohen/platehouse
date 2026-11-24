@@ -68,8 +68,11 @@ import {
   type SavedPrinters,
   UnknownPrinter,
 } from "../estimates/service.js";
+import { SettingsInputError } from "../input-error.js";
 import type { SettingsRepo } from "../repos/settings.js";
 import { type BlobStore, StoreUnavailable } from "../storage/s3.js";
+
+export { SettingsInputError };
 
 /** Where the web app's own JSON API is mounted. */
 export const APP_API_PREFIX = "/app/api";
@@ -186,8 +189,12 @@ export async function appApiScope(
         const err = error as Error & { statusCode?: number; validation?: unknown };
         if (err.validation !== undefined) return refuse(reply, 400, "bad_request", err.message);
         if (error instanceof AppApiUnavailable) return refuse(reply, 503, "unavailable");
-        // The library's calls refuse an empty name with RangeError.
-        if (error instanceof RangeError) return refuse(reply, 400, "bad_request", err.message);
+        // The library's calls refuse a user's mistake (an empty name) with a
+        // SettingsInputError; any other RangeError is the server's own and
+        // is a logged 500 that does not echo its message (issue #473).
+        if (error instanceof SettingsInputError) {
+          return refuse(reply, 400, "bad_request", err.message);
+        }
         const status = err.statusCode;
         if (status !== undefined && status >= 400 && status < 500) {
           return refuse(reply, status, "bad_request", err.message);

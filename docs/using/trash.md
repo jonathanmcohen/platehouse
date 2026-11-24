@@ -1,6 +1,8 @@
 # The trash
 
-**Move to trash** on a model takes it out of the library, search and every API answer.
+**Move to trash** takes a model out of the library, search and every API answer. The model page
+has no such button. Use it on a row of the Tags, Creators or Collections pages, or in Select mode
+in the library.
 
 - The **Trash** page (also in **Settings**) lists trashed models, newest first and 100 to a page,
   with the date each will be purged, and a **Restore** button that brings a model back with its
@@ -14,6 +16,8 @@
   retention period (see [Storage](../storage.md#turn-on-versioning)).
 - A purge that fails part way, for example during a storage outage, leaves the model in the trash,
   and a later run finishes it. A model whose purge has begun deleting files can no longer be
-  restored.
+  restored. A purge can also fail because the model has an object in the bucket under a key outside
+  the `models/<model id>/<blob id>` layout, which Platehouse will not delete. The model stays in the
+  trash until you remove that object by hand, and then the next run finishes it.
 
 The API cannot trash, delete or purge anything, and it cannot see trashed models.

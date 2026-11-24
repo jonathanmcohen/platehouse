@@ -276,7 +276,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await app?.close();
   await auth?.issuer.stop();
-  await boss?.stop({ graceful: false });
+  // Graceful, so a poll in flight ends before pg-boss closes (issue #490).
+  await boss?.stop({ graceful: true, timeout: 20_000 });
   await stub?.stop();
   await env?.stop();
 });

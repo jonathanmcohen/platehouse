@@ -8,6 +8,7 @@
     { "path": "./packages/slicer-contract" },
     { "path": "./packages/threemf" },
     { "path": "./packages/makerworld" },
-    { "path": "./packages/i18n" }
+    { "path": "./packages/i18n" },
+    { "path": "./tools/brand" }
   ]
 }

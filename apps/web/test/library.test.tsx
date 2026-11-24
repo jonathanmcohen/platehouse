@@ -39,6 +39,8 @@ import {
 } from "../src/library/ModelCard";
 import { PRINTER_CHOICE_KEY } from "../src/settings/PrinterSwitch";
 import { Shell } from "../src/shell/Shell";
+import { DropZone } from "../src/upload/DropZone";
+import { isFolder } from "../src/upload/dropped";
 import { UploadDialog } from "../src/upload/UploadDialog";
 import {
   CHUNK_SIZE,
@@ -527,6 +529,48 @@ describe("the header's printer switch", () => {
     expect(printerSwitch().value).toBe(PRINTER);
     expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBeNull();
   });
+
+  test("a stored printer that was removed falls back without the grid flashing Loading a second time", async () => {
+    localStorage.setItem(PRINTER_CHOICE_KEY, "Bambu Lab H2D 0.4 nozzle");
+    let release: () => void = () => {};
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let libraryReads = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "https://platehouse.test");
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        if (url.pathname === "/app/api/library/tags") return json({ tags: [] });
+        libraryReads += 1;
+        // The read the fallback asks for next is slow.
+        if (libraryReads === 2) await hold;
+        return json({
+          ...ONE_PRINTER,
+          printers: [
+            { id: PRINTER, name: PRINTER_NAME },
+            { id: A1_MINI, name: A1_MINI_NAME },
+          ],
+          models: [PLATED],
+          nextCursor: null,
+        });
+      }),
+    );
+    await render(libraryAt("/"));
+    expect(libraryReads).toBe(2);
+    expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBeNull();
+    // The answer for the default printer is on screen while the second read is out.
+    expect(container.textContent).not.toContain("Loading the library");
+    expect(cardNames()).toEqual(["Plated box"]);
+    release();
+    await settle();
+    expect(cardNames()).toEqual(["Plated box"]);
+  });
 });
 
 /** Tags as /app/api/library/tags answers: a name and a model count, most-used first. */
@@ -992,6 +1036,58 @@ describe("dropping files on the open upload dialog", () => {
     expect(container.querySelector('[data-upload="one.stl"]')).not.toBeNull();
     expect(container.querySelector('[data-upload="two.stl"]')).not.toBeNull();
     expect(dialog?.textContent).not.toMatch(/drop them on the library/i);
+  });
+
+  /** A drop whose first entry is a folder, as Chromium and Firefox report it. */
+  function folderDrop(type: "drop", name: string): Event {
+    const folder = new File([], name);
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", {
+      value: {
+        types: ["Files"],
+        files: [folder],
+        items: [{ kind: "file", webkitGetAsEntry: () => ({ isDirectory: true }) }],
+        dropEffect: "none",
+      },
+    });
+    return event;
+  }
+
+  test("a dropped folder says folders cannot be uploaded and to drop the files inside it", async () => {
+    await render(<UploadDialog open files={[]} onClose={() => {}} start={noUploads} />);
+    const dialog = container.querySelector('[role="dialog"]');
+    await act(async () => {
+      // A folder named like a model file is still a folder.
+      dialog?.dispatchEvent(folderDrop("drop", "Benchy.stl"));
+      dialog?.dispatchEvent(fileDrag("drop", [new File(["solid x"], "plain.stl")]));
+    });
+    const row = container.querySelector('[data-upload="Benchy.stl"]');
+    expect(row?.textContent).toContain("Folders can't be uploaded. Drop the files inside it.");
+    expect(row?.textContent).not.toContain("Not a supported file type");
+    // A screen reader hears it: a refused row never changes, so it is said when added.
+    const said = container.querySelector('[role="status"]')?.textContent ?? "";
+    expect(said).toContain("Benchy.stl");
+    expect(said).toContain("Folders can't be uploaded. Drop the files inside it.");
+    expect(container.querySelector('[data-upload="plain.stl"]')?.textContent).not.toContain(
+      "Folders can't be uploaded",
+    );
+  });
+
+  test("the drop zone marks a dropped folder, and leaves a plain file alone", async () => {
+    const got: File[][] = [];
+    await render(
+      <DropZone onFiles={(files) => got.push(files)}>
+        <p>page</p>
+      </DropZone>,
+    );
+    const zone = container.querySelector("[data-dropzone]");
+    await act(async () => {
+      zone?.dispatchEvent(folderDrop("drop", "Models"));
+      zone?.dispatchEvent(fileDrag("drop", [new File(["solid x"], "plain.stl")]));
+    });
+    expect(got).toHaveLength(2);
+    expect(isFolder(got[0]?.[0] as File)).toBe(true);
+    expect(isFolder(got[1]?.[0] as File)).toBe(false);
   });
 
   test("a file dropped where nothing takes it never reaches the browser", async () => {

@@ -2,7 +2,8 @@
 // trash, where it is invisible to the library, search and the API; restore
 // brings it back with its files, tags and collections, which a trashing never
 // touches. A trashed model is purged 30 days after it was trashed
-// (purgeExpired), or at once by Empty trash (emptyTrash). purgeExpired also
+// (purgeExpired), or at once by Empty trash (the app API, which calls
+// purgeExpired with a cutoff, organise.ts). purgeExpired also
 // finishes every purge that began and failed, however recently the model was
 // trashed, so a failed Empty trash does not wait 30 days for its retry.
 //
@@ -263,24 +264,6 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
         // Postgres returns it (canonical lowercase), not the caller's text.
         return modelsRepo(trx).restore(trashed.id);
       });
-    },
-
-    /**
-     * Empty trash: purges every model in the trash. Throws PurgeIncomplete,
-     * after trying them all, when any could not be purged.
-     */
-    async emptyTrash(): Promise<PurgeResult> {
-      const trashed = await db
-        .selectFrom("models")
-        .select("id")
-        .where("trashedAt", "is not", null)
-        .orderBy("trashedAt")
-        .orderBy("id")
-        .execute();
-      return purgeAll(
-        trashed.map((m) => m.id),
-        undefined,
-      );
     },
 
     /**

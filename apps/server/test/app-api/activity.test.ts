@@ -36,6 +36,7 @@ const fsSpy = vi.hoisted(() => ({
   reasonStats: [] as string[],
   failedLstats: [] as string[],
   typedListings: 0,
+  allListings: 0,
   beforeReasonOpen: undefined as ((path: string) => Promise<void>) | undefined,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -64,11 +65,15 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   }) as typeof real.lstat;
   const isFailed = (path: unknown) => String(path).endsWith(`${sep}failed`);
   const opendir: typeof real.opendir = async (...args) => {
-    if (isFailed(args[0])) fsSpy.typedListings += 1;
+    if (isFailed(args[0])) {
+      fsSpy.typedListings += 1;
+      fsSpy.allListings += 1;
+    }
     return real.opendir(...args);
   };
   const readdir = (async (...args: Parameters<typeof real.readdir>) => {
     const options = args[1];
+    if (isFailed(args[0])) fsSpy.allListings += 1;
     if (isFailed(args[0]) && typeof options === "object" && options?.withFileTypes === true) {
       fsSpy.typedListings += 1;
     }
@@ -299,6 +304,38 @@ describe("readInboxFailures", () => {
 
   test("is empty when there is no failed folder", async () => {
     expect(await readInboxFailures(dir, 10)).toEqual({ readable: true, items: [] });
+  });
+
+  test("shows a failed file's name without format characters (U+202E, U+200B)", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    const name = `a${String.fromCodePoint(0x202e)}b${String.fromCodePoint(0x200b)}c.stl`;
+    await writeFile(join(failed, name), "x");
+    await writeFile(join(failed, `${name}.reason.txt`), "Gone.");
+    const { items } = await readInboxFailures(dir, 10);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ name: "abc.stl" });
+  });
+
+  test("keeps the joiners in a failed file's name (U+200C, U+200D)", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    const name = `a${String.fromCodePoint(0x200c)}b${String.fromCodePoint(0x200d)}c.stl`;
+    await writeFile(join(failed, name), "x");
+    await writeFile(join(failed, `${name}.reason.txt`), "Gone.");
+    const { items } = await readInboxFailures(dir, 10);
+    expect(items[0]).toMatchObject({ name });
+  });
+
+  test("a failed file named only with format characters and joiners has an empty name", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    const name = `${String.fromCodePoint(0x202e)}${String.fromCodePoint(0x200b)}${String.fromCodePoint(0x200c)}`;
+    await writeFile(join(failed, name), "x");
+    await writeFile(join(failed, `${name}.reason.txt`), "Gone.");
+    const { items } = await readInboxFailures(dir, 10);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ name: "" });
   });
 
   test("lists each failed file's name and reason, newest first, with no path", async () => {
@@ -781,6 +818,45 @@ describe("a failed render on the Activity page", () => {
     );
     const stl = events.find((e) => e.type === "render_failed" && e.message === said);
     expect(stl?.type === "render_failed" ? stl.messageCodes : null).toEqual(["previewRejected"]);
+  });
+
+  describe("the inbox's failed folder, read for several polls at once", () => {
+    let inbox: string;
+
+    beforeEach(async () => {
+      inbox = await mkdtemp(join(tmpdir(), "ph-activity-poll-"));
+      await mkdir(join(inbox, "failed"));
+      await writeFile(join(inbox, "failed", "broken.stl"), "x");
+      fsSpy.allListings = 0;
+    });
+
+    afterEach(async () => {
+      await rm(inbox, { recursive: true, force: true });
+    });
+
+    test("is listed once for polls that arrive together after the cache expired", async () => {
+      let nowMs = Date.parse("2026-11-19T12:00:00Z");
+      const activity = createAppActivity({
+        db: scriptedDb([]),
+        boss: { getSchedules: async () => [] },
+        slicer: {
+          health: async () => {
+            throw new Error("no slicer in this test");
+          },
+        },
+        inboxDir: inbox,
+        now: () => new Date(nowMs),
+      });
+      const alone = await activity.read();
+      const listingsForOneRead = fsSpy.allListings;
+      expect(listingsForOneRead).toBeGreaterThan(0);
+
+      nowMs += 10 * 60 * 1000;
+      fsSpy.allListings = 0;
+      const together = await Promise.all([activity.read(), activity.read(), activity.read()]);
+      expect(fsSpy.allListings).toBe(listingsForOneRead);
+      for (const view of together) expect(view.events.items).toEqual(alone.events.items);
+    });
   });
 });
 

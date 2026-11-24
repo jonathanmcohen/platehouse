@@ -59,6 +59,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { type HttpResponse, Upload, type UploadOptions } from "tus-js-client";
 import { ENGLISH_I18N, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { serverTextWith } from "../i18n/serverText";
+import { isFolder } from "./dropped";
 
 /** Builds the sentences in a language; English when left out. */
 type Words = Pick<I18n, "t" | "locale">;
@@ -214,6 +215,36 @@ export function shouldRetryUpload(error: Error): boolean {
 }
 
 /**
+ * Whether an error is a refusal that asking again will not change: a 4xx the
+ * server answered, other than the 429 (too many unfinished uploads, which
+ * passes once some finish), the 409 and the 423, which tus-js-client sends
+ * again itself (shouldRetryUpload) and which may then resume. A lost
+ * connection, a 5xx and a 507 are not final either.
+ */
+export function isFinalRefusal(error: Error): boolean {
+  const response = (error as Error & { originalResponse?: HttpResponse | null }).originalResponse;
+  const status = response?.getStatus() ?? 0;
+  return status >= 400 && status < 500 && status !== 429 && status !== 409 && status !== 423;
+}
+
+/**
+ * Removes the resume fingerprints tus-js-client stored for an upload
+ * (localStorage "tus::<fingerprint>::<n>"). tus removes one only on success,
+ * so a refused file's would stay for ever and be offered for resuming.
+ */
+function forgetStoredUpload(fingerprint: string): void {
+  try {
+    const prefix = `tus::${fingerprint}::`;
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(prefix)) localStorage.removeItem(key);
+    }
+  } catch {
+    // Storage is off (a private window): nothing was kept.
+  }
+}
+
+/**
  * The waits between asks for a finished upload's result: 1 s, then 5 s, then
  * 15 s each time after.
  */
@@ -357,7 +388,12 @@ export function uploadOptions(
       if (url !== null) handlers.onSuccess(url);
       else handlers.onError(new Error("the server gave the upload no address"));
     },
-    onError: (error) => handlers.onError(error),
+    onError: (error) => {
+      if (isFinalRefusal(error)) {
+        forgetStoredUpload(uploadFingerprint(file, target, endpoint, duplicates));
+      }
+      handlers.onError(error);
+    },
   };
 }
 
@@ -518,11 +554,13 @@ let keyCounter = 0;
 
 function itemFor(file: File, i18n: Words): UploadItem {
   keyCounter += 1;
-  const refused = !isSupportedFile(file.name)
-    ? i18n.t("upload.unsupported")
-    : file.size > MAX_UPLOAD_BYTES
-      ? i18n.t("upload.tooLarge")
-      : undefined;
+  const refused = isFolder(file)
+    ? i18n.t("upload.folder")
+    : !isSupportedFile(file.name)
+      ? i18n.t("upload.unsupported")
+      : file.size > MAX_UPLOAD_BYTES
+        ? i18n.t("upload.tooLarge")
+        : undefined;
   return {
     key: `u${keyCounter}`,
     file,

@@ -273,7 +273,7 @@ export function renderMessage<T>(
           out.push(renderer.text(node.value));
           break;
         case "arg": {
-          const value = values[node.name];
+          const value = Object.hasOwn(values, node.name) ? values[node.name] : undefined;
           out.push(
             renderer.text(value === undefined ? `{${node.name}}` : valueText(locale, value)),
           );
@@ -283,7 +283,7 @@ export function renderMessage<T>(
           out.push(renderer.text(pound === undefined ? "#" : numberFormat(locale).format(pound)));
           break;
         case "plural": {
-          const value = values[node.name];
+          const value = Object.hasOwn(values, node.name) ? values[node.name] : undefined;
           if (typeof value === "number") {
             out.push(...render(node.cases.get(pluralCase(locale, node.cases, value)) ?? [], value));
           } else {

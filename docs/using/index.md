@@ -23,7 +23,7 @@ The pages in this section:
 - [Activity](./activity.md): library numbers, job progress and recent events.
 - [Settings](./settings.md): the accent colour, language, My printers, API tokens, model names and
   trash.
-- [New in 0.1.0](./new-in-0-1-0.md): the features added late in this release.
+- [New in 0.1.0](./new-in-0-1-0.md): the features added late in 0.1.0, the first release.
 
 ## The library
 
@@ -43,13 +43,14 @@ filter and searches the whole library; this is deliberate, so a search always lo
 tag. The one exception is a creator or collection filter opened from **Show in the library**,
 which stays on. When nothing matches a search or filter, **Show all models** takes you back to the
 whole library. Loading the library never downloads a model file: the only images it
-loads are the stored plate thumbnails.
+loads are the stored plate thumbnails and the preview pictures of STL and STEP models.
 
 ### Pages and View all
 
 The library shows 48 models a page, with **Previous**, **Next** and page numbers at the bottom
-(shortened with gaps on a narrow screen). **View all** shows the matches on one page instead,
-loading them 200 at a time as you go.
+(shortened with gaps whenever there are more than 7 pages, at any width). **View all** shows the
+matches on one page instead, loading them 200 at a time, one batch right after the other, until
+all are there.
 
 - The pages and View all both reach the first 1000 matches in the chosen sort, no further. When
   more match, the count shows "1000+" and a note above the cards says only the first 1000 can be

@@ -19,7 +19,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { ApiReference } from "../src/api-docs/ApiReference";
+import { ApiReference, Paragraphs } from "../src/api-docs/ApiReference";
 import {
   type ApiDocument,
   examplesOf,
@@ -362,5 +362,24 @@ describe("the page's stylesheet", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const css = readFileSync(join(here, "../src/api-docs/api-docs.css"), "utf8");
     expect(css).not.toMatch(/url\(|@import/);
+  });
+});
+
+describe("repeated paragraphs", () => {
+  test("a description that repeats a paragraph renders each one, with no duplicate-key warning", async () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    const holder = document.createElement("div");
+    document.body.append(holder);
+    const r = createRoot(holder);
+    await act(async () => r.render(<Paragraphs text={"Same.\n\nOther.\n\nSame."} />));
+    expect([...holder.querySelectorAll("p")].map((p) => p.textContent)).toEqual([
+      "Same.",
+      "Other.",
+      "Same.",
+    ]);
+    expect(warn).not.toHaveBeenCalled();
+    await act(async () => r.unmount());
+    holder.remove();
+    warn.mockRestore();
   });
 });

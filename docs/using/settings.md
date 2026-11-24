@@ -26,7 +26,7 @@ A pick applies at once, with no reload, and is kept in this browser only, in a c
 browser or device can have its own. If a language cannot be loaded, the page says so and stays as
 it was.
 
-Spanish and French are machine translations in 0.1.0 that nobody fluent has reviewed yet, so the
+Spanish and French are currently machine translations that nobody fluent has reviewed yet, so the
 list shows "machine translation, not yet reviewed" beside their names. A language your server adds
 that covers only part of the app shows "partly translated, the rest in English", and the rest of
 the app shows in English. To add a language, or to review one, see

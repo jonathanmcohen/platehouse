@@ -1,8 +1,9 @@
 # Release workflow for the app image. The image carries a healthcheck, and the
-# workflow keeps the release rules: exact action tags and no build attestation.
+# workflow keeps the release rules: actions pinned to full commit SHAs, with the release tag as a
+# comment (#420), and no build attestation.
 #
 # A pushed tag vX.Y.Z builds docker/app.Dockerfile natively for linux/amd64
-# (ubuntu-latest) and linux/arm64 (ubuntu-24.04-arm, no QEMU) and publishes
+# (ubuntu-24.04) and linux/arm64 (ubuntu-24.04-arm, no QEMU) and publishes
 # ghcr.io/jonathanmcohen/platehouse. It follows pgvector's
 # build-and-publish.yml at ce60a37 without its cosign, SBOM or attest steps:
 #
@@ -30,10 +31,15 @@
 # three back from the registry (docker/check-image-labels.sh).
 #
 # Tags come from docker/metadata-action with type=semver,pattern={{version}}
-# alone: v0.1.0 gives 0.1.0 and latest, and a prerelease such as v0.0.0-test
-# gives 0.0.0-test and no latest, so latest moves only on a stable tag. There
-# is no hand-written latest entry: it would publish latest even for a tag that
-# is not valid semver.
+# and flavor latest=false: v0.1.0 gives 0.1.0, and a prerelease such as
+# v0.0.0-test gives 0.0.0-test. latest is a separate raw entry, enabled only
+# when the merge job found the tag to be the highest stable vX.Y.Z in the
+# repository, from the live tags (.github/scripts/release-gate.mjs), so a backport such as v0.1.2
+# after v0.2.0 never moves it back, and an rc never takes it.
+#
+# The gate also holds the release back unless the tagged commit is on main or
+# a release/ branch and has a successful ci run (#450); a ci run still going is
+# waited for, up to an hour.
 #
 # This workflow never moves rc. .github/workflows/rc-tag.yml runs after every
 # run of this workflow or slicer-image.yml and points both images' rc at the
@@ -43,7 +49,10 @@
 # workflow_dispatch is for trying the release path before a real release: dispatching this
 # workflow against a throwaway tag (gh workflow run release.yml --ref
 # v0.0.0-test). The gate job refuses any run whose ref is not a semver tag
-# before anything is built, so a dispatch from a branch pushes nothing.
+# before anything is built, so a dispatch from a branch pushes nothing. The
+# throwaway tag must sit on a commit on main or a release/ branch that has a
+# green ci run (a push or a dispatch of ci; a pull request run does not count),
+# or the gate refuses it too.
 #
 # Every job after the gate carries if: !cancelled() && needs.<dep>.result ==
 # 'success', so a skipped or failed job stops the chain explicitly, because a
@@ -75,8 +84,12 @@ defaults:
 jobs:
   gate:
     name: Check the tag
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    # actions: read lets the job list the ci runs of the tagged commit.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: The ref is a semver tag
         env:
@@ -88,6 +101,33 @@ jobs:
             exit 1
           fi
           echo "Releasing ${REF#refs/tags/}"
+
+      # Full history, so the branch check sees every branch.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A release is only built from a commit on main or a release branch.
+      - name: The commit is on main or a release branch
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          if ! git branch -r --contains "$SHA" | grep -Eq '^[[:space:]]*origin/(main$|release/)'; then
+            echo "::error::${SHA} is on neither origin/main nor an origin/release/ branch; nothing is built"
+            exit 1
+          fi
+          echo "${SHA} is on a branch that takes releases"
+
+      # The tagged commit must have a successful ci run (the push to main or
+      # the release branch ran it); a running one is waited for, up to an hour.
+      - name: CI passed for the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: node .github/scripts/release-gate.mjs ci "$SHA"
 
   build:
     name: Build, check and push (${{ matrix.arch }})
@@ -103,7 +143,7 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             platform: linux/amd64
           - arch: arm64
             runner: ubuntu-24.04-arm
@@ -113,12 +153,12 @@ jobs:
       BUILDKIT_PROGRESS: plain
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4.4.1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # The standard OCI labels (issue #317): version, revision, source,
       # created, title, description, url and licenses, as metadata-action
@@ -128,9 +168,11 @@ jobs:
       # one step output, so the pushed image still matches the tested one.
       - name: Labels for this ref
         id: labels
-        uses: docker/metadata-action@v6.2.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
 
@@ -141,7 +183,7 @@ jobs:
       #    below passes the same value, so it reuses this build's layers.
       - name: Build (load, this arch only)
         id: load
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/app.Dockerfile
@@ -174,7 +216,7 @@ jobs:
       #    the Trivy version, the same as ci.yml's gate, rather than the
       #    action's default (v0.70.0 for the action's v0.36.0).
       - name: Trivy gate (fail on fixable OS HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.LOCAL }}
           severity: HIGH,CRITICAL
@@ -185,9 +227,26 @@ jobs:
           cache-dir: ${{ runner.temp }}/trivy-cache
           version: v0.76.2
 
+      # The library gate (issue #453), beside the OS gate: a fixable CRITICAL
+      # finding in a library the image ships (the npm packages) fails the
+      # job before the push. The OS gate above is
+      # unchanged; HIGH library findings are not gated and show in the full
+      # report below.
+      - name: Trivy library gate (fail on fixable CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.LOCAL }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          vuln-type: library
+          exit-code: "1"
+          format: table
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          version: v0.76.2
+
       - name: Trivy full report (informational, does not fail the job)
         if: ${{ !cancelled() }}
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.LOCAL }}
           severity: HIGH,CRITICAL
@@ -197,7 +256,7 @@ jobs:
           version: v0.76.2
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4.8.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -207,7 +266,7 @@ jobs:
       #    be a cache hit; step 5 checks that it was.
       - name: Push by digest
         id: push
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/app.Dockerfile
@@ -252,17 +311,19 @@ jobs:
       - name: Record the digest
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::error::the push returned no digest (${DIGEST:-none})"
             exit 1
           fi
           mkdir -p digests
-          echo "$DIGEST" > "digests/${{ matrix.arch }}"
-          echo "${{ matrix.platform }} pushed as ${IMAGE}@${DIGEST}"
+          echo "$DIGEST" > "digests/${ARCH}"
+          echo "${PLATFORM} pushed as ${IMAGE}@${DIGEST}"
 
       - name: Upload the digest
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-${{ matrix.arch }}
           path: digests/${{ matrix.arch }}
@@ -271,23 +332,42 @@ jobs:
 
   merge:
     name: Tag the multi-arch image
-    needs: build
+    needs: [gate, build]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
       packages: write
     steps:
-      # For docker/check-image-labels.sh, the read-back below.
+      # For docker/check-image-labels.sh, the read-back below, and the
+      # scripts that decide latest.
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: docker
+          sparse-checkout: |
+            docker
+            .github/scripts
+
+      # latest only for the highest stable tag in the repository, worked out
+      # from the live tags now, right before anything is tagged: a build takes
+      # a while, so a higher release pushed since the gate ran must win, and a
+      # lower tag must never move latest after a higher one has been released.
+      - name: Is this tag the latest release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          refs="$(gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" --jq '.[].ref')"
+          latest="$(printf '%s\n' "$refs" | sed -n 's#^refs/tags/##p' | node .github/scripts/release-gate.mjs latest "$TAG")"
+          echo "latest=${latest}" >>"$GITHUB_OUTPUT"
+          echo "${TAG}: latest=${latest}"
 
       - name: Download the digests
-        uses: actions/download-artifact@v8.0.2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: digest-*
           path: digests
@@ -295,30 +375,35 @@ jobs:
 
       - name: Tags for this ref
         id: meta
-        uses: docker/metadata-action@v6.2.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ steps.latest.outputs.latest == 'true' }}
 
       # The same OCI keys as the images' labels, as annotations on the index
       # (issue #317), so the multi-arch tag itself says its version, commit
       # and source, as the registry shows it. Only its annotations are used.
       - name: Annotations for the index
         id: annotations
-        uses: docker/metadata-action@v6.2.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:
           images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4.4.1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4.8.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -327,7 +412,7 @@ jobs:
       # The manifest list from exactly the two arch digests, with the tags
       # metadata-action gave and the index annotations; then read back from
       # the registry: the version tag must list both platforms at those
-      # digests, and latest, when this is a stable tag, must be the same
+      # digests, and latest, when the live check above found this the highest release, must be the same
       # manifest list. Each digest's config must still carry the labels the
       # build set, and the index the annotations (docker/check-image-labels.sh).
       - name: Create the manifest list and check it

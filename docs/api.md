@@ -134,7 +134,9 @@ is not an error: it answers `204` like any other success.
 | A JSON request body                           | 1 MiB                                                                                                                                    |
 | An uploaded file                              | 536870912 bytes (512 MiB)                                                                                                                |
 | File types                                    | `.3mf`, `.stl`, `.step`, `.stp` and `.scad`, told by the file name                                                                       |
-| An uploaded file's name                       | 1024 characters, no control characters                                                                                                   |
+| An uploaded file's name                       | 1,024 characters, no control characters; format characters are removed                                                                   |
+| A file's name when renamed in the app         | 500 characters, shorter than the 1,024 an upload name may have                                                                           |
+| A model's `license`                           | usually an SPDX id such as `CC-BY-4.0`; any string up to 200 characters is accepted, and it is not checked against the SPDX list         |
 | Models per search page                        | 1 to 200, 50 by default                                                                                                                  |
 | The search text `q`                           | 200 characters                                                                                                                           |
 | A model's name                                | 1 to 500 characters, not blank                                                                                                           |

@@ -53,9 +53,10 @@
 // inbox's), ingest hashes the upload and looks it up before any byte is put,
 // and refuses a duplicate with DuplicateFile (an IngestError, code
 // duplicate), naming the models that hold it and storing nothing. Inside the
-// transaction it looks again, under pg_advisory_xact_lock on the hash, so of
-// two copies sent at once one lands and the other is refused; that lock is
-// always taken before the batch lock below, so the two cannot deadlock. With
+// transaction it looks again, under pg_advisory_xact_lock on the hash (in
+// INGEST_LOCK_NAMESPACE), so of two copies sent at once one lands and the
+// other is refused; that lock is always taken before the batch lock below, so
+// the two cannot deadlock. With
 // "allow", the default, so the Public API v1 behaves as before unless a
 // client asks, the file is stored as before and the result lists the live
 // copies that were already there (IngestResult.duplicates). A file in a
@@ -64,8 +65,9 @@
 // A combined batch (target {batch, combine: true}) puts every file in one
 // model. Its id is derived from the batch (batchModelId), so every file of
 // the batch knows its key prefix before the model exists, and
-// pg_advisory_xact_lock(hashtext(batch)) makes concurrent finishes take turns:
-// the first creates the model and the rest join it.
+// pg_advisory_xact_lock(INGEST_LOCK_NAMESPACE, hashtext(batch)) makes
+// concurrent finishes take turns: the first creates the model and the rest
+// join it.
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
@@ -75,6 +77,7 @@ import { makerWorldDesignId, type Project, readProject } from "@platehouse/three
 import { type Kysely, sql, type Transaction } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
+import { stripFormatChars } from "../format-chars.js";
 import { convertedDescription } from "../library/converted-description.js";
 import { createRepos } from "../repos/index.js";
 import type { FoundMetadata } from "../repos/models.js";
@@ -96,6 +99,15 @@ export {
   duplicateMessage,
   MAX_DUPLICATES,
 } from "./duplicates.js";
+
+/**
+ * The first key of ingest's two-argument advisory locks. A one-argument lock
+ * (the migration lock, the backfill's) lives in a separate keyspace from any
+ * two-argument one, so these cannot collide with them, and the 32-bit hash
+ * only has to be unique among ingest's own keys (issue #473, #423). No other
+ * code uses the two-argument form; keep this value distinct if one does.
+ */
+export const INGEST_LOCK_NAMESPACE = 0x50_48_49_31;
 
 export const STORAGE_UNAVAILABLE_MESSAGE = "Storage is unavailable right now; nothing was saved";
 
@@ -418,7 +430,10 @@ export function createIngest(deps: IngestDeps) {
   }
 
   async function ingestOnce(input: IngestInput): Promise<IngestResult> {
-    const { tmpPath, originalName, target } = input;
+    const { tmpPath, target } = input;
+    // The name every caller sends, cleaned once: the bytes are read from
+    // tmpPath, so the raw name is needed nowhere below (issue #473).
+    const originalName = stripFormatChars(input.originalName);
     if (input.fileId !== undefined && !isUuid(input.fileId)) {
       throw new TypeError("ingestFile: fileId must be a UUID");
     }
@@ -506,7 +521,7 @@ export function createIngest(deps: IngestDeps) {
         if (policy === "skip") {
           // Copies sent at once take turns here, so the second sees the
           // first's committed row. Always before the batch lock.
-          await sql`select pg_advisory_xact_lock(hashtext('platehouse-sha256:' || ${source.sha256.toString("hex")}))`.execute(
+          await sql`select pg_advisory_xact_lock(${INGEST_LOCK_NAMESPACE}::int, hashtext('platehouse-sha256:' || ${source.sha256.toString("hex")}))`.execute(
             trx,
           );
           const copies = await findDuplicates(trx, source.sha256);
@@ -527,7 +542,9 @@ export function createIngest(deps: IngestDeps) {
             .executeTakeFirst();
           if (live === undefined) throw new IngestError("model_not_found", MODEL_NOT_FOUND_MESSAGE);
         } else if (target !== "new" && target.combine) {
-          await sql`select pg_advisory_xact_lock(hashtext(${target.batch}))`.execute(trx);
+          await sql`select pg_advisory_xact_lock(${INGEST_LOCK_NAMESPACE}::int, hashtext(${target.batch}))`.execute(
+            trx,
+          );
           const existing = await trx
             .selectFrom("models")
             .select(["id", "trashedAt"])

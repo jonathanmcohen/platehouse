@@ -9,11 +9,13 @@
 # 3. Writes them to an env file outside the repo and starts compose with it,
 #    waiting until every service is healthy.
 #
-# Needs: docker with compose, openssl, the workspace installed (pnpm install)
-# and the web app built (pnpm --filter @platehouse/web build), and both host
-# names resolving to 127.0.0.1 (see e2e/README.md). Prints where the env file
-# is; stop the stack with:
-#   docker compose -f e2e/compose.yml --env-file <that file> down -v
+# Needs: docker with compose, openssl, the workspace installed (pnpm install),
+# and both host names resolving to 127.0.0.1 (see e2e/README.md). The app
+# runs from source by default, which needs the web app built (pnpm --filter
+# @platehouse/web build). With E2E_APP_IMAGE set to a local image (for example
+# platehouse:ci) it runs that image instead, through e2e/compose.image.yml, and
+# needs no web build. Prints where the env file is; stop the stack with:
+#   docker compose -f e2e/compose.yml [-f e2e/compose.image.yml] --env-file <that file> down -v
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,9 +33,20 @@ rm -rf "$dir"
 mkdir -p "$certs"
 chmod 700 "$dir"
 
-if [ ! -f "$here/../apps/web/dist/index.html" ]; then
-  echo "The web app is not built: run pnpm --filter @platehouse/web build first." >&2
-  exit 1
+files=(-f "$here/compose.yml")
+if [ -n "${E2E_APP_IMAGE:-}" ]; then
+  if ! docker image inspect "$E2E_APP_IMAGE" >/dev/null 2>&1; then
+    echo "E2E_APP_IMAGE is $E2E_APP_IMAGE, which is not a local image: build or load it first." >&2
+    exit 1
+  fi
+  files+=(-f "$here/compose.image.yml")
+  echo "e2e app: the image $E2E_APP_IMAGE"
+else
+  if [ ! -f "$here/../apps/web/dist/index.html" ]; then
+    echo "The web app is not built: run pnpm --filter @platehouse/web build first." >&2
+    exit 1
+  fi
+  echo "e2e app: TypeScript source"
 fi
 
 # A throwaway CA, valid for two days, and a server certificate it signs.
@@ -88,7 +101,7 @@ umask 022
 if [ -n "${GITHUB_ENV:-}" ]; then echo "E2E_ENV_FILE=$env_file" >>"$GITHUB_ENV"; fi
 echo "e2e env file: $env_file"
 
-compose=(docker compose -f "$here/compose.yml" --env-file "$env_file")
+compose=(docker compose "${files[@]}" --env-file "$env_file")
 "${compose[@]}" pull --quiet
 if ! "${compose[@]}" up -d --wait --wait-timeout 300; then
   echo "::error::The e2e stack did not become healthy"

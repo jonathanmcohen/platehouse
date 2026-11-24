@@ -164,6 +164,9 @@ RUN echo "Debian updates, stamp ${OS_UPDATES_STAMP}" \
 
 COPY --from=build /src /app
 
+# The AGPL licence text, so the image carries the licence it is distributed under.
+COPY LICENSE /app/LICENSE
+
 # The inbox and the temp folder the configuration defaults to, writable by
 # the node user (uid 1000) when no bind mount covers them.
 RUN mkdir -p /data/inbox /data/tmp \

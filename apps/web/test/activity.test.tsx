@@ -849,6 +849,43 @@ describe("recent events", () => {
     expect(text(li)).not.toContain("STEP conversion failed");
   });
 
+  test("an inbox file's name is shown inside bdi, so a right-to-left name cannot reorder the line", async () => {
+    answer = () => {
+      const v = busyView();
+      v.events.items = [
+        {
+          type: "inbox_failed",
+          at: "2026-11-19T11:56:00.000Z",
+          name: "Broken.3mf",
+          reason: "No Bambu plate data in this file.",
+        },
+      ];
+      return v;
+    };
+    await render();
+    const li = section("Recent events").querySelector("ol > li") as HTMLElement;
+    expect(li.querySelector("bdi")?.textContent).toBe("Broken.3mf");
+  });
+
+  test("an inbox file with no name left to show reads (unnamed file), not an empty line", async () => {
+    answer = () => {
+      const v = busyView();
+      v.events.items = [
+        {
+          type: "inbox_failed",
+          at: "2026-11-19T11:56:00.000Z",
+          name: "",
+          reason: "No Bambu plate data in this file.",
+        },
+      ];
+      return v;
+    };
+    await render();
+    const li = section("Recent events").querySelector("ol > li") as HTMLElement;
+    expect(text(li)).toContain("(unnamed file)");
+    expect(li.querySelector("bdi")).toBeNull();
+  });
+
   test("warns when the inbox's failed folder could not be read", async () => {
     answer = () => {
       const v = busyView();

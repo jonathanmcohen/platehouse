@@ -165,7 +165,9 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
         </p>
       ) : null}
       {list.error === undefined ? null : (
-        <p className="studio-alert studio-alert-alert">{list.error}</p>
+        <p role="alert" className="studio-alert studio-alert-alert">
+          {list.error}
+        </p>
       )}
       {list.data === undefined && list.error === undefined ? (
         <p className="studio-muted">{t("signOut.loading")}</p>

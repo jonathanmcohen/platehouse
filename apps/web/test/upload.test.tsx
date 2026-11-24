@@ -703,6 +703,50 @@ describe("many files, slow imports and failures", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  describe("the stored resume fingerprint after a final refusal", () => {
+    const target: UploadTarget = { kind: "new" };
+    const handlers: UploadHandlers = { onProgress() {}, onSuccess() {}, onError() {} };
+    const storedKey = () => `tus::${uploadFingerprint(fresh, target, uploadEndpoint())}::42`;
+    const other = "tus::another-upload::7";
+
+    beforeEach(() => {
+      localStorage.clear();
+      localStorage.setItem(storedKey(), '{"uploadUrl":"https://platehouse.test/app/uploads/x"}');
+      localStorage.setItem(other, "{}");
+    });
+    afterEach(() => localStorage.clear());
+
+    test("a refusal that will not change (413, 415) removes this file's fingerprint and no other", () => {
+      for (const status of [413, 415]) {
+        localStorage.setItem(storedKey(), "{}");
+        const errors: Error[] = [];
+        const options = uploadOptions(fresh, target, {
+          ...handlers,
+          onError: (e) => errors.push(e),
+        });
+        options.onError?.(refusedWith(status) as never);
+        expect(localStorage.getItem(storedKey())).toBeNull();
+        expect(localStorage.getItem(other)).toBe("{}");
+        expect(errors).toHaveLength(1);
+      }
+    });
+
+    test("a lost connection, a 409, a 423, a 429, a 507 and a 503 keep it, so the upload can resume", () => {
+      for (const error of [
+        connectionLost(),
+        refusedWith(409),
+        refusedWith(423),
+        refusedWith(429),
+        refusedWith(507),
+        refusedWith(503),
+      ]) {
+        const options = uploadOptions(fresh, target, handlers);
+        options.onError?.(error as never);
+        expect(localStorage.getItem(storedKey())).not.toBeNull();
+      }
+    });
+  });
+
   describe("onShouldRetry", () => {
     const handlers: UploadHandlers = { onProgress() {}, onSuccess() {}, onError() {} };
     const options = uploadOptions(fresh, { kind: "new" }, handlers);
@@ -1192,6 +1236,48 @@ describe("many files, slow imports and failures", () => {
     await render(node(false));
     await finish(0);
     await render(node(true));
+    expect(dialogRegion().textContent).toBe("");
+  });
+
+  test("an unsupported-type row is announced exactly once across a re-render", async () => {
+    const { start, fetchResult } = stubUploads(added);
+    const notes = new File([new Uint8Array(5)], "notes.txt");
+    const files = [notes];
+    const node = (onClose: () => void) =>
+      inRouter(
+        <UploadDialog
+          open
+          files={files}
+          onClose={onClose}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      );
+    await render(node(() => {}));
+    expect([...dialogRegion().children]).toHaveLength(1);
+    expect(dialogRegion().textContent).toMatch(/^notes\.txt: /);
+    await render(node(() => {}));
+    await settle();
+    expect([...dialogRegion().children]).toHaveLength(1);
+  });
+
+  test("a row added while the dialog is closed is not announced", async () => {
+    const { start, fetchResult } = stubUploads(added);
+    const notes = new File([new Uint8Array(5)], "notes.txt");
+    const node = (open: boolean, files: File[]) =>
+      inRouter(
+        <UploadDialog
+          open={open}
+          files={files}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      );
+    const dropped = [notes];
+    await render(node(true, []));
+    await render(node(false, dropped));
+    await render(node(true, dropped));
     expect(dialogRegion().textContent).toBe("");
   });
 

@@ -28,6 +28,7 @@ import {
   DuplicateFile,
   type DuplicateMatch,
   duplicateMessage,
+  INGEST_LOCK_NAMESPACE,
   type IngestStore,
 } from "../../src/ingest/ingest.js";
 
@@ -83,9 +84,11 @@ function memoryStore() {
 /** Every statement the database was sent, in order, and a Kysely answering them. */
 function scriptedDb(answer: (sql: string, parameters: readonly unknown[]) => QueryResult<unknown>) {
   const sent: string[] = [];
+  const params: Array<readonly unknown[]> = [];
   const connection: DatabaseConnection = {
     async executeQuery<R>(query: CompiledQuery): Promise<QueryResult<R>> {
       sent.push(query.sql);
+      params.push(query.parameters);
       return answer(query.sql, query.parameters) as QueryResult<R>;
     },
     streamQuery(): never {
@@ -99,12 +102,15 @@ function scriptedDb(answer: (sql: string, parameters: readonly unknown[]) => Que
     },
     async beginTransaction() {
       sent.push("begin");
+      params.push([]);
     },
     async commitTransaction() {
       sent.push("commit");
+      params.push([]);
     },
     async rollbackTransaction() {
       sent.push("rollback");
+      params.push([]);
     },
     async releaseConnection() {},
     async destroy() {},
@@ -117,7 +123,7 @@ function scriptedDb(answer: (sql: string, parameters: readonly unknown[]) => Que
       createQueryCompiler: () => new PostgresQueryCompiler(),
     },
   });
-  return { db, sent };
+  return { db, sent, params };
 }
 
 /** Whether a statement is the duplicate lookup: files by SHA-256, joined to live models. */
@@ -264,5 +270,65 @@ describe("where ingest checks for a duplicate", () => {
     expect(sent.indexOf("begin")).toBeLessThan(sent.findIndex(isLookup));
     expect(sent.some((s) => /pg_advisory_xact_lock/.test(s) && /sha256/.test(s))).toBe(false);
     expect(sent).toContain("commit");
+  });
+});
+
+describe("ingest's advisory locks and names", () => {
+  const lockOf = (sent: string[], params: Array<readonly unknown[]>, like: RegExp) => {
+    const at = sent.findIndex((s) => /pg_advisory_xact_lock/.test(s) && like.test(s));
+    return { sql: sent[at], params: params[at] };
+  };
+
+  test("the hash lock is the two-argument form, with the namespace first", async () => {
+    const { db, sent, params } = scriptedDb((sql) => {
+      if (/pg_current_xact_id/.test(sql)) return { rows: [{ xid: "4242" }] };
+      return { rows: [] };
+    });
+    await createIngest({ db, store: memoryStore().store })
+      .ingestFile({
+        tmpPath: await upload(ASCII_STL),
+        originalName: "Clip.stl",
+        target: "new",
+        duplicates: "skip",
+      })
+      .catch(() => undefined);
+    const lock = lockOf(sent, params, /sha256/);
+    expect(lock.sql).toMatch(/pg_advisory_xact_lock\(\$\d+::int, hashtext\(/);
+    expect(lock.params?.[0]).toBe(INGEST_LOCK_NAMESPACE);
+  });
+
+  test("the batch lock is the two-argument form, with the namespace first", async () => {
+    const { db, sent, params } = scriptedDb((sql) => {
+      if (/pg_current_xact_id/.test(sql)) return { rows: [{ xid: "4242" }] };
+      return { rows: [{}] };
+    });
+    await createIngest({ db, store: memoryStore().store })
+      .ingestFile({
+        tmpPath: await upload(ASCII_STL),
+        originalName: "Clip.stl",
+        target: { batch: "b-1", combine: true },
+      })
+      .catch(() => undefined);
+    const lock = lockOf(sent, params, /hashtext\(\$\d+\)/);
+    expect(lock.sql).toMatch(/pg_advisory_xact_lock\(\$\d+::int, hashtext\(/);
+    expect(lock.params?.[0]).toBe(INGEST_LOCK_NAMESPACE);
+  });
+
+  test("a name with format characters is stored without them (U+202E, U+200B), joiners kept", async () => {
+    const rlo = String.fromCodePoint(0x202e);
+    const zwsp = String.fromCodePoint(0x200b);
+    const zwnj = String.fromCodePoint(0x200c);
+    const { db, params } = scriptedDb((sql) => {
+      if (/pg_current_xact_id/.test(sql)) return { rows: [{ xid: "4242" }] };
+      return { rows: [{}] };
+    });
+    await createIngest({ db, store: memoryStore().store }).ingestFile({
+      tmpPath: await upload(ASCII_STL),
+      originalName: `Cl${rlo}ip${zwsp}${zwnj}x.stl`,
+      target: "new",
+    });
+    const sentText = params.flat().filter((p): p is string => typeof p === "string");
+    expect(sentText).toContain(`Clip${zwnj}x.stl`);
+    expect(sentText.some((p) => p.includes(rlo) || p.includes(zwsp))).toBe(false);
   });
 });

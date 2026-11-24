@@ -114,6 +114,9 @@ describe("useAppApi reload", () => {
     await settle();
     expect(await read).toBe(false);
     expect(container.textContent).toBe("0");
-    expect(loaded.error).toBe("This is unavailable right now. Try again in a moment.");
+    // The data stays, so the words say the refresh failed, not that nothing loaded.
+    expect(loaded.error).toBe(
+      "Could not refresh. This is the last list that loaded. This is unavailable right now. Try again in a moment.",
+    );
   });
 });

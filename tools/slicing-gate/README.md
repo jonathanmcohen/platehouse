@@ -1,11 +1,12 @@
 # Slicing gate
 
-This is a one-off test, not product code. Before any Platehouse feature is
-built, it proves that the OrcaSlicer 2.5.0 command-line slicer can slice
-real Bambu Studio files headless, in a locked-down container, and gives
-numbers good enough to show. It also measures what the production slicer
-container needs (CPU, memory, time per plate, scratch space) and checks the
-OpenSCAD, landrun and STEP pieces the slicer image will carry.
+This is CI tooling, not product code, and the reference for the production slicer image. It began
+as a one-off test, run before any Platehouse feature was built, that proved the OrcaSlicer 2.5.0
+command-line slicer can slice real Bambu Studio files headless, in a locked-down container, and
+gives numbers good enough to show. Its image is still built and smoke-checked in CI (see below),
+and the production slicer image follows its pins and hardening. It also measures what the
+production slicer container needs (CPU, memory, time per plate, scratch space) and checks the
+OpenSCAD, landrun and STEP pieces the slicer image carries.
 
 It runs on the test server only, a Linux host with Docker, after the maintainer approves
 it. Designer files go from your workstation to the test server over ssh and

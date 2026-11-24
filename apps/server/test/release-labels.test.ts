@@ -235,7 +235,9 @@ describe("release.yml sets the labels and reads them back", () => {
   test("the build job computes the labels with metadata-action, for the tag's semver version", () => {
     const meta = [...build.values()].find((s) => s.includes("id: labels"));
     expect(meta).toBeDefined();
-    expect(meta).toContain("uses: docker/metadata-action@v6.2.0");
+    expect(meta).toContain(
+      "uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0",
+    );
     expect(meta).toContain("type=semver,pattern={{version}}");
   });
 
@@ -258,7 +260,9 @@ describe("release.yml sets the labels and reads them back", () => {
 
   test("the index gets the annotations, and the merge reads back both digests and the index", () => {
     const meta = [...merge.values()].find((s) => s.includes("id: annotations"));
-    expect(meta).toContain("uses: docker/metadata-action@v6.2.0");
+    expect(meta).toContain(
+      "uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0",
+    );
     expect(meta).toContain("DOCKER_METADATA_ANNOTATIONS_LEVELS: index");
     const create = merge.get("Create the manifest list and check it") ?? "";
     expect(create).toContain("--annotation");
@@ -270,6 +274,8 @@ describe("release.yml sets the labels and reads them back", () => {
   test("the merge job checks out the repository first, so the check script is there", () => {
     const names = [...merge.keys()];
     expect(names[0]).toBe("Check out");
-    expect(merge.get("Check out")).toContain("uses: actions/checkout@v7.0.1");
+    expect(merge.get("Check out")).toContain(
+      "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+    );
   });
 });

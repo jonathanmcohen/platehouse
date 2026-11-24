@@ -14,9 +14,9 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { slicerContract } from "@platehouse/slicer-contract";
+import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
 import { afterEach, describe, expect, test } from "vitest";
-import { type SliceContext, sliceOutcome } from "../src/orca.js";
+import { cut, type SliceContext, sliceOutcome } from "../src/orca.js";
 import type { GroupResult } from "../src/sandbox.js";
 
 const dirs: string[] = [];
@@ -243,5 +243,23 @@ describe("files Orca leaves are read only when they are small regular files", ()
     const body = outcomeOf(j);
     expect(body).toMatchObject({ status: "failed", code: null, reason: "slicer_error" });
     expect(body.status === "failed" && body.detail).toMatch(/^Orca wrote no result\.json/);
+  });
+});
+
+describe("cut", () => {
+  test("never ends on a lone high surrogate", () => {
+    const emoji = String.fromCodePoint(0x1f600);
+    const text = `${"a".repeat(LIMITS.detailChars - 1)}${emoji}tail`;
+    const out = cut(text);
+    expect(out.length).toBeLessThanOrEqual(LIMITS.detailChars);
+    const last = out.charCodeAt(out.length - 1);
+    expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+    expect(out).toBe("a".repeat(LIMITS.detailChars - 1));
+  });
+
+  test("keeps a whole emoji that fits", () => {
+    const emoji = String.fromCodePoint(0x1f600);
+    const text = `${"a".repeat(LIMITS.detailChars - 2)}${emoji}tail`;
+    expect(cut(text)).toBe(`${"a".repeat(LIMITS.detailChars - 2)}${emoji}`);
   });
 });

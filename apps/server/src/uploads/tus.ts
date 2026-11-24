@@ -102,6 +102,7 @@ import { ERRORS, EVENTS, MemoryLocker, Server, Upload } from "@tus/server";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { PgBoss } from "pg-boss";
 import { isUuid, uuidv7 } from "../db/ids.js";
+import { nothingToShow, stripFormatChars } from "../format-chars.js";
 import { kindFromName } from "../ingest/detect.js";
 import {
   type DuplicateMatch,
@@ -341,8 +342,11 @@ function parseTarget(metadata: Record<string, string | null> | undefined): {
   originalName: string;
   target: IngestTarget;
 } {
-  const name = metadata?.filename;
-  if (typeof name !== "string" || name.trim() === "") {
+  const sent = metadata?.filename;
+  // Format characters are dropped first (joiners stay), so a name made only
+  // of them and joiners is an empty name.
+  const name = typeof sent === "string" ? stripFormatChars(sent) : sent;
+  if (typeof name !== "string" || nothingToShow(name)) {
     throw new UploadRefused(400, "Upload-Metadata must carry the file's name as filename");
   }
   if (name.length > MAX_FILENAME_LENGTH || hasControlCharacter(name)) {

@@ -107,6 +107,32 @@ describe("slicer client", () => {
     expect(result).toMatchObject({ status: "failed", code: -52, reason: "bed_too_small" });
   });
 
+  test.each([0, -1, 129, 1.5, Number.NaN])(
+    "plate %s is refused at the app with a plain message, with no slicer call",
+    async (plate) => {
+      const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
+      const before = stub.calls.length;
+      const refused = await client
+        .slice({ printerId: P1S, plate, ...body(build3mf({ plates: 1 })) })
+        .catch((e: unknown) => e);
+      expect(refused).toBeInstanceOf(SlicerRefused);
+      expect((refused as SlicerRefused).status).toBe(400);
+      expect((refused as SlicerRefused).message).toBe(
+        `Plate ${plate} is outside the 1 to 128 plates this server can estimate.`,
+      );
+      expect(stub.calls.length).toBe(before);
+    },
+  );
+
+  test("the first and last plate numbers are sent", async () => {
+    const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
+    const before = stub.calls.length;
+    for (const plate of [1, 128]) {
+      await client.slice({ printerId: P1S, plate, ...body(build3mf({ plates: 1 })) });
+    }
+    expect(stub.calls.length).toBe(before + 2);
+  });
+
   test("409 busy is SlicerBusy", async () => {
     stub.onSlice(() => ({ kind: "busy" }));
     const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });

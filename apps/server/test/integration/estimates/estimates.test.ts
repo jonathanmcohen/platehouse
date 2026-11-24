@@ -202,7 +202,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await boss?.stop({ graceful: false });
+  // Graceful, so a slice's background queueing in flight ends before pg-boss
+  // closes its database (issue #490).
+  await boss?.stop({ graceful: true, timeout: 20_000 });
   await stub?.stop();
   await env?.stop();
 });
@@ -1516,8 +1518,34 @@ describe("My printers", () => {
     await estimates.pollOrca();
     const { plates } = await upload({ plates: 2 });
     await drain();
-    const calls = stub.calls.length;
-    const rows = await env.db.selectFrom("estimates").select("id").execute();
+    // Only this test's plates are looked at: saving My printers queues the
+    // rest of the library for the A1 in the background, and those slices and
+    // jobs land at any moment (issue #490). Wait until both printers' numbers
+    // for these plates are finished, so nothing of theirs is still to come.
+    const plateIds = plates.map((p) => p.id);
+    const mine = async () =>
+      env.db
+        .selectFrom("estimates")
+        .select(["id", "plateId", "printerId", "status"])
+        .where("plateId", "in", plateIds)
+        .orderBy("id")
+        .execute();
+    await until(
+      mine,
+      (r) =>
+        r.every((e) => e.status === "ok" || e.status === "failed") &&
+        plateIds.every((id) =>
+          [P1S, A1].every((printer) => r.some((e) => e.plateId === id && e.printerId === printer)),
+        ),
+    );
+    const rows = await mine();
+    const jobsOfMine = async () => {
+      const ids = new Set(rows.map((r) => r.id));
+      return (await boss.findJobs<{ estimateId: string }>(QUEUE.slicer, {})).filter((j) =>
+        ids.has(j.data.estimateId),
+      );
+    };
+    const jobs = (await jobsOfMine()).length;
 
     for (const plate of plates) {
       await estimates.plateNumbers(plate.id, A1);
@@ -1534,9 +1562,12 @@ describe("My printers", () => {
     expect(await env.repos.settings.get()).toMatchObject({ printerId: A1, myPrinters: [A1, P1S] });
 
     await sleep(1_000);
-    expect(stub.calls.length).toBe(calls);
-    expect(await queuedJobs()).toEqual([]);
-    expect(await env.db.selectFrom("estimates").select("id").execute()).toEqual(rows);
+    // No new job for these plates' estimates, none waiting, no new estimate.
+    expect(await jobsOfMine()).toHaveLength(jobs);
+    expect(
+      (await jobsOfMine()).filter((j) => ["created", "retry", "active"].includes(j.state)),
+    ).toEqual([]);
+    expect(await mine()).toEqual(rows);
     // The default printer is now the A1, so the default numbers are the A1's.
     expect((await estimates.plateNumbers(plateId(plates, 1))).platehouse).toMatchObject({
       state: "current",

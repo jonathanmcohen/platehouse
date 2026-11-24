@@ -9,8 +9,8 @@
 #     image (apps/server/dist/src/db/migrations, beside the built migrate.js)
 #     is recorded in schema_migrations, and they are the files in
 #     apps/server/src/db/migrations when run from a checkout; the server runs
-#     as a non-root user; each favicon, app icon and the web manifest answers
-#     200 signed out; one plate of a generated .3mf is read through the built
+#     as a non-root user; /app/LICENSE is in the image; each favicon, app
+#     icon and the web manifest answers 200 signed out; one plate of a generated .3mf is read through the built
 #     plate mesh worker (issue #358); and no apps/importer or test folder is
 #     in the image.
 #
@@ -283,6 +283,10 @@ plate="$(docker exec -e TMP_DIR=/data/tmp -w /app/apps/server "$app" \
   node -e "$plate_check" /app/apps/server/dist/src/plate-mesh/worker-read.js 2>&1)" ||
   fail "the built plate mesh worker could not read a plate: ${plate}"
 echo "== ${plate}"
+
+# The licence text is in the image.
+docker exec "$app" test -s /app/LICENSE || fail "/app/LICENSE is missing or empty in the image"
+echo "== /app/LICENSE is in the image"
 
 # What must never be in the image.
 docker exec "$app" bash -c 'test ! -e /app/apps/importer' || fail "apps/importer is in the image"

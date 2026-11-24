@@ -301,8 +301,12 @@ async function collectionCounts(db: Kysely<DB>) {
     .execute();
 }
 
-/** The name a tag or collection is stored under, matched as its unique index does. */
-async function storedName(
+/**
+ * The name a tag or collection is stored under, matched as its unique index
+ * does. A delete can remove the row between the tagging commit and this read
+ * (issue #431); the answer is then the name that was asked for.
+ */
+export async function storedName(
   db: Kysely<DB>,
   table: "tags" | "collections",
   name: string,
@@ -311,8 +315,8 @@ async function storedName(
     .selectFrom(table)
     .select("name")
     .where(sql<boolean>`lower(name) = lower(${name.trim()})`)
-    .executeTakeFirstOrThrow();
-  return row.name;
+    .executeTakeFirst();
+  return row?.name ?? name.trim();
 }
 
 /** Each model's tags, collections and files, for the rows of the organising pages. */

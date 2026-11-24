@@ -97,3 +97,9 @@ describe("renderMessage", () => {
     expect(out.join("")).toBe("Deleted after [time:Nov 1].");
   });
 });
+
+describe("placeholder lookup", () => {
+  it("does not read an inherited property as a value", () => {
+    expect(formatMessage("en", "Rename {constructor}", {})).toBe("Rename {constructor}");
+  });
+});

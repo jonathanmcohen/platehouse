@@ -4,6 +4,7 @@ import { isUuid, uuidv7 } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB, NameSource } from "../db/types.js";
 import { cutName, fileStems } from "../ingest/names.js";
+import { SettingsInputError } from "../input-error.js";
 import { joinWithNote } from "../library/converted-description.js";
 import { descriptionSha256 } from "../library/description-hash.js";
 
@@ -441,12 +442,12 @@ export function modelsRepo(db: Kysely<DB>) {
     }
     const sort = query.sort ?? "relevance";
     if (query.after !== undefined && sort !== "relevance") {
-      throw new RangeError("A cursor pages only the relevance order");
+      throw new SettingsInputError("A cursor pages only the relevance order");
     }
     const { printer } = query;
     const byTotal = sort.startsWith("time-") || sort.startsWith("weight-");
     if (byTotal && printer === undefined) {
-      throw new RangeError(`The ${sort} sort needs the selected printer`);
+      throw new SettingsInputError(`The ${sort} sort needs the selected printer`);
     }
     const rank = sql<number>`round(greatest(
         similarity(models.name, ${q}),
@@ -700,8 +701,9 @@ export function modelsRepo(db: Kysely<DB>) {
             }
           }
         }
-        // The creator row is made only when it will be used, so no creator
-        // is left in the sidebar without a model.
+        // The creator row is made only when it will be used. A purge keeps
+        // creator rows (a creator outlives its models); the Creators page
+        // lists only creators with a live model, so none shows without one.
         const creator = value(found.creator)?.trim();
         if (creator !== undefined && row.creatorId === null) {
           set.creatorId = await creatorId(trx, creator);

@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, type ReactNode, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { CollectionsPage } from "../src/collections/CollectionsPage";
 import { CreatorsPage } from "../src/creators/CreatorsPage";
@@ -102,6 +102,8 @@ interface FakeState {
   }>;
   /** When true, a new token is refused because the session's sign-in is too old (issue #322). */
   signInRequired: boolean;
+  /** When true, the token list and the user list cannot be read (500). */
+  listsFail: boolean;
   /** When true, token creation and Sign out everywhere are over the session's limit (429). */
   rateLimited: boolean;
   trash: Array<{
@@ -338,6 +340,13 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
       removed,
     });
   }
+  if (
+    method === "GET" &&
+    (path === "/app/api/tokens" || path === "/app/api/users") &&
+    state.listsFail
+  ) {
+    return json(500, { error: "internal_error" });
+  }
   if (method === "GET" && path === "/app/api/tokens") return json(200, { tokens: state.tokens });
   if (method === "POST" && path === "/app/api/tokens") {
     if (state.rateLimited) return limited();
@@ -360,6 +369,8 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   }
   if (method === "DELETE" && seg[0] === "tokens") {
     if (state.signInRequired) return json(403, STALE_ANSWER);
+    // A token already revoked elsewhere is 404, as the server answers it.
+    if (!state.tokens.some((t) => t.id === seg[1])) return json(404, { error: "not_found" });
     state.tokens = state.tokens.filter((t) => t.id !== seg[1]);
     return json(204);
   }
@@ -564,6 +575,7 @@ beforeEach(() => {
     ],
     users: [{ subject: "subject-me", name: "Synthetic Me", sessions: 1, tokens: 0, you: true }],
     signInRequired: false,
+    listsFail: false,
     rateLimited: false,
     trash: [
       {
@@ -1377,6 +1389,45 @@ describe("the settings page", () => {
     expect(text()).not.toContain("Office desktop");
   });
 
+  test("a token already revoked elsewhere is done: it leaves the list with no error", async () => {
+    await show("/settings", <SettingsPage />);
+    await click(button("Revoke Office desktop"));
+    state.tokens = [];
+    await click(button("Revoke", dialog() as HTMLElement));
+    expect(callsTo("DELETE", "/app/api/tokens/t0")).toHaveLength(1);
+    expect(dialog()).toBeNull();
+    expect(announced()).toBe("");
+    expect(text()).not.toContain("Office desktop");
+  });
+
+  test("a token created while the first list is still loading is kept when the list lands", async () => {
+    // The list's answer is read now, before the token exists, and arrives later.
+    let arrive: () => void = () => {};
+    const late = new Promise<void>((resolve) => {
+      arrive = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        const answer = await fakeApi(input, init);
+        const isList =
+          (init.method ?? "GET").toUpperCase() === "GET" &&
+          new URL(String(input), "https://platehouse.test").pathname === "/app/api/tokens";
+        if (isList) await late;
+        return answer;
+      }),
+    );
+    await show("/settings", <SettingsPage />);
+    expect(text()).toContain("Loading");
+    await type(labelled<HTMLInputElement>("Token name"), "Quick script");
+    await click(button("Create token"));
+    await click(button("Done", dialog() as HTMLElement));
+    await act(async () => arrive());
+    await settle();
+    expect(text()).toContain("Quick script");
+    expect(text()).toContain("Office desktop");
+  });
+
   // Issue #322: who made each token, a fresh sign-in for a new one, and
   // Sign out everywhere.
   test("each token says who made it, or that who made it is unknown", async () => {
@@ -1408,6 +1459,14 @@ describe("the settings page", () => {
       "Made by \u2068Synthetic Maker\u2069 (user id subject-5)",
     );
     expect(row("Nameless maker")?.textContent).toContain("Made by subject-6");
+  });
+
+  test("a token list and a user list that cannot be read are announced as alerts", async () => {
+    state.listsFail = true;
+    await show("/settings", <SettingsPage />);
+    const alerts = [...document.querySelectorAll('[role="alert"]')];
+    expect(alerts).toHaveLength(2);
+    for (const alert of alerts) expect(alert.classList.contains("studio-alert-alert")).toBe(true);
   });
 
   test("a token refused for an old sign-in says to sign in again, with a link that comes back here", async () => {
@@ -2742,6 +2801,16 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
 // Issue #312: a tag is deleted from the Tags page, a collection from the
 // Collections page or its own page. A Delete asks first, naming how many
 // models still use it, when any do; one no model uses goes at once.
+/** Moves to the PLA tag's page by other means than a click on its link. */
+function Go() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate("/tags?name=PLA")}>
+      go
+    </button>
+  );
+}
+
 describe("deleting a tag or a collection", () => {
   /** The names the list shows, in order. */
   function listed(): string[] {
@@ -2894,6 +2963,69 @@ describe("deleting a tag or a collection", () => {
     await show("/collections", <CollectionsPage />);
     await click(button("Delete collection Desk gear & more"));
     expect(callsTo("DELETE", "/app/api/collections?name=Desk%20gear%20%26%20more")).toHaveLength(1);
+  });
+
+  test("a tag already deleted in another tab is done: the row goes, with no error", async () => {
+    state.unusedTags = ["qa-t28"];
+    await show("/tags", <TagsPage />);
+    state.unusedTags = [];
+    await click(button("Delete tag qa-t28"));
+    expect(callsTo("DELETE", "/app/api/tags?name=qa-t28")).toHaveLength(1);
+    expect(announced()).toBe("");
+    expect(listed()).not.toContain("qa-t28");
+    expect(statusLine().textContent).toBe("Deleted the tag qa-t28.");
+  });
+
+  test("a tag that models had, gone in another tab, is done from the dialog too", async () => {
+    await show("/tags", <TagsPage />);
+    await click(button("Delete tag PLA"));
+    const box = dialog();
+    state.models[0]?.tags.splice(0);
+    await click(button("Delete tag", box as HTMLElement));
+    expect(dialog()).toBeNull();
+    expect(announced()).toBe("");
+    expect(listed()).not.toContain("PLA");
+  });
+
+  test("a collection gone in another tab is done from its own page, which then shows the list", async () => {
+    await show("/collections?name=Garage", <CollectionsPage />);
+    state.models[1]?.collections.splice(1);
+    await click(button("Delete collection Garage"));
+    const box = dialog();
+    if (box !== null) await click(button("Delete collection", box));
+    expect(announced()).toBe("");
+    expect(document.querySelector("h1")?.textContent).toBe("Collections");
+    expect(statusLine().textContent).toBe("Deleted the collection Garage.");
+  });
+
+  test("a modifier-click on a row link is left to the browser: the view does not swap", async () => {
+    for (const init of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { button: 1 }]) {
+      await act(async () => root.unmount());
+      root = createRoot(container);
+      await show(
+        "/tags",
+        <>
+          <TagsPage />
+          <Go />
+        </>,
+      );
+      const row = link("PLA");
+      await act(async () => {
+        row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init }));
+      });
+      // The page stays on the list; a later move by other means is not a swap
+      // the link asked for, so focus is not pulled to the new heading.
+      expect(document.querySelector("h1")?.textContent).toBe("Tags");
+      await click(button("go"));
+      expect(document.querySelector("h2")?.textContent).toBe("PLA");
+      expect(document.activeElement).toBe(document.body);
+    }
+  });
+
+  test("a plain click on a row link still moves focus to the new heading", async () => {
+    await show("/tags", <TagsPage />);
+    await click(link("PLA"));
+    expect(document.activeElement).toBe(document.querySelector("h2"));
   });
 
   test("creators cannot be deleted, and a tag's own page has no Delete", async () => {

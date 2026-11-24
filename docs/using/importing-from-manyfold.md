@@ -93,6 +93,17 @@ Manyfold's and against the bytes downloaded, so a mismatch shows up in the repor
 library. A file type Platehouse does not take (anything but `.3mf`, `.stl`, `.step`, `.stp` and
 `.scad`) is skipped with that reason and never downloaded.
 
+Three cases to know about:
+
+- A file over 512 MiB, Platehouse's limit for one upload, is skipped with that reason and never
+  downloaded.
+- A file whose name already exists on that Platehouse model with a different size fails, and it
+  fails again on every run, because the importer will not upload a second copy under the same name.
+  Rename or remove one of the two files, then run it again.
+- A Manyfold server whose certificate comes from a private certificate authority is refused until
+  you point Node at that authority's certificate file with `NODE_EXTRA_CA_CERTS`, for example
+  `NODE_EXTRA_CA_CERTS=/path/to/ca.pem node apps/importer/dist/src/cli.js ...`.
+
 No credential, token or signed download address is ever printed: every line the importer writes goes
 through a filter that removes them.
 

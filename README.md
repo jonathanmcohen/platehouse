@@ -64,10 +64,14 @@ without Docker run the projects one by one as above.
 
 To run one test file, name it: `pnpm vitest run apps/server/test/config.test.ts`.
 
-CI (`.github/workflows/ci.yml`) runs Biome, the type check, the unit tests and the integration
-tests on every pull request and on every push to main or a release branch. It runs the container
-tests, in their own job, when the slicer or anything its image is built from changes. It fails a
-test job when no test ran.
+CI (`.github/workflows/ci.yml`) runs on every pull request and on every push to main or a release
+branch. It runs Biome, the type check, the unit tests, the integration tests and the end-to-end
+tests in a chain, and the end-to-end tests run against the built app image. It also builds the app
+image for amd64 and arm64 and checks that it starts healthy and passes the Trivy gates, runs the
+Ubuntu snapshot pin check and the base image pin check, and audits the production dependencies for
+critical advisories. Some jobs run only when what they cover changes: the container tests for the
+slicer image, the slicing gate tests and the gate image build, and the docs build. It fails a test
+job when no test ran.
 
 The slicing gate in `tools/slicing-gate` is not part of the pnpm workspace and Biome does not
 check it. Its tests use Node's own test runner and need no install:
@@ -124,10 +128,10 @@ slices does it push `orca-X.Y.Z` and a run tag, `orca-X.Y.Z-r<run number>`, and 
 the same digest. A re-run of a run (Re-run all jobs or Re-run failed jobs) keeps its run number, so its run tag is
 `orca-X.Y.Z-r<run number>.<attempt>` and the first attempt's tag stays on the image it named. It also runs on every release tag, at the latest Orca release, so a change to the slicer
 ships with the release, and it can be run by hand from the Actions tab (a version, or a forced
-failure to test the failure path). A prerelease tag such as `v0.1.0-rc.1` publishes the run tag and the release's version but
-leaves `orca-X.Y.Z` and `stable` alone; a plain `vX.Y.Z` tag moves both. Before anything is pushed,
+failure to test the failure path). A prerelease tag such as `v0.1.0-rc.1`, or a backport tag below the highest release (`v0.1.2` after `v0.2.0`), publishes the run tag and the release's version but
+leaves `orca-X.Y.Z` and `stable` alone; only the highest plain `vX.Y.Z` tag moves both. Before anything is pushed,
 a Trivy scan lists fixable HIGH and CRITICAL findings in the job log; it is a report and never
-fails the run. A prerelease tag leaves `orca-X.Y.Z` and `stable` where they were, so the next daily run builds
+fails the run. A prerelease tag leaves `orca-X.Y.Z` and `stable` where they were, as does a backport tag, so the next daily run builds
 that version when its `orca-X.Y.Z` tag does not exist yet, and moves both.
 
 The image installs its Ubuntu packages from one fixed snapshot of the Ubuntu archive,

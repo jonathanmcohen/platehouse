@@ -168,6 +168,33 @@ async function resultOf(id: string, headers: Record<string, string> = KEY) {
 }
 
 describe("parseUploadMetadata", () => {
+  const RLO = String.fromCodePoint(0x202e);
+  const ZWSP = String.fromCodePoint(0x200b);
+
+  test("drops invisible format characters from the file name (U+202E, U+200B)", () => {
+    expect(parseUploadMetadata({ filename: `Ben${RLO}chy${ZWSP}.3mf` }).originalName).toBe(
+      "Benchy.3mf",
+    );
+  });
+
+  test("keeps the zero-width non-joiner and joiner in the name", () => {
+    const joined = `a${String.fromCodePoint(0x200c)}b${String.fromCodePoint(0x200d)}c.stl`;
+    expect(parseUploadMetadata({ filename: joined }).originalName).toBe(joined);
+  });
+
+  test("a name made only of format characters and joiners is refused as an empty name is", () => {
+    const joiners = `${String.fromCodePoint(0x200c)}${String.fromCodePoint(0x200d)}`;
+    expect(() => parseUploadMetadata({ filename: `${joiners}${RLO}` })).toThrow(
+      "Upload-Metadata must carry the file's name as filename",
+    );
+    expect(() => parseUploadMetadata({ filename: `${RLO}${ZWSP}` })).toThrow(
+      "Upload-Metadata must carry the file's name as filename",
+    );
+    expect(() => parseUploadMetadata({ filename: "" })).toThrow(
+      "Upload-Metadata must carry the file's name as filename",
+    );
+  });
+
   test("a filename alone makes a new model", () => {
     expect(parseUploadMetadata({ filename: "Benchy.3mf" })).toEqual({
       originalName: "Benchy.3mf",

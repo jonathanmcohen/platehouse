@@ -73,7 +73,12 @@ export async function startDerivedEnv(
         afterCommit: (stored) => derived.afterUpload(stored),
       }),
       async stop() {
-        await startedBoss.stop({ graceful: false });
+        // Graceful, as the server's own stop is (main.ts stopBoss): a handler
+        // still running (a backfill picture that queues the next batch when it
+        // finishes) ends before pg-boss closes its database, or its send
+        // fails afterwards with "Database not opened" as an unhandled
+        // rejection (issue #490).
+        await startedBoss.stop({ graceful: true, timeout: 20_000 });
         await startedStub.stop();
         await env.stop();
       },

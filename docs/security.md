@@ -19,6 +19,58 @@ only your own address ranges get through, for example your LAN and your VPN's ra
 - Put the allowlist on the whole site. The API and slicer links do not use sign-in, so they rely
   on it most.
 
+An allowlist is only as good as the address your proxy sees for each visitor, so check it after
+setup. Open the site from a device outside your allowlisted networks, such as a phone off your
+Wi-Fi, and look at the client address the proxy logs for that request. It must be the device's
+public address, and the device must get `403`. Any address of your own (router, `127.0.0.1` or
+`::1`, Docker) means the allowlist is not seeing visitors. When the proxy runs in Docker:
+
+- **Let the proxy see real addresses.** If the proxy runs in Docker and you use an allowlist, prefer
+  `network_mode: host` (Docker Engine on Linux), or run it on the host. With host networking, point
+  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback, as in
+  the example Compose file), and make sure nothing else the proxy listens on, such as Traefik's
+  dashboard on 8080, is exposed. If every visitor, LAN and outside, shows the same address (Docker's
+  bridge pools, Swarm's overlay pools in `10.0.0.0/8`, and Docker Desktop's `192.168.65.0/24`), do
+  not add that address to the allowlist; the allowlist cannot work on this setup. That is the case
+  on Docker Desktop (macOS and Windows), with rootless Docker's builtin port driver before
+  RootlessKit 3.0, with rootless Podman and with Swarm ingress. Run the proxy on the host, or with
+  `network_mode: host`. For rootless Docker, set `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns` and
+  `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns`, or
+  `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=pasta` with `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=implicit`
+  (with RootlessKit 3.0 or newer, the default `builtin` driver with `"userland-proxy": false` also
+  works). See the rootless mode troubleshooting page in Docker's documentation. For Swarm publish with `mode:
+  host`. On Docker Desktop use a VPN rather than an allowlist.
+- **Do not allow Docker's networks.** Never allow `172.16.0.0/12`, `192.168.0.0/16` or `10.0.0.0/8`
+  whole: Docker's default pools lie inside them (Docker Desktop uses `192.168.65.0/24`). For IPv6
+  never allow `fc00::/7` or `fd00::/8`; allow only your LAN's own /64. Allow only your own networks,
+  such as `192.168.1.0/24` for a home network and `10.8.0.0/24` for a VPN (placeholders: use yours).
+  Check that no entry overlaps a Docker network:
+
+  ```bash
+  docker network inspect $(docker network ls -q) -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{.Gateway}} {{end}}'
+  ```
+- **Test IPv6 from the host's addresses, not from DNS.** On the host, run `ip -6 addr show scope
+  global`. If it lists an address, test from outside even with no AAAA record:
+
+  ```bash
+  curl -6 -sI --resolve platehouse.example.com:443:[<host IPv6>] https://platehouse.example.com/
+  ```
+
+  Expect `403` or no connection.
+- **Docker's userland proxy.** Where it applies, it can replace a visitor's address with the bridge
+  gateway's: for IPv6 visitors when the proxy's Docker network has no IPv6, and for connections from
+  the host itself. Set `"userland-proxy": false` in `/etc/docker/daemon.json` (rootless Docker: `~/.config/docker/daemon.json`). Real IPv6 addresses
+  need Docker Engine 27 or newer, where `ip6tables` is on by default; upgrade an older engine first.
+  Restart Docker, then recreate the proxy container (`docker compose up -d --force-recreate`, then
+  the proxy's service name). The example Compose file's `proxy` network is IPv4 only. `enable_ipv6:
+  true` applies only to networks Compose creates; the example's `proxy` network is external, so use
+  `docker network create --ipv6 proxy` and reconnect the containers. A refused IPv6 connection after
+  `"userland-proxy": false` without that step is expected and safe; it is not a reason to undo the
+  change.
+
+The [proxy checklist](./reverse-proxy/checklist.md#7-the-proxy-sees-each-visitors-real-address)
+has the same check.
+
 ## Sign-in
 
 Every page and file download needs a sign-in through your OIDC provider, limited to one group.
@@ -143,6 +195,10 @@ entry). How to fix that depends on what kind of device it is:
   proxy's address in the entrypoint's `forwardedHeaders.trustedIPs` (Traefik drops forwarded
   headers from any other address), then give the rate limit's `sourceCriterion.ipStrategy` and
   the allowlist's `ipStrategy` a `depth` of `1`, so they use the address the front proxy saw.
+- **Never trust a Docker gateway or bridge address as the front device's address**, for example
+  `172.18.0.1`. Through the userland proxy it also makes you trust every IPv6 visitor, and they can
+  then forge `X-Forwarded-For`. Put the front device on the proxy's Docker network so it has its
+  own container address, or run both with host networking, and set `"userland-proxy": false`.
 - **A TCP (layer 4) load balancer or tunnel.** It passes each request on unchanged, so an
   `X-Forwarded-For` header arriving through it is the client's own, and a client can claim any
   address in it, an address inside your allowlist included. Never trust the header behind such a
@@ -177,7 +233,14 @@ Then check that visitors' own addresses are seen:
    The header must change nothing: the device that got `429` in step 1 still gets `429` within the
    same minute, and the device outside the allowlist still gets `403`. If the header changes the
    answer, your proxy trusts `X-Forwarded-For` from anyone; trust it only from the front proxy's
-   own address, as above.
+   own address, as above. Also test straight to the host's IPv6 address, which skips the front
+   device:
+
+   ```sh
+   curl -6 -sI --resolve platehouse.example.com:443:[<host IPv6>] -H 'X-Forwarded-For: 192.168.1.10' https://platehouse.example.com/
+   ```
+
+   Expect `403`.
 
 ## Slicer links
 
@@ -274,7 +337,7 @@ container, the slicer, which is locked down.
   a Linux Landlock sandbox that lets them write only to their own job folder, so none can read or
   change another job's files, and that refuses them any TCP connection. The sandbox does not block
   UDP; the slicer's internal network is what keeps that from reaching anything (see below). Each
-  may run only its own programs and the system libraries, and read only what it needs:
+  may run its own programs and the system library helpers, and read only what it needs:
   - OpenSCAD reads fonts and the graphics and language settings it renders with.
   - OrcaSlicer reads its own files, the printer and filament profiles, and fonts.
   - The STEP converter reads the slicer's own code, which holds the converter.
@@ -323,6 +386,8 @@ container, the slicer, which is locked down.
 
 Keep the slicer settings from the example Compose file: the internal network, `read_only`, the
 `/work` tmpfs with `noexec`, `cap_drop: ALL`, `no-new-privileges`, its own user and the limits.
+`noexec` on `/work` is defence in depth, not a wall: a script there can still run through `bash` or
+`node`, so the sandbox and the other settings are what hold.
 
 ## Secrets
 

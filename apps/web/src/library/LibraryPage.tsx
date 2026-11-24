@@ -229,6 +229,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   /** The state of the load shown, as the last render drew it, and the one before. */
   const shownState = useRef<Load["state"]>("loading");
   const stateBefore = useRef<Load["state"]>("loading");
+  /** Set when a stored printer is forgotten, so the read that follows is quiet. */
+  const forgotPrinter = useRef(false);
   shownState.current = load.state;
   /** The current load's controller, so a View all retry is cancelled with it. */
   const loading = useRef<AbortController | null>(null);
@@ -542,7 +544,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     const first = viewAll ? 1 : page;
     const url = query(first, viewAll ? VIEW_ALL_CHUNK : PAGE_SIZE);
     const asked = `${viewAll}|${attempt}|${url}`;
-    const quiet = asked === loadedFor.current;
+    // After a stored printer was forgotten, the answer on screen is already the
+    // default printer's: the read for it that follows is quiet, not a second Loading.
+    const quiet = asked === loadedFor.current || forgotPrinter.current;
+    forgotPrinter.current = false;
     // A quiet reload over a failed or Loading block shows its first answer at once.
     const quietOverCards = quiet && shownState.current === "ready";
     // A background reload is not a navigation: no earlier click's focus is owed to it.
@@ -577,6 +582,9 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           printerName: answer.printerName,
           printers: answer.printers,
         });
+        if (choice !== null && answer.printer !== "" && answer.printer !== choice) {
+          forgotPrinter.current = true;
+        }
         settlePrinter(answer.printer);
       })
       .catch((error: unknown) => {

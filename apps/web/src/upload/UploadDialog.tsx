@@ -71,6 +71,7 @@ import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import "../settings/organise.css";
 import { useInertOutside } from "../settings/useInertOutside";
 import "./upload.css";
+import { droppedFiles } from "./dropped";
 import {
   ACCEPT,
   type DuplicateMatch,
@@ -303,9 +304,12 @@ export function UploadDialog({
     for (const item of items) {
       next.set(item.key, item.status);
       const was = before.get(item.key);
-      if (was === undefined || was === item.status || !ANNOUNCED.has(item.status) || !open) {
-        continue;
-      }
+      // A row refused as it is added (a folder, an unsupported or too large
+      // file) never changes status, so it is said when first seen; any other
+      // outcome is said when it changes.
+      const refusedOnAdd = was === undefined && item.status === "unsupported";
+      const changed = was !== undefined && was !== item.status && ANNOUNCED.has(item.status);
+      if (!(refusedOnAdd || changed) || !open) continue;
       saidCount.current += 1;
       lines.push({
         id: saidCount.current,
@@ -405,7 +409,7 @@ export function UploadDialog({
   function onDrop(event: DragEvent<HTMLDivElement>) {
     if (!carriesFiles(event)) return;
     event.preventDefault();
-    const dropped = Array.from(event.dataTransfer.files ?? []);
+    const dropped = droppedFiles(event.dataTransfer);
     if (dropped.length > 0) addFiles(dropped);
   }
 
