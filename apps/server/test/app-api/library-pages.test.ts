@@ -149,7 +149,7 @@ describe("a numbered page's ranked read", () => {
     const library = createAppLibrary({
       db: recordingDb(statements),
       displayContext: async () => ctx,
-      plateNumbers: async () => ({}),
+      plateNumbersMany: async () => new Map(),
     });
     await library.list({ q: "benchy", page: 1 });
     const ranked = statements.filter((sql) => /similarity\(/.test(sql));

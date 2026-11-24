@@ -27,7 +27,7 @@ import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import {
   type DisplayContext,
   type PlateFailure,
-  plateNumbers,
+  plateNumbersMany,
 } from "../../../src/estimates/display.js";
 import { REASON_WORDS } from "../../../src/estimates/reasons.js";
 import { createBoss } from "../../../src/jobs/boss.js";
@@ -117,7 +117,7 @@ beforeAll(async () => {
         db: env.db,
         store: env.store,
         displayContext: async () => CONTEXT,
-        plateNumbers: (ctx, plateId) => plateNumbers(env.db, ctx, plateId),
+        plateNumbersMany: (ctx, ids) => plateNumbersMany(env.db, ctx, ids),
       }),
     },
     model: createAppModel({

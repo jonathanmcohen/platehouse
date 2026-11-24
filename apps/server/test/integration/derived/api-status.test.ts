@@ -42,7 +42,7 @@ async function apiFile(fileId: string): Promise<ApiFile> {
     displayContext: async () => {
       throw new Error("these files have no plates");
     },
-    plateNumbers: async () => ({}),
+    plateNumbersMany: async () => new Map(),
   });
   const file = await library.getFile(fileId);
   if (!file) throw new Error(`file ${fileId} is not live`);

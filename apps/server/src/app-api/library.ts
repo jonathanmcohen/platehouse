@@ -54,10 +54,9 @@
 //   slicer at most once, never once per plate, and waits for it at most
 //   DISPLAY_MENU_TIMEOUT_MS, so a slicer that accepts connections but never
 //   answers does not hold the page for the slicer client's 10 s request
-//   timeout. Each plate's
-//   lookup is two queries, and at most PLATE_NUMBERS_CONCURRENCY run at once
-//   (mapLimit), so a page of many plates leaves most of the database pool to
-//   the ingest and slicer workers.
+//   timeout. The page's plates are read together, in two queries in all
+//   (plateNumbersMany), so a page of many plates leaves most of the database
+//   pool to the ingest and slicer workers (issue #456).
 // - Numbered pages: ?page= (from 1) asks for one page of limit cards, 48 when
 //   limit is left out (LIBRARY_PAGE_SIZE), up to 200, instead of following a
 //   cursor; the two cannot be mixed. The page is a slice of the same ranked
@@ -211,32 +210,6 @@ export function sortPrinterFor(ctx: DisplayContext): SortPrinter {
     fileNozzle: selected?.nozzle ?? null,
     fileNumbersCount: selected !== undefined && first?.id === selected.id,
   };
-}
-
-/** Most plate number lookups one page runs at once; the pool holds 10 connections. */
-export const PLATE_NUMBERS_CONCURRENCY = 4;
-
-/**
- * fn over every item, at most limit calls in flight, the results in the
- * items' order. The first failure rejects the whole map.
- */
-export async function mapLimit<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  async function worker(): Promise<void> {
-    while (next < items.length) {
-      const i = next;
-      next += 1;
-      out[i] = await fn(items[i] as T);
-    }
-  }
-  const workers = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(Array.from({ length: workers }, worker));
-  return out;
 }
 
 /** What readDisplayContext reads; main.ts hands it the settings repo and the estimates service. */
@@ -436,8 +409,11 @@ export interface AppLibraryDeps {
    * (readDisplayContext), read once per page.
    */
   displayContext(): Promise<DisplayContext>;
-  /** The estimates module's plateNumbers for one plate with that context (estimates/display.ts). */
-  plateNumbers(ctx: DisplayContext, plateId: string): Promise<PlateNumbers>;
+  /** The estimates module's plateNumbersMany for several plates with that context (estimates/display.ts). */
+  plateNumbersMany(
+    ctx: DisplayContext,
+    plateIds: readonly string[],
+  ): Promise<Map<string, PlateNumbers>>;
   /** Most matches a numbered page reads; PAGED_MATCH_CAP. Smaller in tests. */
   pagedMatchCap?: number;
 }
@@ -623,13 +599,12 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
         .execute(),
     ]);
 
+    const read = await deps.plateNumbersMany(
+      ctx,
+      plates.map((p) => p.plateId),
+    );
     const numbers = new Map(
-      await mapLimit(
-        plates,
-        PLATE_NUMBERS_CONCURRENCY,
-        async (p) =>
-          [p.plateId, numbersFor(await deps.plateNumbers(ctx, p.plateId), printerId)] as const,
-      ),
+      plates.map((p) => [p.plateId, numbersFor(read.get(p.plateId) ?? {}, printerId)] as const),
     );
 
     return models.map((model) => {

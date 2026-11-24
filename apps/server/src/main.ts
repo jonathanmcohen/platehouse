@@ -88,7 +88,7 @@ import { createDeliveryLibrary } from "./delivery/download.js";
 import { createDerived, derivedJobHandlers } from "./derived/derived.js";
 import { sweepWorkingCopies } from "./derived/working-copies.js";
 import { createSlicerClient } from "./estimates/client.js";
-import { plateNumbers } from "./estimates/display.js";
+import { plateNumbersMany } from "./estimates/display.js";
 import { createEstimates } from "./estimates/service.js";
 import { createSlicerState } from "./estimates/slicer-state.js";
 import { createInboxWatcher, type InboxWatcher, inboxProbes } from "./inbox/watch.js";
@@ -498,7 +498,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       db,
       store,
       displayContext,
-      plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
+      plateNumbersMany: (ctx, plateIds) => plateNumbersMany(db, ctx, plateIds),
     });
     // The languages: the built-in catalogs and LOCALES_DIR (the maintainer, 2026-11-19).
     // LOCALES_DIR is read once here, waiting at most LOCALES_READ_LIMIT_MS,
@@ -540,7 +540,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       library: createAppLibrary({
         db,
         displayContext,
-        plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
+        plateNumbersMany: (ctx, plateIds) => plateNumbersMany(db, ctx, plateIds),
       }),
       // The model page.
       model: createAppModel({

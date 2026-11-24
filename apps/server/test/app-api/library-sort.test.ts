@@ -165,7 +165,7 @@ describe("a numbered page's read is ordered in the database", () => {
     const library = createAppLibrary({
       db: recordingDb(statements),
       displayContext: async () => ctx,
-      plateNumbers: async () => ({}),
+      plateNumbersMany: async () => new Map(),
     });
     const answer = (await library.list(query)) as AppLibraryPages;
     return { order: orderOf(statements), answer, statements };
@@ -251,7 +251,7 @@ describe("a numbered page's read is ordered in the database", () => {
     const library = createAppLibrary({
       db: recordingDb([]),
       displayContext: async () => ctx,
-      plateNumbers: async () => ({}),
+      plateNumbersMany: async () => new Map(),
     });
     await expect(library.list({ sort: "name-asc" })).rejects.toBeInstanceOf(InvalidSortQuery);
     await expect(library.list({ sort: "relevance" })).resolves.toMatchObject({ models: [] });

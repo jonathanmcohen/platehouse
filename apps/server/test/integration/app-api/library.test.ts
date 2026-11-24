@@ -2,7 +2,7 @@
 // never download a model file: the library's app
 // API, GET /app/api/library and GET /app/api/library/tags, against Postgres
 // 17 and the S3 test server. Models come in through ingest from generated
-// files (no designer file), and plate numbers are the estimates module's plateNumbers for
+// files (no designer file), and plate numbers are the estimates module's plateNumbersMany for
 // a selected printer, the P1S with a 0.4 mm nozzle.
 //
 // - The library is rendered from the database alone. The test plays the
@@ -10,18 +10,16 @@
 //   then every image those answers point at. The server's request log then
 //   holds only /app/api requests and /blobs/<id> requests for plate
 //   thumbnails: no /files/ request and no source blob. createAppLibrary is
-//   given the database and plateNumbers and no store, so it has no way to
+//   given the database and plateNumbersMany and no store, so it has no way to
 //   read a model file at all.
 // - A card has time and weight for the selected printer only when every
 //   plate has numbers for it; otherwise it says partial. While the printer
 //   menu cannot be read (the slicer is down), a card the database cannot
 //   total says numbers unavailable instead. The display context (settings
-//   and the printer menu) is read once per page, and at most
-//   PLATE_NUMBERS_CONCURRENCY plate lookups run at once. readDisplayContext
-//   reads the settings row and the printer menu as the estimates service
-//   does, with an empty menu while the slicer is down or slower than
-//   DISPLAY_MENU_TIMEOUT_MS, and mapLimit keeps the cap and the plates'
-//   order.
+//   and the printer menu) is read once per page, and every plate's numbers
+//   are looked up in one plateNumbersMany call. readDisplayContext reads the
+//   settings row and the printer menu as the estimates service does, with an
+//   empty menu while the slicer is down or slower than DISPLAY_MENU_TIMEOUT_MS.
 // - The tag filter narrows the grid; search finds name, caption, creator and
 //   tag; a trashed model is never listed.
 // - Numbered pages (?page=): a page is a slice of the same ranked matches
@@ -45,12 +43,10 @@ import {
   DISPLAY_MENU_TIMEOUT_MS,
   LIBRARY_API_PATHS,
   type LibraryCard,
-  mapLimit,
-  PLATE_NUMBERS_CONCURRENCY,
   readDisplayContext,
 } from "../../../src/app-api/library.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
-import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
+import { type DisplayContext, plateNumbersMany } from "../../../src/estimates/display.js";
 import { createCollections } from "../../../src/library/collections.js";
 import { createTags } from "../../../src/library/tags.js";
 import { createRepos } from "../../../src/repos/index.js";
@@ -109,9 +105,8 @@ let context: DisplayContext = CONTEXT;
 /** How often the library read the display context, and what it handed on. */
 let contextReads = 0;
 const contexts = new Set<DisplayContext>();
-/** Plate number lookups running now, and the most that ever ran at once. */
-let lookupsInFlight = 0;
-let mostLookupsInFlight = 0;
+/** How many plateNumbersMany calls the library made. */
+let lookupCalls = 0;
 /** Every plate the library looked numbers up for, in order. */
 const lookedUp: string[] = [];
 
@@ -174,16 +169,11 @@ beforeAll(async () => {
         contextReads += 1;
         return context;
       },
-      plateNumbers: async (ctx, plateId) => {
+      plateNumbersMany: async (ctx, plateIds) => {
         contexts.add(ctx);
-        lookedUp.push(plateId);
-        lookupsInFlight += 1;
-        mostLookupsInFlight = Math.max(mostLookupsInFlight, lookupsInFlight);
-        try {
-          return await plateNumbers(env.db, ctx, plateId);
-        } finally {
-          lookupsInFlight -= 1;
-        }
+        lookupCalls += 1;
+        lookedUp.push(...plateIds);
+        return plateNumbersMany(env.db, ctx, plateIds);
       },
     }),
     logger: { write: (line: string) => lines.push(line) },
@@ -613,7 +603,7 @@ describe("while the slicer's printer menu cannot be read", () => {
 });
 
 describe("plate numbers for a page", () => {
-  test("one display context per page, and a capped number of plate lookups at once", async () => {
+  test("one display context per page, and every plate looked up in one call", async () => {
     const word = marker();
     const models = [];
     for (let i = 0; i < 3; i += 1) {
@@ -623,7 +613,8 @@ describe("plate numbers for a page", () => {
     }
     contextReads = 0;
     contexts.clear();
-    mostLookupsInFlight = 0;
+    lookupCalls = 0;
+    const from = lookedUp.length;
     const page = await library(`?q=${word}`);
     expect(page.models).toHaveLength(3);
     for (const m of models) expect(card(page, m.modelId)).toMatchObject({ partial: false });
@@ -631,9 +622,9 @@ describe("plate numbers for a page", () => {
     // cached) are read once for the page, not once per plate.
     expect(contextReads).toBe(1);
     expect([...contexts]).toEqual([CONTEXT]);
-    // Twelve plates, never more than the cap in flight.
-    expect(mostLookupsInFlight).toBeGreaterThan(0);
-    expect(mostLookupsInFlight).toBeLessThanOrEqual(PLATE_NUMBERS_CONCURRENCY);
+    // Twelve plates, one call.
+    expect(lookupCalls).toBe(1);
+    expect(lookedUp.length - from).toBe(12);
   });
 });
 
@@ -704,67 +695,6 @@ describe("readDisplayContext", () => {
         listPrinters: async () => [P1S],
       }),
     ).rejects.toThrow("the database is down");
-  });
-});
-
-/** Lets every pending promise callback run. */
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-describe("mapLimit", () => {
-  test("keeps the results in the items' order", async () => {
-    const out = await mapLimit([30, 10, 20, 0], 2, async (ms) => {
-      await new Promise((resolve) => setTimeout(resolve, ms));
-      return ms * 2;
-    });
-    expect(out).toEqual([60, 20, 40, 0]);
-  });
-
-  test("never has more than the limit in flight, and uses all of it", async () => {
-    let inFlight = 0;
-    let most = 0;
-    const releases: Array<() => void> = [];
-    const done = mapLimit(
-      Array.from({ length: 10 }, (_, i) => i),
-      3,
-      async (i) => {
-        inFlight += 1;
-        most = Math.max(most, inFlight);
-        await new Promise<void>((resolve) => releases.push(resolve));
-        inFlight -= 1;
-        return i;
-      },
-    );
-    for (let round = 0; round < 20; round += 1) {
-      await tick();
-      expect(inFlight).toBeLessThanOrEqual(3);
-      for (const release of releases.splice(0)) release();
-    }
-    expect(await done).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    expect(most).toBe(3);
-  });
-
-  test("an empty list calls nothing", async () => {
-    let calls = 0;
-    expect(
-      await mapLimit([], 4, async () => {
-        calls += 1;
-      }),
-    ).toEqual([]);
-    expect(calls).toBe(0);
-  });
-
-  test("a failure rejects the whole map", async () => {
-    await expect(
-      mapLimit([1, 2, 3], 2, async (n) => {
-        if (n === 2) throw new Error("the database is down");
-        return n;
-      }),
-    ).rejects.toThrow("the database is down");
-  });
-
-  test("the library's cap is small next to the pool of 10", () => {
-    expect(PLATE_NUMBERS_CONCURRENCY).toBeGreaterThan(0);
-    expect(PLATE_NUMBERS_CONCURRENCY).toBeLessThanOrEqual(4);
   });
 });
 
@@ -986,7 +916,7 @@ describe("numbered pages", () => {
       createAppLibrary({
         db: env.db,
         displayContext: async () => CONTEXT,
-        plateNumbers: (ctx, plateId) => plateNumbers(env.db, ctx, plateId),
+        plateNumbersMany: (ctx, ids) => plateNumbersMany(env.db, ctx, ids),
         pagedMatchCap,
       });
     const capped = withCap(3);

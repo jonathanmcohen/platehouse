@@ -15,7 +15,7 @@ import {
   createAppLibrary,
   type LibraryCard,
 } from "../../../src/app-api/library.js";
-import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
+import { type DisplayContext, plateNumbersMany } from "../../../src/estimates/display.js";
 import { createCollections } from "../../../src/library/collections.js";
 import { LIBRARY_SORTS, type LibrarySort } from "../../../src/repos/models.js";
 import {
@@ -49,7 +49,7 @@ function libraryWith(pagedMatchCap?: number): AppLibrary {
   return createAppLibrary({
     db: env.db,
     displayContext: async () => context,
-    plateNumbers: (ctx, plateId) => plateNumbers(env.db, ctx, plateId),
+    plateNumbersMany: (ctx, ids) => plateNumbersMany(env.db, ctx, ids),
     ...(pagedMatchCap === undefined ? {} : { pagedMatchCap }),
   });
 }

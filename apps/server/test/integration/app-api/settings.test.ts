@@ -40,7 +40,7 @@ import { patternClass } from "../../../src/auth/gate.js";
 import { dbSessionStore, SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { createSlicerClient } from "../../../src/estimates/client.js";
-import { plateNumbers } from "../../../src/estimates/display.js";
+import { plateNumbersMany } from "../../../src/estimates/display.js";
 import { FALLBACK_SLICES_PER_MINUTE, MIN_FINISHES_FOR_RATE } from "../../../src/estimates/rate.js";
 import { createEstimates, type Estimates } from "../../../src/estimates/service.js";
 import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
@@ -246,7 +246,7 @@ beforeAll(async () => {
             settings: () => env.repos.settings.get(),
             listPrinters: () => estimates.listPrinters(),
           }),
-        plateNumbers: (ctx, id) => plateNumbers(env.db, ctx, id),
+        plateNumbersMany: (ctx, ids) => plateNumbersMany(env.db, ctx, ids),
       }),
     },
     appApi: {

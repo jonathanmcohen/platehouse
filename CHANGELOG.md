@@ -29,6 +29,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Fixed
 
+- Plate numbers for the library page, the model page and the API are read in two queries for the whole page instead of two per plate ([#456](https://github.com/jonathanmcohen/platehouse/issues/456)).
 - The preview backfill for older files sends its next batch as soon as one finishes, instead of making at most 10 pictures every 5 minutes ([#417](https://github.com/jonathanmcohen/platehouse/issues/417)).
 - Small fixes for preview pictures and the slicer. An ASCII STL whose name runs straight on from the word `solid` (as `solid_Body1`) is no longer refused by the picture route. A STEP mesh with a damaged entry in its JSON is refused with the usual reason instead of failing the job. Two preview backfill runs at the same moment now queue at most one batch, taking a database lock to do so. Folders a crash left in `TMP_DIR` (`render-*` and `plate-mesh-*`) are removed when the server starts. The previewStatus and mesh-cap wording is corrected ([#428](https://github.com/jonathanmcohen/platehouse/issues/428)).
 - A new OrcaSlicer version now has to pass the whole slicer container test suite, not only the smoke slice, before the slicer image is published ([#440](https://github.com/jonathanmcohen/platehouse/issues/440)).
