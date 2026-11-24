@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, type ReactNode } from "react";
+import { act, type ReactNode, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -2912,6 +2912,20 @@ function Harness({ nested }: { nested: boolean }) {
   );
 }
 
+const escaped: string[] = [];
+
+function Pair({ inner }: { inner: boolean }) {
+  return (
+    <Dialog title="Outer" onClose={() => escaped.push("outer")}>
+      <button type="button">Outer button</button>
+      {inner ? (
+        <Dialog title="Inner" onClose={() => escaped.push("inner")}>
+          <button type="button">Inner button</button>
+        </Dialog>
+      ) : null}
+    </Dialog>
+  );
+}
 describe("an open dialog isolates the rest of the page", () => {
   function inertCount(): number {
     return document.querySelectorAll("[inert]").length;
@@ -2959,5 +2973,104 @@ describe("an open dialog isolates the rest of the page", () => {
     await act(async () => root.render(<div />));
     expect(inertCount()).toBe(0);
     before.remove();
+  });
+
+  test("an inner and an outer dialog mounted in the same commit release cleanly", async () => {
+    const before = document.createElement("div");
+    document.body.prepend(before);
+    await act(async () => root.render(<Harness nested />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    before.remove();
+  });
+
+  test("under StrictMode nothing is left inert after the dialog closes", async () => {
+    const before = document.createElement("div");
+    document.body.prepend(before);
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <Harness nested={false} />
+        </StrictMode>,
+      ),
+    );
+    expect(before.hasAttribute("inert")).toBe(true);
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <div />
+        </StrictMode>,
+      ),
+    );
+    expect(inertCount()).toBe(0);
+    before.remove();
+  });
+
+  test("a live region with nothing to focus stays readable; one with a control goes inert", async () => {
+    const status = document.createElement("div");
+    status.setAttribute("role", "status");
+    const live = document.createElement("div");
+    live.setAttribute("aria-live", "polite");
+    live.append(document.createElement("button"));
+    document.body.prepend(status, live);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(status.hasAttribute("inert")).toBe(false);
+    expect(live.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    status.remove();
+    live.remove();
+  });
+
+  test("an element added beside the dialog while it is open is inert, and freed on close", async () => {
+    await act(async () => root.render(<Harness nested={false} />));
+    const late = document.createElement("div");
+    await act(async () => {
+      document.body.prepend(late);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(late.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(late.hasAttribute("inert")).toBe(false);
+    late.remove();
+  });
+
+  test("focus returns to the opener even when the browser blurs it as it goes inert", async () => {
+    const opener = document.createElement("button");
+    opener.textContent = "Open";
+    document.body.prepend(opener);
+    opener.focus();
+    // An engine that drops focus from an element the moment it becomes inert.
+    const set = Element.prototype.setAttribute;
+    const spy = vi.spyOn(Element.prototype, "setAttribute").mockImplementation(function (
+      this: Element,
+      name: string,
+      value: string,
+    ) {
+      set.call(this, name, value);
+      if (name === "inert" && this.contains(document.activeElement)) {
+        (document.activeElement as HTMLElement).blur();
+      }
+    });
+    await act(async () => root.render(<Harness nested={false} />));
+    spy.mockRestore();
+    await act(async () => root.render(<div />));
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  test("Escape with focus on the body closes the dialog; with two open only the inner one", async () => {
+    escaped.length = 0;
+    await act(async () => root.render(<Pair inner />));
+    (document.activeElement as HTMLElement | null)?.blur();
+    await press(document.body, "Escape");
+    expect(escaped).toEqual(["inner"]);
+    await act(async () => root.render(<Pair inner={false} />));
+    (document.activeElement as HTMLElement | null)?.blur();
+    await press(document.body, "Escape");
+    expect(escaped).toEqual(["inner", "outer"]);
   });
 });

@@ -63,6 +63,7 @@ import {
   type ReactNode,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -253,10 +254,10 @@ export function UploadDialog({
   const titleId = useId();
   const backdrop = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLDivElement>(null);
+  /** The current close(), for the document's key handler. */
   const closeRef = useRef<() => void>(() => {});
   const picker = useRef<HTMLInputElement>(null);
   const returnFocus = useRef<Element | null>(null);
-  /** The current close(), for the document's key handler. */
   const [combine, setCombine] = useState(false);
   /** The combined batch's id, from its first Upload until close or a switch change. */
   const batch = useRef<string | null>(null);
@@ -329,6 +330,13 @@ export function UploadDialog({
 
   useEffect(() => guardFileDrops(), []);
 
+  // Where focus was is read before the page goes inert: a browser may drop
+  // focus from an element the moment it becomes inert. Layout effects run
+  // before the passive ones, where useInertOutside sets inert.
+  useLayoutEffect(() => {
+    if (open) returnFocus.current = document.activeElement;
+  }, [open]);
+
   // The page behind is inert while the dialog is open. Declared before the
   // focus effect so its cleanup runs first on close: focus cannot go back to
   // where it was while that is still inert.
@@ -352,7 +360,6 @@ export function UploadDialog({
   // Focus moves into the dialog when it opens and back when it closes.
   useEffect(() => {
     if (!open) return;
-    returnFocus.current = document.activeElement;
     dialog.current?.focus();
     return () => {
       const back = returnFocus.current;
@@ -411,7 +418,7 @@ export function UploadDialog({
   }
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: dropping files and pressing the backdrop are pointer gestures only; Choose files is the keyboard route, and Escape is handled on the dialog.
+    // biome-ignore lint/a11y/noStaticElementInteractions: dropping files and pressing the backdrop are pointer gestures only; Choose files is the keyboard route, and Escape is handled on the document.
     <div
       ref={backdrop}
       className="ph-dialog-backdrop"

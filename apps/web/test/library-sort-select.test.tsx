@@ -1104,6 +1104,14 @@ describe("bulk actions", () => {
     await click(button("Move to trash"));
     expect(document.querySelectorAll("[inert]").length).toBeGreaterThan(0);
     expect(dialog()?.closest("[inert]")).toBeNull();
+    // The count and result live regions stay readable; other siblings are inert.
+    expect(container.querySelector("#ph-selection-count")?.closest("[inert]")).toBeNull();
+    for (const region of container.querySelectorAll('.ph-select-bar [role="status"]')) {
+      expect(region.hasAttribute("inert")).toBe(false);
+    }
+    expect(document.querySelector(".ph-select-bar .studio-actions")?.hasAttribute("inert")).toBe(
+      true,
+    );
     await click(dialogButton("Cancel"));
     expect(document.querySelectorAll("[inert]")).toHaveLength(0);
   });

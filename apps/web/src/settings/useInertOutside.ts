@@ -2,6 +2,13 @@
 // mounted, every element beside it, and beside each of its ancestors up to
 // the body, gets the inert attribute: Tab, a screen reader's reading keys and
 // a click cannot reach it, wherever focus has been (the address bar, say).
+// An element added beside the dialog or an ancestor while it is open (a route
+// change, a conditional alert) is made inert too, and let go with the rest.
+//
+// A live region (role status or alert, or aria-live) with nothing focusable
+// inside it is left alone: it has to stay readable, so that a result that
+// arrives as the dialog closes is still announced. One that holds a control
+// stays inert like the rest.
 //
 // Dialogs can nest (a confirmation asked from inside another dialog). Each
 // element is counted, so an inner dialog closing takes off only what it
@@ -13,29 +20,58 @@ import { type RefObject, useEffect } from "react";
 /** How many open dialogs are holding each element inert. */
 const holds = new Map<Element, number>();
 
+const LIVE_REGION = '[role="status"], [role="alert"], [aria-live]';
+const FOCUSABLE =
+  'button, input, select, textarea, a[href], summary, [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
+
+function isQuietLiveRegion(element: Element): boolean {
+  return (
+    element.matches(LIVE_REGION) &&
+    !element.matches(FOCUSABLE) &&
+    element.querySelector(FOCUSABLE) === null
+  );
+}
+
 export function useInertOutside(ref: RefObject<HTMLElement | null>, active: boolean): void {
   useEffect(() => {
     const start = ref.current;
     if (!active || start === null) return;
     const mine: Element[] = [];
+    const observers: MutationObserver[] = [];
+
+    function isolate(element: Element) {
+      if (isQuietLiveRegion(element)) return;
+      const count = holds.get(element);
+      if (count !== undefined) {
+        holds.set(element, count + 1);
+        mine.push(element);
+      } else if (!element.hasAttribute("inert")) {
+        holds.set(element, 1);
+        element.setAttribute("inert", "");
+        mine.push(element);
+      }
+    }
+
     let node: Element = start;
     while (node !== document.body && node.parentElement !== null) {
       const parent: Element = node.parentElement;
-      for (const sibling of parent.children) {
-        if (sibling === node) continue;
-        const count = holds.get(sibling);
-        if (count !== undefined) {
-          holds.set(sibling, count + 1);
-          mine.push(sibling);
-        } else if (!sibling.hasAttribute("inert")) {
-          holds.set(sibling, 1);
-          sibling.setAttribute("inert", "");
-          mine.push(sibling);
+      const onPath = node;
+      for (const sibling of parent.children) if (sibling !== onPath) isolate(sibling);
+      const observer = new MutationObserver((records) => {
+        for (const record of records) {
+          for (const added of record.addedNodes) {
+            if (added instanceof Element && added !== onPath && !mine.includes(added)) {
+              isolate(added);
+            }
+          }
         }
-      }
+      });
+      observer.observe(parent, { childList: true });
+      observers.push(observer);
       node = parent;
     }
     return () => {
+      for (const observer of observers) observer.disconnect();
       for (const element of mine) {
         const count = (holds.get(element) ?? 1) - 1;
         if (count > 0) {

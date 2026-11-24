@@ -22,6 +22,7 @@ import {
   type RefObject,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -44,6 +45,30 @@ export interface DialogProps {
   children: ReactNode;
 }
 
+/** The open dialogs: only the topmost takes an Escape pressed outside every panel. */
+interface OpenDialog {
+  panel: RefObject<HTMLElement | null>;
+  close: { current: () => void };
+}
+const openDialogs: OpenDialog[] = [];
+
+/**
+ * The newest dialog that has no other open dialog inside it. Effects of a
+ * dialog inside another run first when both mount together, so the order of
+ * the list alone cannot say which is on top.
+ */
+function topDialog(): OpenDialog | undefined {
+  return openDialogs.findLast(
+    (entry) =>
+      !openDialogs.some(
+        (other) =>
+          other !== entry &&
+          other.panel.current !== null &&
+          entry.panel.current?.contains(other.panel.current),
+      ),
+  );
+}
+
 export function Dialog({ title, onClose, returnFocusTo, initialFocus, children }: DialogProps) {
   const titleId = useId();
   const backdrop = useRef<HTMLDivElement>(null);
@@ -51,12 +76,41 @@ export function Dialog({ title, onClose, returnFocusTo, initialFocus, children }
   const opener = useRef<Element | null>(null);
   const returnTo = useRef(returnFocusTo);
 
+  // The opener is read before the page goes inert: a browser may drop focus
+  // from an element the moment it becomes inert. Layout effects run before
+  // the passive ones, where the hook below sets inert.
+  useLayoutEffect(() => {
+    opener.current = document.activeElement;
+  }, []);
+
   // Before the focus effect, so its cleanup runs first on close: focus cannot
   // go back to the opener while the page is still inert.
   useInertOutside(backdrop, true);
 
+  // Escape with focus outside the panel (on the body after a click on the
+  // page text): the newest open dialog closes. A key from inside the panel is
+  // the panel's own handler's, and one already handled is left alone.
+  const closeNow = useRef(onClose);
+  closeNow.current = onClose;
   useEffect(() => {
-    opener.current = document.activeElement;
+    const entry: OpenDialog = { panel, close: closeNow };
+    openDialogs.push(entry);
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (topDialog() !== entry) return;
+      if (event.target instanceof Node && panel.current?.contains(event.target)) return;
+      event.preventDefault();
+      closeNow.current();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      const at = openDialogs.indexOf(entry);
+      if (at >= 0) openDialogs.splice(at, 1);
+    };
+  }, []);
+
+  useEffect(() => {
     const first =
       initialFocus?.current ?? panel.current?.querySelector<HTMLElement>(FOCUSABLE) ?? null;
     (first ?? panel.current)?.focus();
