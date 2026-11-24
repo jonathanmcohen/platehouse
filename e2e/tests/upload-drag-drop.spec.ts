@@ -5,12 +5,31 @@
 // browser makes it: dragenter, dragover and drop events that carry a
 // DataTransfer holding the file. The STL is generated here with a name and a
 // body that are new each run, so the server never skips it as a duplicate.
+// The model is moved to the trash afterwards, as the setup trashes its own
+// (the Public API never deletes), so the library the other specs read is as it was.
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
+import { ORIGIN } from "../support/env.js";
 import { ALL_PAGES, openPage } from "../support/pages.js";
 import { readSeed } from "../support/seed.js";
 
 const LIBRARY = ALL_PAGES[0];
+
+let uploadedName: string | undefined;
+
+test.afterEach(async ({ page }) => {
+  if (uploadedName === undefined) return;
+  const name = uploadedName;
+  uploadedName = undefined;
+  const found = await page.request.get(`/api/v1/models?q=${encodeURIComponent(name)}`, {
+    headers: { authorization: `Bearer ${readSeed().token}` },
+  });
+  if (!found.ok()) return;
+  const { models } = (await found.json()) as { models: { id: string; name: string }[] };
+  for (const model of models) {
+    await page.request.post(`/app/api/models/${model.id}/trash`, { headers: { origin: ORIGIN } });
+  }
+});
 
 /** A one-triangle ASCII STL; the solid's name makes the bytes differ per run. */
 function stl(name: string): string {
@@ -32,6 +51,7 @@ test("dropping an STL on the library uploads it and the model appears", async ({
   if (LIBRARY === undefined) throw new Error("no library page");
   const id = randomUUID().slice(0, 8);
   const name = `drop ${id}`;
+  uploadedName = id;
   await openPage(page, LIBRARY);
 
   const transfer = await page.evaluateHandle(

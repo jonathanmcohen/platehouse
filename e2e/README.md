@@ -49,7 +49,7 @@ source mode locally for a faster loop.
 ## Running it
 
 It needs Docker, so it does not run on a machine without it; CI is where it runs. On a
-machine with Docker:
+machine with Docker, with the app from source:
 
 ```sh
 pnpm install
@@ -61,10 +61,13 @@ pnpm exec playwright test -c e2e
 docker compose -f e2e/compose.yml --env-file "${RUNNER_TEMP:-/tmp}/platehouse-e2e/e2e.env" down -v
 ```
 
+To run against the app image instead (the web build is not needed, the image carries its own),
+build it with `docker build -f docker/app.Dockerfile -t platehouse:ci .` and start with
+`E2E_APP_IMAGE=platehouse:ci bash e2e/up.sh`; stop it with
+`docker compose -f e2e/compose.yml -f e2e/compose.image.yml --env-file <env file> down -v`.
+In image mode the app's health is the image's own `HEALTHCHECK`, not a probe from the compose file.
+The slicer and OIDC stubs, and the bucket job, still run from source in both modes.
+
 `up.sh` makes the CA, the certificate and every secret with `openssl` into
 `${RUNNER_TEMP:-/tmp}/platehouse-e2e`, outside the repo, and publishes Traefik
-on `127.0.0.1:443`. To run against the app image instead, skip the web build, build the
-image (`docker build -f docker/app.Dockerfile -t platehouse:ci .`) and start with
-`E2E_APP_IMAGE=platehouse:ci bash e2e/up.sh`; stop it with
-`docker compose -f e2e/compose.yml -f e2e/compose.image.yml --env-file <env file> down -v`. Typecheck the suite with
-`pnpm exec tsc -p e2e/tsconfig.json`.
+on `127.0.0.1:443`. Typecheck the suite with `pnpm exec tsc -p e2e/tsconfig.json`.

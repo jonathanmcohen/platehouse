@@ -8,8 +8,10 @@
 #   E2E_APP_IMAGE=platehouse:ci bash e2e/up.sh
 #
 # The environment, the health check and the dependencies are the ones in
-# compose.yml. What changes is only how the process starts: the image's own
-# entrypoint and command, its working directory, and no checkout mounted.
+# compose.yml. What changes is how the process starts and how it is probed: the
+# image's own entrypoint, command, working directory and HEALTHCHECK (every 30
+# s, but every 2 s during its 60 s start period, so a healthy start shows
+# within seconds), and no checkout mounted.
 # The run's CA is still mounted, since the app trusts it for the issuer. The
 # image is loaded locally and never pulled.
 services:
@@ -18,5 +20,6 @@ services:
     pull_policy: never
     working_dir: !reset null
     command: !reset null
+    healthcheck: !reset null
     volumes: !override
       - ${E2E_CERTS_DIR:?run e2e/up.sh}/ca.pem:/certs/ca.pem:ro
