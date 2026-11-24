@@ -541,7 +541,7 @@ test("apt-snapshot: each job holds only the permissions it uses", () => {
 test("apt-snapshot: every action is pinned to the exact tag release.yml or ci.yml uses", () => {
   const pins = (t) => {
     const out = {};
-    for (const [, u] of t.matchAll(/uses: (\S+)/g)) {
+    for (const [, u] of t.matchAll(/uses: (\S+ # \S+)/g)) {
       const [name, tag] = u.split("@");
       (out[name] ??= new Set()).add(tag);
     }
@@ -554,7 +554,7 @@ test("apt-snapshot: every action is pinned to the exact tag release.yml or ci.ym
   for (const [name, tags] of Object.entries(ours)) {
     const [tag] = tags;
     assert.equal(tags.size, 1);
-    assert.match(tag, /^v\d+\.\d+\.\d+$/, `${name}@${tag} is an exact release tag`);
+    assert.match(tag, /^[0-9a-f]{40} # v\d+\.\d+\.\d+$/, `${name}@${tag} is a commit SHA with its release tag`);
     assert.deepEqual([...(release[name] ?? ci[name])], [tag], `${name}@${tag}`);
   }
   assert.match(jobBlock(text(), "refresh"), /\n {10}node-version-file: \.node-version\n/);

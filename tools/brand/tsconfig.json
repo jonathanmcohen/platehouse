@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "lib": ["es2024", "dom"]
+  },
+  "include": ["*.ts", "../../apps/web/src/shell/logoArt.ts"]
+}

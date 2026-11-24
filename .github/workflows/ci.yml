@@ -81,7 +81,7 @@ jobs:
       docs: ${{ steps.docs.outputs.docs }}
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -97,10 +97,11 @@ jobs:
       # read from outside it (issue #222), all in
       # tools/slicing-gate/test/ciworkflow.test.mjs, rctarget.test.mjs and
       # aptsnapshot.test.mjs: this workflow, .node-version, release.yml,
-      # slicer-image.yml, rc-tag.yml, apt-snapshot.yml,
+      # slicer-image.yml, rc-tag.yml, apt-snapshot.yml, docs-pages.yml,
       # .github/scripts/rc-target.mjs, .github/scripts/apt-snapshot.mjs,
       # docker/app.Dockerfile, docker/check-image-labels.sh (the slicer
-      # image's label check step runs it),
+      # image's label check step runs it), docker/test-app-image.sh, the root
+      # tsconfig.json and tools/brand/tsconfig.json (workflowpins.test.mjs),
       # apps/slicer/Dockerfile, two slicer container test files, README.md and
       # CHANGELOG.md. A gate test that starts reading another file outside
       # tools/slicing-gate adds it here, or a PR changing only that file skips
@@ -130,7 +131,7 @@ jobs:
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot)\.yml$|\.github/scripts/(rc-target|apt-snapshot)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|docs-pages)\.yml$|\.github/scripts/(rc-target|apt-snapshot)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|tsconfig\.json$|tools/brand/tsconfig\.json$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
               echo "The slicing gate or a file its tests read changed; the gate tests run."
             else
               tests=false
@@ -219,12 +220,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
 
@@ -238,13 +239,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -252,6 +253,14 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Biome
         run: pnpm exec biome ci .
+
+      # The example Compose file must still parse and interpolate. Its .env
+      # template leaves secrets empty, and the file demands each value, so
+      # empty ones are filled in a throwaway copy; nothing is started.
+      - name: Validate the example Compose file
+        run: |
+          sed 's/=$/=x/' examples/.env.example >"$RUNNER_TEMP/compose.env"
+          docker compose -f examples/docker-compose.yml --env-file "$RUNNER_TEMP/compose.env" config -q
 
   typecheck:
     name: Typecheck
@@ -261,13 +270,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -287,14 +296,14 @@ jobs:
       # pinned earlier migration checksums against the files at an older
       # commit, and is reported as skipped when the checkout lacks it.
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -330,7 +339,7 @@ jobs:
           fi
       - name: Upload the test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unit-report
           path: report.json
@@ -345,13 +354,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -383,7 +392,7 @@ jobs:
           fi
       - name: Upload the test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: integration-report
           path: report.json
@@ -409,13 +418,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -473,7 +482,7 @@ jobs:
         run: docker compose -f e2e/compose.yml --env-file "$E2E_ENV_FILE" logs --no-color --tail 300
       - name: Upload the Playwright report
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-report
           path: |
@@ -496,12 +505,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
 
@@ -537,13 +546,13 @@ jobs:
       BUILDKIT_PROGRESS: plain
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       # The smoke step compares its two results with smoke-gate.mjs on the runner.
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
 
@@ -619,13 +628,13 @@ jobs:
       BUILDKIT_PROGRESS: plain
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -675,7 +684,7 @@ jobs:
           fi
       - name: Upload the test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: container-report
           path: report.json
@@ -691,7 +700,7 @@ jobs:
       # the tests passed, so the image exists.
       - name: Trivy report (informational, does not fail the job)
         continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.SLICER_IMAGE }}
           severity: HIGH,CRITICAL
@@ -730,11 +739,11 @@ jobs:
       BUILDKIT_PROGRESS: plain
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4.4.1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # The runtime stage's apt-get upgrade is rebuilt whenever
       # OS_UPDATES_STAMP changes (docker/app.Dockerfile). Today's UTC date
       # makes pull request builds take Debian's fixes once a day and stay
@@ -747,7 +756,7 @@ jobs:
         run: |
           echo "stamp=$(date -u +%Y-%m-%d)-${GITHUB_RUN_ATTEMPT:?}" >>"$GITHUB_OUTPUT"
       - name: Build the app image
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/app.Dockerfile
@@ -783,7 +792,7 @@ jobs:
       # The Trivy version is the one release.yml installs, set here rather than
       # left to the action's default (v0.70.0 for the action's v0.36.0).
       - name: Trivy gate (fail on fixable OS HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}
           severity: HIGH,CRITICAL
@@ -802,13 +811,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm

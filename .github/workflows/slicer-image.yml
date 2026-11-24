@@ -119,10 +119,13 @@ on:
 permissions:
   contents: read
 
-# Never cancel a publish part way; a second run waits for the first, so two
-# runs never move stable at the same time.
+# Never cancel a publish part way. Each ref has its own group, so a release tag's
+# run never waits behind, or is replaced as the pending run by, a scheduled or
+# manual run on another ref (issue #451): GitHub keeps one run going and one
+# pending per group. Two runs still never move stable together: the stable job
+# below has a group of its own, shared by every ref.
 concurrency:
-  group: slicer-image
+  group: slicer-image-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -152,7 +155,7 @@ jobs:
       build: ${{ steps.registry.outputs.build }}
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -294,7 +297,7 @@ jobs:
       - name: Log in to GHCR
         id: login
         if: ${{ github.event_name == 'schedule' }}
-        uses: docker/login-action@v4.8.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -378,7 +381,7 @@ jobs:
 
       - name: Upload the log tail
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: failure-detect
           path: failure/detect.txt
@@ -405,15 +408,15 @@ jobs:
       BUILDKIT_PROGRESS: plain
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -422,7 +425,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4.4.1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # The standard OCI labels, as release.yml sets them on the app image
       # (issue #317): version, revision, source, created, title, description,
@@ -438,7 +441,7 @@ jobs:
       # matches the tested one.
       - name: Labels for this image
         id: labels
-        uses: docker/metadata-action@v6.2.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
           tags: |
@@ -452,7 +455,7 @@ jobs:
       #    the smoke slice can run it.
       - name: Build (load)
         id: load
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: apps/slicer/Dockerfile
@@ -593,7 +596,7 @@ jobs:
       # context.
       - name: Trivy report (informational, does not fail the job)
         continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.LOCAL }}
           severity: HIGH,CRITICAL
@@ -605,7 +608,7 @@ jobs:
 
       - name: Log in to GHCR
         id: login
-        uses: docker/login-action@v4.8.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -615,7 +618,7 @@ jobs:
       #    should be a cache hit; step 4 checks that it was.
       - name: Push by digest
         id: push
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: apps/slicer/Dockerfile
@@ -660,16 +663,15 @@ jobs:
 
       # 5) The version tags (orca-X.Y.Z unless this is a prerelease tag's run
       #    (MOVE_ORCA false), the run tag and, on a run from a release tag,
-      #    the release's version RELEASE), read back; then stable, read back,
-      #    unless this is a prerelease tag's run (MOVE_STABLE false). A carbon
-      #    copy each (--prefer-index=false), so every tag is the tested digest.
-      - name: Tag the image and move stable
+      #    the release's version RELEASE), read back. A carbon copy each
+      #    (--prefer-index=false), so every tag is the tested digest. stable
+      #    moves in the stable job after this one (issue #451).
+      - name: Tag the image
         id: tag
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
           RUN_NUMBER: ${{ github.run_number }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
-          MOVE_STABLE: ${{ needs.detect.outputs.stable }}
           MOVE_ORCA: ${{ needs.detect.outputs.orca }}
           RELEASE: ${{ needs.detect.outputs.release }}
         run: |
@@ -688,10 +690,6 @@ jobs:
             # leaving the first attempt's tag on the image it named.
             run_tag="orca-${VERSION}-r${RUN_NUMBER}"
             if [ "$RUN_ATTEMPT" -gt 1 ]; then run_tag="${run_tag}.${RUN_ATTEMPT}"; fi
-            if [ "$MOVE_STABLE" != "true" ] && [ "$MOVE_STABLE" != "false" ]; then
-              echo "::error::detect gave no stable decision ('${MOVE_STABLE}'); nothing is tagged"
-              exit 1
-            fi
             if [ "$MOVE_ORCA" != "true" ] && [ "$MOVE_ORCA" != "false" ]; then
               echo "::error::detect gave no orca decision ('${MOVE_ORCA}'); nothing is tagged"
               exit 1
@@ -730,20 +728,12 @@ jobs:
             }
             docker buildx imagetools create --prefer-index=false "${create_args[@]}" "$src"
             for name in "${names[@]}"; do readback "${IMAGE}:${name}"; done
-            if [ "$MOVE_STABLE" = "true" ]; then
-              tags="${tags}, stable"
-              echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
-              docker buildx imagetools create --prefer-index=false -t "${IMAGE}:stable" "$src"
-              readback "${IMAGE}:stable"
-            else
-              echo "A prerelease tag's run: stable is left where it was"
-            fi
             {
               echo "### Published ${IMAGE} for OrcaSlicer ${VERSION}"
               echo ""
               echo "- digest: \`${DIGEST}\`"
               echo "- tags: ${tags}"
-              if [ "$MOVE_STABLE" != "true" ]; then
+              if [ "$MOVE_ORCA" != "true" ]; then
                 echo "- orca-${VERSION} and stable not moved (prerelease tag). The next daily run builds orca-${VERSION} if it does not exist yet and moves both; a plain release tag or a run by hand moves them too."
               fi
             } >>"$GITHUB_STEP_SUMMARY"
@@ -783,7 +773,7 @@ jobs:
             login) name="Log in to GHCR" ;;
             push) name="Push by digest" ;;
             check) name="Check the pushed image is the one tested" ;;
-            tag) name="Tag the image and move stable" ;;
+            tag) name="Tag the image" ;;
             *) name="an unnamed step of the build job (checkout, setup or install)" ;;
           esac
           mkdir -p failure
@@ -802,17 +792,75 @@ jobs:
 
       - name: Upload the log tail
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: failure-build
           path: failure/build.txt
           if-no-files-found: ignore
           retention-days: 7
 
+  # Moves stable to the digest the build tested and tagged, in a short job of
+  # its own so the group that serialises it holds nothing else (issue #451).
+  # It runs only after a successful build, and only when detect said stable
+  # moves: not on a prerelease tag's run. A re-run of the failed job moves it
+  # again at the same digest.
+  stable:
+    name: Move stable
+    needs: [detect, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.detect.outputs.stable == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: slicer-image-stable
+      cancel-in-progress: false
+    # Read by the failure issue: the build's tags plus stable, set before the
+    # create, so a move that fails part way still names stable.
+    outputs:
+      tagged: ${{ steps.move.outputs.tagged }}
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        id: login
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move stable
+        id: move
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+          BUILD_TAGGED: ${{ needs.build.outputs.tagged }}
+        run: |
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::the build returned no digest (${DIGEST:-none}); stable is not moved"
+            exit 1
+          fi
+          src="${IMAGE}@${DIGEST}"
+          echo "tagged=${BUILD_TAGGED}, stable" >>"$GITHUB_OUTPUT"
+          docker buildx imagetools create --prefer-index=false -t "${IMAGE}:stable" "$src"
+          got="$(docker buildx imagetools inspect "${IMAGE}:stable" --format '{{.Manifest.Digest}}')"
+          if [ "$got" != "$DIGEST" ]; then
+            echo "::error::${IMAGE}:stable is ${got}, not ${DIGEST}"
+            exit 1
+          fi
+          echo "- stable now points at \`${DIGEST}\`" >>"$GITHUB_STEP_SUMMARY"
+          echo "stable now points at ${DIGEST}"
+
+  # Opens an issue when a job failed, and, on a push (a release tag), when one
+  # was cancelled: a tag run whose build or stable move was cancelled left the
+  # release without its slicer image and nothing else says so (issue #451).
+  # A run cancelled by hand reports too; the issue says which job.
   report-failure:
     name: Open an issue on failure
-    needs: [detect, build]
-    if: ${{ !cancelled() && (needs.detect.result == 'failure' || needs.build.result == 'failure') }}
+    needs: [detect, build, stable]
+    if: ${{ always() && (needs.detect.result == 'failure' || needs.build.result == 'failure' || needs.stable.result == 'failure' || (github.event_name == 'push' && (needs.detect.result == 'cancelled' || needs.build.result == 'cancelled' || needs.stable.result == 'cancelled'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -822,7 +870,7 @@ jobs:
       # says so and links the run.
       - name: Download the log tail
         continue-on-error: true
-        uses: actions/download-artifact@v8.0.2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: failure-*
           path: failure
@@ -837,7 +885,8 @@ jobs:
           VERSION: ${{ needs.detect.outputs.version }}
           INPUT_VERSION: ${{ inputs.orca_version }}
           EVENT: ${{ github.event_name }}
-          TAGGED: ${{ needs.build.outputs.tagged }}
+          TAGGED: ${{ needs.stable.outputs.tagged || needs.build.outputs.tagged }}
+          CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}
           DIGEST: ${{ needs.build.outputs.digest }}
           STABLE: ${{ needs.detect.outputs.stable }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -871,6 +920,10 @@ jobs:
               else
                 echo "stable was not touched and still points at the last image that passed."
               fi
+            fi
+            if [ "$CANCELLED" = "true" ]; then
+              echo ""
+              echo "A job of this run was cancelled, by a person or by GitHub, so the image for this version may be missing from the registry. Re-run the cancelled jobs from the run's page, or run the workflow again (Actions, slicer-image, Run workflow), before relying on this release's slicer image."
             fi
             echo ""
             echo "rc is not moved by this workflow: the rc-tag workflow points it at the newest version with both images published after every run of slicer-image or release, so rc fixes itself on the next successful run of either workflow, or when rc-tag is run by hand (Actions, rc-tag, Run workflow)."

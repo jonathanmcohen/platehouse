@@ -33,7 +33,10 @@ on:
       - "docs/**"
       - "apps/docs/**"
       - "apps/web/public/**"
+      - "package.json"
+      - "pnpm-workspace.yaml"
       - "pnpm-lock.yaml"
+      - ".node-version"
       - ".github/workflows/docs-pages.yml"
   workflow_dispatch:
 
@@ -63,19 +66,19 @@ jobs:
       pages: read
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
       - name: Configure Pages
         id: pages
-        uses: actions/configure-pages@v6.0.0
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       # Only the docs site and what it depends on, as in the ci docs job.
       - name: Install
         run: pnpm install --frozen-lockfile --filter @platehouse/docs
@@ -88,7 +91,7 @@ jobs:
           DOCS_BASE_PATH: ${{ steps.pages.outputs.base_path }}
         run: pnpm --filter @platehouse/docs run build
       - name: Upload the site
-        uses: actions/upload-pages-artifact@v5.0.0
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: apps/docs/build
 
@@ -107,4 +110,4 @@ jobs:
     steps:
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v5.0.1
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
