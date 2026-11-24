@@ -251,7 +251,7 @@ export interface FilamentCandidate {
 
 /**
  * Where a printer's default filament for a type comes from. The image's
- * manifest records it; it is not part of the Slicer HTTP contract v1.
+ * manifest records it; it is not part of the Slicer HTTP contract 2.
  */
 export const FILAMENT_SOURCES = ["bambu", "generic"] as const;
 export type FilamentSource = (typeof FILAMENT_SOURCES)[number];

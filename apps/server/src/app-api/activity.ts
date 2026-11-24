@@ -224,6 +224,11 @@ export interface ActivityView {
     busy: boolean | null;
     orca: string | null;
     openscad: string | null;
+    /** The slicer's sandbox; null when it did not answer. Its own detail is never sent. */
+    sandbox: "checking" | "on" | "off" | null;
+    sandboxReason: "old_kernel" | "check_failed" | null;
+    /** True when the sandbox is off and the slicer is set to run estimates and STEP previews without it. */
+    unsandboxed: boolean | null;
     /** The default printer (My printers), and its full name. */
     printerId: string;
     printerName: string;
@@ -763,6 +768,11 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
           busy: health?.busy ?? null,
           orca: health?.orca ?? null,
           openscad: health?.openscad ?? null,
+          sandbox: health?.sandbox.state ?? null,
+          sandboxReason: health?.sandbox.reason ?? null,
+          unsandboxed: health
+            ? health.sandbox.state === "off" && health.sandbox.allowUnsandboxed
+            : null,
           printerId: settings.printerId,
           printerName: printerName(settings.printerId, []),
         },

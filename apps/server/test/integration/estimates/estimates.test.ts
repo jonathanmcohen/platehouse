@@ -5,10 +5,11 @@
 // and a second printer change superseding the first). Files come in through
 // the real ingest queue into a migrated Postgres 17 and the S3 test server;
 // slices go to a slicer stub built on the slicer contract package
-// (test/support/slicer-stub.ts), so every answer it gives is one contract v1
+// (test/support/slicer-stub.ts), so every answer it gives is one contract 2
 // allows. pg-boss runs on the same database with the queue settings the app
 // uses, except that retries wait about a second instead of 10 s and more.
 // Every file is synthetic.
+import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { sql } from "kysely";
@@ -23,6 +24,8 @@ import {
   MAX_MY_PRINTERS,
   PrinterListRefused,
   PrintersChanged,
+  SANDBOX_OFF_CHECK_DETAIL,
+  SANDBOX_OFF_KERNEL_DETAIL,
   SLICE_PRIORITY,
   SLICER_DOWN_DETAIL,
   STORE_DOWN_DETAIL,
@@ -32,7 +35,12 @@ import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { MAINTENANCE_TASKS, QUEUE, startQueues } from "../../../src/jobs/queues.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
-import { type SlicerStub, STUB_PRINTERS, startSlicerStub } from "../../support/slicer-stub.js";
+import {
+  type SlicerStub,
+  STUB_PRINTERS,
+  sandboxOff,
+  startSlicerStub,
+} from "../../support/slicer-stub.js";
 import {
   build3mf,
   type IngestEnv,
@@ -189,6 +197,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   stub.onSlice(() => ({ kind: "ok" }));
+  stub.setSandbox({ state: "on", reason: null, detail: null, allowUnsandboxed: false });
   storeDown = false;
   storeBreaksMidRead = false;
   await drain();
@@ -641,6 +650,142 @@ describe("estimates", () => {
     await drain();
     expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
     expect(stub.calls.length - before).toBe(2);
+  });
+
+  test("a slice refused for the sandbox is recorded once with its own detail, and is estimated again only once the sandbox is on", async () => {
+    for (const [reason, detail] of [
+      ["old_kernel", SANDBOX_OFF_KERNEL_DETAIL],
+      ["check_failed", SANDBOX_OFF_CHECK_DETAIL],
+    ] as const) {
+      const before = stub.calls.length;
+      stub.onSlice(() => sandboxOff(reason));
+      stub.setSandbox({
+        state: "off",
+        reason,
+        detail: "the sandbox is off",
+        allowUnsandboxed: false,
+      });
+      const { plates } = await upload({ plates: 1 });
+      const id = plateId(plates, 1);
+      const [row] = await until(
+        () => platehouseRows(id),
+        (rows) => rows[0]?.status === "failed",
+      );
+      expect(row).toMatchObject({
+        failureCode: null,
+        failureReason: "slicer_error",
+        failureDetail: detail,
+      });
+      // No retry and no outage wait: the one request was refused and recorded.
+      expect(stub.calls.length - before).toBe(1);
+
+      // Off and not allowed: the poll queues nothing.
+      await estimates.pollOrca();
+      await drain();
+      expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "failed" })]);
+      expect(stub.calls.length - before).toBe(1);
+
+      // Still checking: nothing either.
+      stub.setSandbox({ state: "checking", reason: null, detail: null, allowUnsandboxed: false });
+      await estimates.pollOrca();
+      await drain();
+      expect(stub.calls.length - before).toBe(1);
+
+      // On: it is estimated again once, and a second poll queues none.
+      stub.onSlice(() => ({ kind: "ok" }));
+      stub.setSandbox({ state: "on", reason: null, detail: null, allowUnsandboxed: false });
+      await estimates.pollOrca();
+      await drain();
+      expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
+      expect(stub.calls.length - before).toBe(2);
+      await estimates.pollOrca();
+      await drain();
+      expect(stub.calls.length - before).toBe(2);
+    }
+  });
+
+  test("a sandbox that is off but allowed to run slices unsandboxed queues the refused estimates again", async () => {
+    const before = stub.calls.length;
+    stub.onSlice(() => sandboxOff("old_kernel"));
+    stub.setSandbox({ state: "off", reason: "old_kernel", detail: "old", allowUnsandboxed: false });
+    const { plates } = await upload({ plates: 1 });
+    const id = plateId(plates, 1);
+    await until(
+      () => platehouseRows(id),
+      (rows) => rows[0]?.status === "failed",
+    );
+    stub.onSlice(() => ({ kind: "ok" }));
+    stub.setSandbox({ state: "off", reason: "old_kernel", detail: "old", allowUnsandboxed: true });
+    await estimates.pollOrca();
+    await drain();
+    expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
+    expect(stub.calls.length - before).toBe(2);
+  });
+
+  test("the sandbox requeue takes only estimates of live models, so refused estimates in the trash never hold back a live one", async () => {
+    stub.onSlice(() => sandboxOff("old_kernel"));
+    stub.setSandbox({ state: "off", reason: "old_kernel", detail: "old", allowUnsandboxed: false });
+    // A model whose estimate the sandbox refused, moved to the trash, with
+    // 51 more refused estimates on plates of its file: more than one poll's
+    // batch of 50, and all older than the live estimate below.
+    const trashed = await upload({ plates: 1 });
+    const [dead] = await until(
+      () => platehouseRows(plateId(trashed.plates, 1)),
+      (rows) => rows[0]?.status === "failed",
+    );
+    if (dead === undefined) throw new Error("no estimate for the trashed model");
+    expect(dead.failureDetail).toBe(SANDBOX_OFF_KERNEL_DETAIL);
+    expect(await env.repos.models.trash(trashed.modelId)).toBe(true);
+    const deadPlates = Array.from({ length: 51 }, (_, i) => ({
+      id: randomUUID(),
+      fileId: trashed.fileId,
+      index: i + 2,
+      name: null,
+      objectCount: 1,
+      thumbnailBlobId: null,
+    }));
+    await env.db.insertInto("plates").values(deadPlates).execute();
+    await env.db
+      .insertInto("estimates")
+      .values(
+        deadPlates.map((plate) => ({
+          id: randomUUID(),
+          plateId: plate.id,
+          source: "platehouse" as const,
+          printerId: dead.printerId,
+          printerModelId: dead.printerModelId,
+          nozzle: dead.nozzle,
+          slicer: dead.slicer,
+          slicerVersion: dead.slicerVersion,
+          processProfile: null,
+          status: "failed" as const,
+          timeSeconds: null,
+          weightGrams: null,
+          failureCode: null,
+          failureReason: "slicer_error",
+          failureDetail: SANDBOX_OFF_KERNEL_DETAIL,
+          createdAt: sql<Date>`now() - interval '1 day'`,
+          finishedAt: new Date(),
+        })),
+      )
+      .execute();
+
+    const { plates } = await upload({ plates: 1 });
+    const id = plateId(plates, 1);
+    await until(
+      () => platehouseRows(id),
+      (rows) => rows[0]?.status === "failed",
+    );
+
+    stub.onSlice(() => ({ kind: "ok" }));
+    stub.setSandbox({ state: "on", reason: null, detail: null, allowUnsandboxed: false });
+    await estimates.pollOrca();
+    await drain();
+    expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
+    // The trashed model's estimates stay as they were.
+    expect(await platehouseRows(plateId(trashed.plates, 1))).toEqual([
+      expect.objectContaining({ status: "failed", failureDetail: SANDBOX_OFF_KERNEL_DETAIL }),
+    ]);
   });
 
   test("a store outage for longer than the retries last fails no plate", async () => {

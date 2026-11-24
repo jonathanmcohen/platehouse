@@ -46,6 +46,7 @@ import { pipeline } from "node:stream/promises";
 import { LIMITS } from "@platehouse/slicer-contract";
 import {
   AnswerTooLarge,
+  afterSentence,
   DERIVED_MESSAGES,
   postRender,
   RenderFailed,
@@ -61,12 +62,13 @@ const MIB = 1024 * 1024;
 
 /**
  * The largest stored mesh a STEP preview reads: 256 MiB, the contract's
- * stepOutputBytes, the largest GLB the slicer answers a conversion with.
- * A larger one can only be a mesh stored before that limit; refusing it
- * should turn away no preview that would have worked: the GLB the slicer
- * writes spends at most 48 bytes on a triangle (three float32 positions and
- * three uint32 indices) and the STL spends 50, so a mesh over 256 MiB would
- * make an STL over the renderer's 256 MiB limit.
+ * stepOutputBytes, the largest GLB the slicer answers a conversion with. The
+ * cap is there to protect the server's memory, since the mesh is read whole.
+ * A larger one can only be a mesh stored before that limit. A mesh that
+ * carries normals spends more bytes on a triangle than the 48 the slicer's
+ * own GLB does (three float32 positions and three uint32 indices), so one
+ * over the cap may be refused although its STL, at 50 bytes a triangle,
+ * would have fit the renderer's 256 MiB.
  */
 export const PREVIEW_MESH_MAX_BYTES = LIMITS.stepOutputBytes;
 
@@ -102,7 +104,7 @@ async function postPreview(
         error.message === SLICER_NOT_AN_STL || error instanceof AnswerTooLarge
           ? DERIVED_MESSAGES.previewFailed
           : DERIVED_MESSAGES.previewRejected;
-      throw new RenderFailed(`${lead} ${error.message}`);
+      throw new RenderFailed(afterSentence(lead, error.message));
     }
     throw error;
   }

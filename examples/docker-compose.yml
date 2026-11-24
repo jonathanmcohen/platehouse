@@ -109,6 +109,8 @@ services:
     environment:
       # The same per-plate time cap the app uses.
       SLICE_PLATE_SECONDS: ${SLICE_PLATE_SECONDS:-120}
+      # On a kernel older than Linux 6.12 the sandbox is off; "true" still lets slices and STEP previews run without it.
+      # SLICER_ALLOW_UNSANDBOXED: "false"
     read_only: true
     tmpfs:
       - /work:size=1g,mode=1777,noexec,nosuid,nodev

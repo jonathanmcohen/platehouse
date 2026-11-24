@@ -18,9 +18,10 @@ import {
   type DerivedJob,
   RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
+import { PREVIEW_RETRIED } from "../../../src/derived/picture.js";
 import { QUEUE } from "../../../src/jobs/queues.js";
 import { BlobNotFound } from "../../../src/storage/s3.js";
-import { renderedBytes } from "../../support/slicer-stub.js";
+import { renderedBytes, sandboxOff } from "../../support/slicer-stub.js";
 import {
   blobsOf,
   type DerivedEnv,
@@ -144,6 +145,25 @@ describe("STL previews (issue #316)", () => {
       previewMessage: `The preview picture could not be rendered. ${notAnStl}`,
       derivedStatus: null,
     });
+  });
+
+  test("a picture the sandbox refuses is recorded once with its reason and is not in the always-retried set", async () => {
+    env.stub.renders.always("/v1/stl/png", sandboxOff("old_kernel"));
+    const { modelId, fileId } = await uploadStl(uniqueStl("sandbox off"));
+    const file = await settledFile(env, fileId);
+    expect(file).toMatchObject({
+      previewStatus: "failed",
+      previewMessage: DERIVED_MESSAGES.sandboxOffKernel,
+      renderPngBlobId: null,
+    });
+    expect(PREVIEW_RETRIED).not.toContain(DERIVED_MESSAGES.sandboxOffKernel);
+    expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
+    // No wait and no retry: one call, one job, that ended failed.
+    expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(1);
+    const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.output).toMatchObject({ status: "failed", reason: "sandbox_off" });
+    expect(jobs[0]?.retryCount).toBe(0);
   });
 
   test("a slicer that stays busy through every retry ends with the slicer's message and no preview", async () => {

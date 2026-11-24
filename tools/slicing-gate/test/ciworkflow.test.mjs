@@ -2100,6 +2100,39 @@ test("slicer-image: build, smoke slice, login, push, check, then tag, in that or
   }
 });
 
+// New OrcaSlicer versions pass the whole container suite before anything is
+// published (issue #440): the smoke step stays as it is, and a step after it
+// fetches the STEP sample and runs every container test against the built image.
+test("slicer-image: the whole container suite runs on the built image before anything is pushed (issue #440)", () => {
+  const job = jobBlock(slicerText(), "build");
+  const steps = jobSteps(job);
+  const at = (name) => steps.findIndex((s) => s.startsWith(`      - name: ${name}\n`));
+  // Comment lines between steps belong to the step before; drop them.
+  const code = (b) => b.split("\n").filter((l) => !/^ {6}#/.test(l)).join("\n").trimEnd();
+  const fetchStep = code(stepBlock(job, "Fetch the STEP sample"));
+  const ciFetch = code(stepBlock(jobBlock(text(), "slicer-image"), "Fetch the STEP sample"));
+  assert.equal(fetchStep, ciFetch, "the STEP sample is fetched exactly as ci.yml does");
+  const suite = stepBlock(job, "Whole container suite");
+  assert.match(suite, /\n {10}SLICER_IMAGE: \$\{\{ env\.LOCAL \}\}\n/);
+  assert.match(suite, /\n {10}SLICER_IMAGE_PREBUILT: "1"\n/);
+  // The suite checks the image reports the Orca version this run built, not
+  // the Dockerfile's pin (apps/slicer/test/support/orca-version.ts).
+  assert.match(suite, /\n {10}EXPECTED_ORCA_VERSION: \$\{\{ needs\.detect\.outputs\.version \}\}\n/);
+  assert.match(suite, /vitest run --project container --reporter=default --reporter=json --outputFile=suite-report\.json/);
+  assert.doesNotMatch(suite, /vitest run --project container \S*\.test\.ts/, "no file filter");
+  assert.match(suite, /No tests ran \(vitest wrote no report\)/);
+  assert.match(suite, /if \[ "\$ran" -eq 0 \]/);
+  assert.doesNotMatch(suite, /\n {8}(if|continue-on-error):/);
+  assert.ok(at("Smoke slice") < at("Fetch the STEP sample"), "after the smoke slice");
+  assert.ok(at("Fetch the STEP sample") < at("Whole container suite"), "the sample is fetched first");
+  for (const later of [SLICER_TRIVY, "Log in to GHCR", "Push by digest", "Tag the image and move stable"]) {
+    assert.ok(at("Whole container suite") < at(later), `before ${later}`);
+  }
+  // The smoke step keeps force_fail.
+  assert.match(stepBlock(job, "Smoke slice"), /FORCE_FAIL: \$\{\{ inputs\.force_fail \}\}/);
+  assert.doesNotMatch(suite, /FORCE_FAIL/);
+});
+
 // The pushed-image check, as in release.yml: manifest digests from the digest
 // output of both builds, never imageid (PR #217).
 test("slicer-image: the push fails unless its manifest digest is the smoke-sliced build's", () => {

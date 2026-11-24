@@ -13,7 +13,13 @@ import {
   RENDER_TIMEOUT_MS,
   RENDER_UPLOAD_TIMEOUT_MS,
 } from "../../src/derived/client.js";
-import { DERIVED_KINDS, slicerSendOptions } from "../../src/derived/derived.js";
+import {
+  convertExpiryFor,
+  DERIVED_KINDS,
+  renderTarget,
+  slicerSendOptions,
+} from "../../src/derived/derived.js";
+import { defaultTimeouts } from "../../src/estimates/slicer-state.js";
 import { SLICER_RETRY } from "../../src/jobs/queues.js";
 
 describe("slicerSendOptions", () => {
@@ -50,4 +56,73 @@ describe("slicerSendOptions", () => {
       expect(sent).not.toHaveProperty("expireInSeconds");
     },
   );
+});
+
+describe("slicerSendOptions from the slicer's time limits", () => {
+  test("a STEP conversion expires at the limits' conversion expiry", () => {
+    expect(slicerSendOptions(DERIVED_KINDS.convertStep, {}, 1234)).toEqual({
+      expireInSeconds: 1234,
+    });
+  });
+
+  test("the fallback expiry is the default one, 1050 s", () => {
+    expect(CONVERT_EXPIRE_SECONDS).toBe(1050);
+  });
+});
+
+describe("renderTarget", () => {
+  const url = "http://slicer:8080";
+  const limits = { sliceSeconds: 180, scadSeconds: 600, stepSeconds: 300, uploadSeconds: 900 };
+
+  test("a render's answer timer is the slicer's scad limit plus 30 s", () => {
+    expect(renderTarget(url, DERIVED_KINDS.renderScad, limits)).toEqual({
+      baseUrl: url,
+      timeoutMs: 630_000,
+      uploadTimeoutMs: 900_000,
+    });
+  });
+
+  test("a STEP conversion's answer timer is the step limit plus 30 s", () => {
+    expect(renderTarget(url, DERIVED_KINDS.convertStep, limits).timeoutMs).toBe(330_000);
+  });
+
+  test("the defaults give the fallback timers", () => {
+    const target = renderTarget(url, DERIVED_KINDS.renderScad, defaultTimeouts(120));
+    expect(target.timeoutMs).toBe(RENDER_TIMEOUT_MS);
+    expect(target.uploadTimeoutMs).toBe(RENDER_UPLOAD_TIMEOUT_MS);
+  });
+
+  test("a timer the deps set is kept", () => {
+    expect(
+      renderTarget(url, DERIVED_KINDS.renderScad, limits, { timeoutMs: 5, uploadTimeoutMs: 6 }),
+    ).toEqual({ baseUrl: url, timeoutMs: 5, uploadTimeoutMs: 6 });
+  });
+});
+
+describe("convertExpiryFor", () => {
+  const limits = { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 300, uploadSeconds: 900 };
+
+  test("a STEP conversion's expiry follows the slicer's limits", async () => {
+    const state = { current: async () => ({ timeouts: limits, sandbox: null }) };
+    expect(await convertExpiryFor(DERIVED_KINDS.convertStep, state)).toBe(900 + 300 + 30 + 300);
+  });
+
+  test.each([DERIVED_KINDS.renderScad, DERIVED_KINDS.renderStl, DERIVED_KINDS.previewStep])(
+    "a %s send does not ask the slicer's health",
+    async (kind) => {
+      let asked = 0;
+      const state = {
+        current: async () => {
+          asked += 1;
+          return { timeouts: limits, sandbox: null };
+        },
+      };
+      expect(await convertExpiryFor(kind, state)).toBe(CONVERT_EXPIRE_SECONDS);
+      expect(asked).toBe(0);
+    },
+  );
+
+  test("without a state, the fallback expiry stands", async () => {
+    expect(await convertExpiryFor(DERIVED_KINDS.convertStep, undefined)).toBe(1050);
+  });
 });

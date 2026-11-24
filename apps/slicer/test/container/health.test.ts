@@ -3,6 +3,7 @@
 import { slicerContract } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { streamChunked } from "../support/http.js";
+import { expectedOrcaVersion } from "../support/orca-version.js";
 import { type RunningSlicer, startSlicer } from "./support/slicer.js";
 
 let slicer: RunningSlicer;
@@ -12,14 +13,19 @@ beforeAll(async () => {
 afterAll(() => slicer?.stop());
 
 describe("slicer image", () => {
-  test("health reports orca 2.5.0, OpenSCAD 2026.11-RC0, contract 1 and not busy", async () => {
+  // The Orca version is the one the image was built with: the Dockerfile's
+  // pin, or the release slicer-image.yml built (EXPECTED_ORCA_VERSION).
+  test("health reports the image's Orca version, OpenSCAD 2026.11-RC0, contract 2, the sandbox on and the time caps", async () => {
     const res = await fetch(`${slicer.base}/v1/health`);
     expect(res.status).toBe(200);
     expect(slicerContract.health.parse(await res.json())).toEqual({
-      contract: 1,
-      orca: "2.5.0",
+      contract: 2,
+      orca: expectedOrcaVersion(),
       openscad: "2026.11-RC0",
       busy: false,
+      // CI's kernel is new enough for the sandbox.
+      sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+      timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
     });
   });
 

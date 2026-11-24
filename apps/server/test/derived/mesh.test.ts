@@ -215,6 +215,41 @@ describe("stlFromGlb", () => {
         }),
     ],
     ["no meshes at all", () => glb([])],
+    [
+      "a null node",
+      () =>
+        glb([{ positions: QUAD, indices: [0, 1, 2] }], (json) => {
+          json.nodes = [null];
+        }),
+    ],
+    [
+      "a nodes list that is not a list",
+      () =>
+        glb([{ positions: QUAD, indices: [0, 1, 2] }], (json) => {
+          json.nodes = { mesh: 0 };
+        }),
+    ],
+    [
+      "a null mesh",
+      () =>
+        glb([{ positions: QUAD, indices: [0, 1, 2] }], (json) => {
+          json.meshes = [null];
+        }),
+    ],
+    [
+      "a mesh whose primitives are not a list",
+      () =>
+        glb([{ positions: QUAD, indices: [0, 1, 2] }], (json) => {
+          json.meshes = [{ primitives: 3 }];
+        }),
+    ],
+    [
+      "a null primitive",
+      () =>
+        glb([{ positions: QUAD, indices: [0, 1, 2] }], (json) => {
+          json.meshes = [{ primitives: [null] }];
+        }),
+    ],
   ];
 
   test.each(BROKEN)("refuses %s with MeshUnreadable", (_label, make) => {

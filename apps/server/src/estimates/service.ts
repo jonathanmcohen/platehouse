@@ -90,8 +90,8 @@ import {
   SlicerBusy,
   type SlicerClient,
   SlicerRefused,
+  SlicerSandboxOff,
   SlicerUnreachable,
-  sliceTimeoutMs,
 } from "./client.js";
 import {
   type DisplayContext,
@@ -104,6 +104,12 @@ import {
   profileSourceOf,
 } from "./display.js";
 import { RATE_SAMPLE, sliceRate } from "./rate.js";
+import {
+  defaultTimeouts,
+  estimateExpireSeconds,
+  SLICER_MARGIN_SECONDS,
+  type SlicerState,
+} from "./slicer-state.js";
 
 export const SLICE_JOB_KIND = "slice";
 
@@ -262,10 +268,12 @@ export interface EstimatesDeps {
   slicer: SlicerClient;
   store: Pick<BlobStore, "getBlobStream">;
   /**
-   * The client's slice timeout (sliceTimeoutMs(SLICE_PLATE_SECONDS)); a job
-   * may stay active this long plus a minute. 120 s plates when left out.
+   * The slicer's own limits, from its health answer: a job may stay active
+   * as long as its upload and slice limits allow (estimateExpireSeconds),
+   * and its slice request's timers follow them. The defaults for 120 s
+   * plates when left out.
    */
-  sliceTimeoutMs?: number;
+  slicerState?: SlicerState;
   jobOptions?: SliceJobOptions;
   /** SLICER_DOWN_WAIT when left out; the tests shorten it. */
   slicerDown?: SlicerDownWait;
@@ -387,6 +395,21 @@ export const STORE_DOWN_DETAIL = "The file could not be read from storage.";
 const DOWN_AFTER_LOST_DETAIL =
   "The slicer stopped during a slice of this plate and was not back in time.";
 
+/**
+ * The details of a plate the slicer refused because its sandbox is off. The
+ * Orca poll queues such a plate again once health says the sandbox is on, or
+ * the slicer may run unsandboxed. Kept out of OUTAGE_DETAILS: it is not an
+ * outage, and the poll waits on the sandbox, not on the slicer answering.
+ */
+export const SANDBOX_OFF_KERNEL_DETAIL =
+  "Estimates are off on this server: its kernel is older than Linux 6.12.";
+export const SANDBOX_OFF_CHECK_DETAIL =
+  "Estimates are off on this server: its sandbox check failed.";
+export const SANDBOX_OFF_DETAILS = [SANDBOX_OFF_KERNEL_DETAIL, SANDBOX_OFF_CHECK_DETAIL];
+
+/** The most sandbox-off estimates one poll queues again, so the shared slicer queue is not flooded. */
+const SANDBOX_REQUEUE_LIMIT = 50;
+
 /** The failure details the Orca poll queues again once the outage is over. */
 const OUTAGE_DETAILS = [SLICER_DOWN_DETAIL, STORE_DOWN_DETAIL];
 
@@ -498,7 +521,9 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   const slicerDown = deps.slicerDown ?? SLICER_DOWN_WAIT;
   const log = deps.log ?? ((line: string) => console.error(`estimates: ${line}`));
   const repos: Repos = createRepos(db);
-  const expireInSeconds = Math.ceil((deps.sliceTimeoutMs ?? sliceTimeoutMs(120)) / 1000) + 60;
+  const slicerState: SlicerState = deps.slicerState ?? {
+    current: async () => ({ timeouts: defaultTimeouts(120), sandbox: null }),
+  };
   // pg-boss takes retryDelayMax on a job only beside retryBackoff: true, so
   // an override of the delay restates the queue's backoff (SLICER_RETRY).
   const retryOverrides =
@@ -539,8 +564,9 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       printerId: estimate.printerId,
       ...(carried ?? {}),
     };
+    const { timeouts } = await slicerState.current();
     await boss.send(QUEUE.slicer, data, {
-      expireInSeconds,
+      expireInSeconds: estimateExpireSeconds(timeouts),
       priority,
       ...retryOverrides,
       ...(startAfterSeconds === undefined ? {} : { startAfter: startAfterSeconds }),
@@ -945,12 +971,17 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     const waitUntil = Date.now() + slicerDown.waitMs;
     for (;;) {
       try {
+        const { timeouts } = await slicerState.current();
         const body = await store.getBlobStream(target.key);
         const result = await slicer.slice({
           printerId: estimate.printerId,
           plate: target.index,
           body,
           size: target.size,
+          timeouts: {
+            uploadMs: timeouts.uploadSeconds * 1000,
+            answerMs: (timeouts.sliceSeconds + SLICER_MARGIN_SECONDS) * 1000,
+          },
         });
         if (result.status === "ok") {
           await recordOk(full, target.fileId, result);
@@ -959,6 +990,15 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         }
         return;
       } catch (error) {
+        if (error instanceof SlicerSandboxOff) {
+          await recordFailed(estimate.id, {
+            code: null,
+            reason: "slicer_error",
+            detail:
+              error.reason === "old_kernel" ? SANDBOX_OFF_KERNEL_DETAIL : SANDBOX_OFF_CHECK_DETAIL,
+          });
+          return;
+        }
         const outage = outageOf(error);
         if (outage !== null) {
           // The slicer never saw this plate, or its file could not be read
@@ -1129,6 +1169,47 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   }
 
   /**
+   * Queues again the estimates a sandbox that was off failed
+   * (SANDBOX_OFF_DETAILS, matched exactly) for My printers and this Orca
+   * version, at most SANDBOX_REQUEUE_LIMIT a poll. The poll calls it only
+   * when the sandbox is on, or off with the slicer allowed to run
+   * unsandboxed. Each goes through retryEstimate, which makes it pending
+   * first, so the next poll finds it no longer failed. Only estimates whose
+   * plate retryEstimate can still queue are read (its file's model neither
+   * in the trash nor being purged, as liveTarget joins it), so estimates
+   * left failed in the trash never fill the batch.
+   */
+  async function requeueSandboxOffFailures(orca: string): Promise<void> {
+    const { myPrinters } = await repos.settings.get();
+    const failed = await db
+      .selectFrom("estimates")
+      .innerJoin("plates", "plates.id", "estimates.plateId")
+      .innerJoin("files", "files.id", "plates.fileId")
+      .innerJoin("models", "models.id", "files.modelId")
+      .innerJoin("blobs", "blobs.id", "files.blobId")
+      .select("estimates.id")
+      .where("estimates.source", "=", "platehouse")
+      .where("estimates.status", "=", "failed")
+      .where("estimates.failureCode", "is", null)
+      .where("estimates.failureReason", "=", "slicer_error")
+      .where("estimates.failureDetail", "in", SANDBOX_OFF_DETAILS)
+      .where("estimates.printerId", "in", myPrinters)
+      .where("estimates.slicerVersion", "=", orca)
+      .where("models.trashedAt", "is", null)
+      .where("models.purgeStartedAt", "is", null)
+      .orderBy("estimates.createdAt")
+      .orderBy("estimates.id")
+      .limit(SANDBOX_REQUEUE_LIMIT)
+      .execute();
+    let queued = 0;
+    for (const row of failed) {
+      if (await retryEstimate(row.id, SLICE_PRIORITY.library)) queued += 1;
+    }
+    if (queued > 0)
+      log(`queued ${queued} estimate(s) again that a sandbox that was off had failed`);
+  }
+
+  /**
    * Every slice job waiting in the queue (created, or waiting for a retry),
    * read a page at a time. Only queued jobs are read, so the finished jobs
    * pg-boss keeps never crowd out a live one.
@@ -1253,7 +1334,8 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   }
 
   async function pollOrca(): Promise<{ orca: string; changed: boolean }> {
-    const { orca } = await slicer.health();
+    const health = await slicer.health();
+    const { orca } = health;
     const stored = (await repos.settings.get()).lastOrcaVersion;
     const changed = orca !== stored;
     if (profilesCache !== null && profilesCache.orca !== orca) profilesCache = null;
@@ -1263,6 +1345,10 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     }
     await recoverLost();
     await requeueOutageFailures(orca);
+    const { sandbox } = health;
+    if (sandbox.state === "on" || (sandbox.state === "off" && sandbox.allowUnsandboxed)) {
+      await requeueSandboxOffFailures(orca);
+    }
     await reestimateAll(changed ? "orca" : "poll");
     return { orca, changed };
   }

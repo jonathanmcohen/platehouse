@@ -19,8 +19,10 @@
 //   against a scripted database built as the server builds its own
 //   (CamelCasePlugin), which answers the settings row and the failed file
 //   and no rows for every other read. Every id here is made up for the test.
+
 import { spawnSync } from "node:child_process";
 import { basename, sep } from "node:path";
+import type { Health } from "@platehouse/slicer-contract";
 
 // Every read made through a file handle opened on a reason file, as
 // [path, bytes asked for], so a test can show how much of the file was read.
@@ -954,5 +956,97 @@ describe("a description re-conversion on the Activity page", () => {
         unreadable: 1,
       },
     ]);
+  });
+
+  describe("the slicer's sandbox on the Activity page", () => {
+    type Sandbox = Health["sandbox"];
+
+    async function slicerBlock(health: Health | null) {
+      const view = await createAppActivity({
+        db: scriptedDb(),
+        boss: { getSchedules: async () => [] },
+        slicer: {
+          health: async () => {
+            if (health === null) throw new Error("no slicer in this test");
+            return health;
+          },
+        },
+        now: () => new Date("2026-11-21T12:00:00Z"),
+      }).read();
+      return view.slicer;
+    }
+
+    function healthWith(sandbox: Sandbox): Health {
+      return {
+        contract: 2,
+        orca: "2.5.0",
+        openscad: "2026.10.01",
+        busy: false,
+        sandbox,
+        timeouts: { sliceSeconds: 600, scadSeconds: 60, stepSeconds: 60, uploadSeconds: 300 },
+      };
+    }
+
+    test("is on", async () => {
+      const slicer = await slicerBlock(
+        healthWith({ state: "on", reason: null, detail: null, allowUnsandboxed: false }),
+      );
+      expect(slicer).toMatchObject({ sandbox: "on", sandboxReason: null, unsandboxed: false });
+    });
+
+    test("is being checked", async () => {
+      const slicer = await slicerBlock(
+        healthWith({ state: "checking", reason: null, detail: null, allowUnsandboxed: true }),
+      );
+      expect(slicer).toMatchObject({
+        sandbox: "checking",
+        sandboxReason: null,
+        unsandboxed: false,
+      });
+    });
+
+    test("is off with an old kernel, and not allowed to run without it", async () => {
+      const slicer = await slicerBlock(
+        healthWith({ state: "off", reason: "old_kernel", detail: "x", allowUnsandboxed: false }),
+      );
+      expect(slicer).toMatchObject({
+        sandbox: "off",
+        sandboxReason: "old_kernel",
+        unsandboxed: false,
+      });
+    });
+
+    test("is off with a failed check, and allowed to run without it", async () => {
+      const slicer = await slicerBlock(
+        healthWith({ state: "off", reason: "check_failed", detail: "x", allowUnsandboxed: true }),
+      );
+      expect(slicer).toMatchObject({
+        sandbox: "off",
+        sandboxReason: "check_failed",
+        unsandboxed: true,
+      });
+    });
+
+    test("never carries the slicer's own detail", async () => {
+      const slicer = await slicerBlock(
+        healthWith({
+          state: "off",
+          reason: "check_failed",
+          detail: "SECRET-DETAIL",
+          allowUnsandboxed: true,
+        }),
+      );
+      expect(JSON.stringify(slicer)).not.toContain("SECRET-DETAIL");
+    });
+
+    test("is null throughout when the slicer does not answer", async () => {
+      const slicer = await slicerBlock(null);
+      expect(slicer).toMatchObject({
+        reachable: false,
+        sandbox: null,
+        sandboxReason: null,
+        unsandboxed: null,
+      });
+    });
   });
 });

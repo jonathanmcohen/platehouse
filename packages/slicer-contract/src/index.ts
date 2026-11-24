@@ -1,4 +1,4 @@
-// Slicer HTTP contract v1: the zod schemas the slicer
+// Slicer HTTP contract v2: the zod schemas the slicer
 // server answers with and the app's slicer client (apps/server/src/estimates/client.ts) reads with. The
 // slicer is on the internal network only, has no auth and holds no secrets.
 //
@@ -6,12 +6,26 @@
 //   GET  /v1/profiles                       -> profiles
 //   POST /v1/slice?printer=<id>&plate=<n>   -> sliceResult | 400 bad_request | 409 busy
 //                                              | 413 too_large | 422 not_3mf
+//                                              | 503 sandboxOff
 //   POST /v1/scad/stl, /v1/scad/png         -> model/stl, image/png | 409 busy | 413 too_large
-//                                              | 422 renderError
+//                                              | 422 renderError | 503 sandboxOff
 //   POST /v1/step/glb                       -> model/gltf-binary | 409 busy | 413 too_large
-//                                              | 422 convertError
+//                                              | 422 convertError | 503 sandboxOff
 //   POST /v1/stl/png                        -> image/png | 409 busy | 413 too_large
-//                                              | 422 renderError
+//                                              | 422 renderError | 503 sandboxOff
+//
+// 503 sandboxOff (contract 2) says the slicer's sandbox is off, so the route
+// did not run: the answer is about the slicer, never about the file, and the
+// same file may be sent again once health reports the sandbox on. "reason"
+// is old_kernel when the kernel's Landlock ABI is below what the sandbox
+// needs and check_failed for any other failure of the slicer's own check.
+// The slicer runs that check at start-up, holding the heavy-job lock (so
+// health.busy is true and a job is 409 busy while it runs), and runs it again
+// after a check_failed, never after an old_kernel. health.sandbox reports
+// where it stands. With SLICER_ALLOW_UNSANDBOXED set, a slice or a STEP
+// conversion runs without the sandbox instead of answering 503; a render or
+// an STL picture never does. health.timeouts are the time caps, in whole
+// seconds, so a caller can size its own timers from them.
 //
 // POST /v1/stl/png (issue #316) renders a preview picture of an STL, binary
 // or ASCII, sent as application/octet-stream: the same OpenSCAD, sandbox,
@@ -21,15 +35,17 @@
 // draw an empty picture of it); one OpenSCAD cannot read is 422 renderError
 // with OpenSCAD's own message.
 //
-// Versioning. CONTRACT_VERSION is the number /v1/health reports. It stays 1
-// while the contract only grows in ways an app built for an older v1 never
-// sees: a new route, or a new limit for a new route. Anything that changes
-// what an existing route takes or answers, or removes one, is a new number,
-// and the schemas below then refuse the old one (health takes only its own
-// number). /v1/stl/png was added that way, so contract 1 still describes a
-// slicer without it: an app that calls it on an older slicer image gets 404
-// not_found, which the app treats as a slicer that cannot render yet, not as
-// a fault of the file.
+// Versioning. CONTRACT_VERSION is the number /v1/health reports. It stays
+// the same while the contract only grows in ways an app built for that
+// number never sees: a new route, or a new limit for a new route. Anything
+// that changes what an existing route takes or answers, or removes one, is a
+// new number, and the schemas below then refuse the old one (health takes
+// only its own number). Contract 2 added the 503 sandboxOff answer and the
+// sandbox and timeouts parts of health: an app built for it refuses a
+// contract 1 health, and an older app refuses this one. /v1/stl/png was
+// added without a new number, so an app that calls it on a slicer image
+// without it gets 404 not_found, which the app treats as a slicer that
+// cannot render yet, not as a fault of the file.
 //
 // 413 too_large comes before the body is read when its Content-Length is
 // over the route's limit (LIMITS), and as soon as it passes the limit when
@@ -57,11 +73,11 @@
 // naming the printer; a printer and type with neither is not listed, and a
 // slice keeps the file's own filament there. A slice reports the preset used
 // for each project slot in filamentProfiles (null where the file's own was
-// kept). The filament entries carry only the fields contract v1
-// names: where a preset came from is not part of contract v1.
+// kept). The filament entries carry only the fields contract 2
+// names: where a preset came from is not part of contract 2.
 import { z } from "zod";
 
-export const CONTRACT_VERSION = 1;
+export const CONTRACT_VERSION = 2;
 
 export const LIMITS = Object.freeze({
   /** Largest .3mf POST /v1/slice takes (512 MiB). */
@@ -118,11 +134,47 @@ export type Reason = z.infer<typeof reason>;
 
 const contract = z.literal(CONTRACT_VERSION);
 
+/** Why the sandbox is off; see the 503 sandboxOff note at the top. */
+export const SANDBOX_OFF_REASONS = ["old_kernel", "check_failed"] as const;
+const sandboxOffReason = z.enum(SANDBOX_OFF_REASONS);
+
+/** SLICER_ALLOW_UNSANDBOXED: a slice or STEP conversion may run unsandboxed. */
+const allowUnsandboxed = z.boolean();
+
+const wholeSeconds = z.number().int().positive();
+
 export const health = z.strictObject({
   contract,
   orca: z.string().min(1),
   openscad: z.string().min(1),
   busy: z.boolean(),
+  sandbox: z.discriminatedUnion("state", [
+    z.strictObject({
+      state: z.literal("checking"),
+      reason: z.null(),
+      detail: z.null(),
+      allowUnsandboxed,
+    }),
+    z.strictObject({
+      state: z.literal("on"),
+      reason: z.null(),
+      detail: z.null(),
+      allowUnsandboxed,
+    }),
+    z.strictObject({
+      state: z.literal("off"),
+      reason: sandboxOffReason,
+      detail: z.string().min(1),
+      allowUnsandboxed,
+    }),
+  ]),
+  timeouts: z.strictObject({
+    sliceSeconds: wholeSeconds,
+    scadSeconds: wholeSeconds,
+    stepSeconds: wholeSeconds,
+    /** The time the slicer allows a body to arrive (its request timeout, less the caps). */
+    uploadSeconds: wholeSeconds,
+  }),
 });
 
 export const printer = z.strictObject({
@@ -209,6 +261,13 @@ export const convertError = z.strictObject({
   message: z.string(),
 });
 
+/** 503: the sandbox is off, so the route did not run. */
+export const sandboxOff = z.strictObject({
+  error: z.literal("sandbox_off"),
+  reason: sandboxOffReason,
+  detail: z.string(),
+});
+
 export const slicerContract = Object.freeze({
   health,
   profiles,
@@ -217,9 +276,13 @@ export const slicerContract = Object.freeze({
   error,
   renderError,
   convertError,
+  sandboxOff,
 });
 
 export type Health = z.infer<typeof health>;
+export type SandboxState = Health["sandbox"];
+export type SlicerTimeouts = Health["timeouts"];
+export type SandboxOffBody = z.infer<typeof sandboxOff>;
 export type Printer = z.infer<typeof printer>;
 export type FilamentProfile = z.infer<typeof filamentProfile>;
 export type Profiles = z.infer<typeof profiles>;

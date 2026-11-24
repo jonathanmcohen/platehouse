@@ -35,7 +35,7 @@ import {
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
 import { memoryGate } from "../../../src/memory/gate.js";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../../../src/storage/s3.js";
-import { renderedBytes } from "../../support/slicer-stub.js";
+import { renderedBytes, sandboxOff } from "../../support/slicer-stub.js";
 import {
   blobsOf,
   type DerivedEnv,
@@ -175,6 +175,39 @@ describe("STEP meshes", () => {
     expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(0);
   });
 
+  test("a conversion the sandbox refuses is recorded once with its reason: no wait, no retry, no picture", async () => {
+    env.stub.renders.always("/v1/step/glb", sandboxOff("check_failed"));
+    const { modelId, fileId } = await uploadStep(uniqueStep("sandbox off"));
+    const file = await settledFile(env, fileId);
+    expect(file).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.convertSandboxOffCheck,
+      meshBlobId: null,
+      previewStatus: null,
+    });
+    expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
+    expect(env.stub.renders.callsTo("/v1/step/glb")).toHaveLength(1);
+    const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.output).toMatchObject({ status: "failed", reason: "sandbox_off" });
+    expect(jobs[0]?.retryCount).toBe(0);
+  });
+
+  test("a preview the sandbox refuses keeps the mesh and says the picture is off", async () => {
+    env.stub.renders.always("/v1/stl/png", sandboxOff("old_kernel"));
+    const { fileId } = await uploadStep(uniqueStep("preview sandbox off"));
+    const file = await settledFile(env, fileId);
+    expect(file).toMatchObject({
+      derivedStatus: "ok",
+      derivedMessage: null,
+      previewStatus: "failed",
+      previewMessage: DERIVED_MESSAGES.sandboxOffKernel,
+      renderPngBlobId: null,
+    });
+    expect(file.meshBlobId).not.toBeNull();
+    expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(1);
+  });
+
   test("replacing a .step converts the new file and removes the old mesh, preview and source", async () => {
     const { modelId, fileId } = await uploadStep(uniqueStep("old"));
     const before = await settledFile(env, fileId);
@@ -248,6 +281,29 @@ describe("STEP meshes", () => {
     expect(await keysOf(env, modelId)).toEqual(blobs.map((b) => b.key).sort());
     // Nothing tries to preview the earlier version's mesh.
     expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(0);
+  });
+
+  // The slicer starts the converter's own words with "The converter said: ",
+  // which the previous-mesh sentence already ends with: it is said once.
+  test("a rejected replacement's message names the converter once after the previous-mesh sentence", async () => {
+    const { fileId } = await uploadStep(uniqueStep("lead-in, before"));
+    const before = await settledFile(env, fileId);
+    expect(before.meshBlobId).not.toBeNull();
+    env.stub.renders.reset();
+
+    env.stub.renders.queue("/v1/step/glb", {
+      kind: "failed",
+      message: "The converter said: STEP import failed: no shapes found",
+    });
+    await env.derived.replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStep("lead-in, replacement")),
+    );
+    expect(await settledFile(env, fileId)).toMatchObject({
+      meshBlobId: before.meshBlobId,
+      derivedStatus: "failed",
+      derivedMessage: `${PREVIOUS_MESH} STEP import failed: no shapes found`,
+    });
   });
 
   test("a replacement the converter rejects, staged before the original's first mesh finished, still says the mesh is the previous version's", async () => {

@@ -46,4 +46,28 @@ describe("slicing in the image", () => {
       expect(body.peakRssBytes).toBeGreaterThan(0);
     },
   );
+
+  // Orca's own refusal, which pins a known return code and its mapping, so a
+  // renumbered code fails here (#440). The slab is flat on purpose (300 x 300
+  // x 10 mm, well under the print height), so the bed is the only thing it
+  // does not fit. OrcaSlicer's command line answers -50 ("the plate has
+  // nothing to slice") for it, not -52 ("objects partly outside the bed"):
+  // CI run 45323577150. reasons.ts maps -50 to slicer_error with Orca's
+  // message (the maintainer's decision, 2026-11-08).
+  test("an object larger than the bed is refused with Orca's code -50, as slicer_error", async () => {
+    const tooBig = buildSliceable({ plates: 1, filaments: 1, footprint: 300, height: 10 });
+    const res = await fetch(
+      `${slicer.base}/v1/slice?printer=${encodeURIComponent(PRINTERS[0]?.printer ?? "")}&plate=1`,
+      { method: "POST", headers: { "content-type": "application/octet-stream" }, body: tooBig },
+    );
+    expect(res.status).toBe(200);
+    const body = slicerContract.sliceResult.parse(await res.json());
+    expect(body.status).toBe("failed");
+    if (body.status !== "failed") return;
+    expect(body.code).toBe(-50);
+    expect(body.reason).toBe("slicer_error");
+    // Orca's own sentence: "The plate has nothing to slice: it is empty, or no
+    // object on it is both printable and fully inside the print volume."
+    expect(body.detail).toMatch(/^The plate has nothing to slice\b/);
+  });
 });

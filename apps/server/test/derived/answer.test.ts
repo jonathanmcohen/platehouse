@@ -15,14 +15,18 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import {
   ANSWER_LIMITS,
   AnswerTooLarge,
+  DERIVED_MESSAGES,
   ERROR_ANSWER_MAX_BYTES,
   isRetryable,
   postRender,
   RenderFailed,
   type RenderRequest,
+  SandboxOff,
+  SlicerDown,
   SlicerFault,
   type SlicerTarget,
   SlicerUnreachable,
+  sandboxMessage,
   TempFileError,
 } from "../../src/derived/client.js";
 
@@ -109,6 +113,16 @@ function request(path: string, maxBytes: number): RenderRequest {
     tooLarge: "too large",
     answer: { path, maxBytes },
   };
+}
+
+/** Closes the current slicer, for a test that starts several. */
+async function afterEachClose(): Promise<void> {
+  const s = server;
+  server = undefined;
+  if (s) {
+    s.closeAllConnections();
+    await new Promise<void>((resolve) => s.close(() => resolve()));
+  }
 }
 
 const failure = (p: Promise<unknown>): Promise<unknown> =>
@@ -286,5 +300,76 @@ describe("the answer caps", () => {
     });
     expect(LIMITS.renderOutputBytes).toBe(256 * MiB);
     expect(LIMITS.stepOutputBytes).toBe(256 * MiB);
+  });
+});
+
+describe("a slicer whose sandbox is off", () => {
+  const sandboxOffBody = (reason: string) =>
+    JSON.stringify({ error: "sandbox_off", reason, detail: "the sandbox check said so" });
+
+  test("a 503 sandbox_off is SandboxOff with its reason, not retried and not an outage", async () => {
+    for (const reason of ["old_kernel", "check_failed"] as const) {
+      const { target } = await slicer((res) => {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(sandboxOffBody(reason));
+      });
+      const error = await failure(postRender(target, request(join(dir, "off.glb"), MiB)));
+      expect(error).toBeInstanceOf(SandboxOff);
+      expect((error as SandboxOff).reason).toBe(reason);
+      expect(error).not.toBeInstanceOf(SlicerDown);
+      expect(isRetryable(error)).toBe(false);
+      expect(existsSync(join(dir, "off.glb"))).toBe(false);
+      await afterEachClose();
+    }
+  });
+
+  test("a 503 outside the contract is a SlicerFault", async () => {
+    for (const body of ["gone", JSON.stringify({ error: "sandbox_off", reason: "other" })]) {
+      const { target } = await slicer((res) => {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(body);
+      });
+      const error = await failure(postRender(target, request(join(dir, "odd.glb"), MiB)));
+      expect(error).toBeInstanceOf(SlicerFault);
+      await afterEachClose();
+    }
+  });
+
+  test("a 422 render_failed is always RenderFailed, whatever its message", async () => {
+    const message = "OpenSCAD renders are off: the sandbox self-test failed.";
+    const { target } = await slicer((res) => {
+      res.writeHead(422, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "render_failed", message }));
+    });
+    const error = await failure(
+      postRender(target, { ...request(join(dir, "old.png"), MiB), refusal: "render" }),
+    );
+    expect(error).toBeInstanceOf(RenderFailed);
+    expect(error).not.toBeInstanceOf(SlicerDown);
+    expect((error as Error).message).toBe(message);
+  });
+
+  test("sandboxMessage picks the picture and render sentence, or the STEP preview one", () => {
+    for (const kind of ["scad", "stl", "preview"] as const) {
+      expect(sandboxMessage(kind, "old_kernel")).toBe(DERIVED_MESSAGES.sandboxOffKernel);
+      expect(sandboxMessage(kind, "check_failed")).toBe(DERIVED_MESSAGES.sandboxOffCheck);
+    }
+    expect(sandboxMessage("step", "old_kernel")).toBe(DERIVED_MESSAGES.convertSandboxOffKernel);
+    expect(sandboxMessage("step", "check_failed")).toBe(DERIVED_MESSAGES.convertSandboxOffCheck);
+  });
+
+  test("the four sentences are the ones users read", () => {
+    expect(DERIVED_MESSAGES.sandboxOffKernel).toBe(
+      "Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12.",
+    );
+    expect(DERIVED_MESSAGES.sandboxOffCheck).toBe(
+      "Pictures and OpenSCAD renders are off on this server: its sandbox check failed.",
+    );
+    expect(DERIVED_MESSAGES.convertSandboxOffKernel).toBe(
+      "STEP previews are off on this server: its kernel is older than Linux 6.12.",
+    );
+    expect(DERIVED_MESSAGES.convertSandboxOffCheck).toBe(
+      "STEP previews are off on this server: its sandbox check failed.",
+    );
   });
 });

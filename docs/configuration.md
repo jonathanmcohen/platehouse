@@ -76,18 +76,27 @@ time: the trash purge at 03:30 and the cleanup of stray bucket objects at 04:00.
 The slicer image sets its own defaults, and the only variable you normally set is
 `SLICE_PLATE_SECONDS`. The rest are listed for completeness.
 
-| Variable                           | Required         | Default                    | What it does                                                                                            |
-| ---------------------------------- | ---------------- | -------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `SLICE_PLATE_SECONDS`              | No               | `120`                      | The time cap for one plate. Set it to the app's value.                                                  |
-| `SLICE_TIMEOUT_SECONDS`            | No               | `SLICE_PLATE_SECONDS` + 60 | When the slicer kills a plate's slice outright.                                                         |
-| `SCAD_TIMEOUT_SECONDS`             | No               | `120`                      | The time cap for one OpenSCAD render.                                                                   |
-| `STEP_TIMEOUT_SECONDS`             | No               | `120`                      | The time cap for one STEP conversion.                                                                   |
-| `WORK_MIN_FREE_MIB`                | No               | `640`                      | The slicer reports itself unhealthy, while idle, when its `/work` folder has less free space than this. |
-| `PORT`                             | No               | `8080`                     | The slicer's port inside its network.                                                                   |
-| `ORCA_VERSION`, `OPENSCAD_VERSION` | Set by the image | -                          | The versions built into the image. Do not change them.                                                  |
+The app follows the slicer's three time settings (`SLICE_TIMEOUT_SECONDS`, `SCAD_TIMEOUT_SECONDS`
+and `STEP_TIMEOUT_SECONDS`) on its own: it reads them from the slicer's health answer, so only the
+slicer needs them. `SLICE_PLATE_SECONDS` still goes to both, because the app uses it until the
+slicer has answered.
 
-The image also sets the paths of the programs it runs (`WORK_DIR`, `PROFILES_DIR`, `ORCA_BIN`,
-`OPENSCAD_BIN` and others). Leave them as they are.
+| Variable                           | Required         | Default                    | What it does                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------- | ---------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SLICE_PLATE_SECONDS`              | No               | `120`                      | The time cap for one plate. Set it to the app's value.                                                                                                                                                                                                                                                                                   |
+| `SLICE_TIMEOUT_SECONDS`            | No               | `SLICE_PLATE_SECONDS` + 60 | When the slicer kills a plate's slice outright.                                                                                                                                                                                                                                                                                          |
+| `SCAD_TIMEOUT_SECONDS`             | No               | `120`                      | The time cap for one OpenSCAD render.                                                                                                                                                                                                                                                                                                    |
+| `STEP_TIMEOUT_SECONDS`             | No               | `120`                      | The time cap for one STEP conversion.                                                                                                                                                                                                                                                                                                    |
+| `WORK_MIN_FREE_MIB`                | No               | `640`                      | The slicer reports itself unhealthy, while idle, when its `/work` folder has less free space than this.                                                                                                                                                                                                                                  |
+| `SLICER_ALLOW_UNSANDBOXED`         | No               | `false`                    | `true` or `false`. When the slicer finds its sandbox off, because the kernel is older than Linux 6.12 or its start-up check failed, it refuses every request that needs the sandbox and says so. Set to `true`, it still slices and converts STEP files without the sandbox; OpenSCAD renders and STL pictures are never run without it. |
+| `PORT`                             | No               | `8080`                     | The slicer's port inside its network.                                                                                                                                                                                                                                                                                                    |
+| `ORCA_VERSION`, `OPENSCAD_VERSION` | Set by the image | -                          | The versions built into the image. Do not change them.                                                                                                                                                                                                                                                                                   |
+
+The image also sets the paths of the programs it runs and the folders its sandbox lets them use
+(`WORK_DIR`, `PROFILES_DIR`, `ORCA_BIN`, `ORCA_DIR`, `APP_DIR`, `OPENSCAD_BIN`, `OPENSCAD_DIR` and
+others). Leave them as they are: the slicer refuses to start when one of those folders is a
+system folder such as `/usr`, sits under or around `WORK_DIR`, or when `ORCA_BIN` is not inside
+`ORCA_DIR`.
 
 ## Fixed limits
 

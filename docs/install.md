@@ -11,9 +11,13 @@ This page walks through a first install with the example files in the repository
 - **CPU and memory.** The example gives the slicer 4 CPUs and 4 GiB, and the app 2 CPUs and
   2 GiB, plus whatever Postgres needs. The heaviest plate measured so far used about 2.5 GiB of
   memory while slicing.
-- **A Linux kernel with Landlock ABI 6 or newer** (Linux 6.12 or newer) if you want
-  OpenSCAD renders. The slicer checks its sandbox before the first render and refuses renders
-  when the kernel is too old. Slicing and STEP files work either way.
+- **A Linux kernel with Landlock ABI 6 or newer** (Linux 6.12 or newer). Pictures of STL and
+  STEP files, OpenSCAD renders, STEP previews and estimates all run inside the slicer's sandbox,
+  which needs it. The slicer checks the sandbox when it starts and refuses that work when the kernel is too
+  old; the files then keep their icon, and say why. Setting `SLICER_ALLOW_UNSANDBOXED=true` on the
+  slicer lets estimates and STEP previews run without the sandbox on an older kernel. It never
+  covers pictures or OpenSCAD renders, which need the sandbox. When the kernel is upgraded and
+  the slicer restarts, the files it refused are picked up again by themselves.
 - **An S3-compatible bucket** with an access key that can read, write and delete in it. See
   [Storage](./storage.md).
 - **An OpenID Connect provider** with a client for Platehouse and a group for the people who
@@ -141,5 +145,8 @@ You can run Platehouse any way you run containers, as long as:
 - the slicer can be reached by the app and cannot reach the internet;
 - the slicer keeps the locked-down settings from the example (read-only root, the `/work`
   tmpfs, no capabilities, its own user);
+- the slicer image's own entrypoint is PID 1: do not add an init in front of it (`init: true` in
+  Compose, `--init` with `docker run`), which turns off its clean-up of processes a job left
+  behind;
 - the app can reach Postgres, the bucket and your identity provider;
 - the reverse proxy follows the requirements in [Reverse proxy](./reverse-proxy/index.md).

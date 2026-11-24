@@ -6,6 +6,7 @@ import { DERIVED_MESSAGES } from "../../src/derived/client.js";
 import {
   isPictureShown,
   PREVIEW_RETRIED,
+  PREVIEW_SANDBOX_OFF,
   type PreviewFacts,
   previewState,
 } from "../../src/derived/picture.js";
@@ -121,6 +122,26 @@ describe("a temp file problem (issue #415)", () => {
   test("is not the render check's sentence, which the backfill leaves alone", () => {
     expect(DERIVED_MESSAGES.previewTempFailed).not.toBe(DERIVED_MESSAGES.renderLost);
     expect(PREVIEW_RETRIED).not.toContain(DERIVED_MESSAGES.renderLost);
+  });
+});
+
+describe("a picture refused because the slicer's sandbox is off", () => {
+  test("has its two sentences, which are not in the always-retried set", () => {
+    expect(PREVIEW_SANDBOX_OFF).toEqual([
+      DERIVED_MESSAGES.sandboxOffKernel,
+      DERIVED_MESSAGES.sandboxOffCheck,
+    ]);
+    for (const message of PREVIEW_SANDBOX_OFF) expect(PREVIEW_RETRIED).not.toContain(message);
+  });
+
+  test("is failed with that reason", () => {
+    expect(
+      previewState({
+        ...none,
+        failureSourceBlobId: CURRENT,
+        failureMessage: DERIVED_MESSAGES.sandboxOffKernel,
+      }),
+    ).toEqual({ status: "failed", message: DERIVED_MESSAGES.sandboxOffKernel });
   });
 });
 

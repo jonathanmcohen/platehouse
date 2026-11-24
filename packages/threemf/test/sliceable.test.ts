@@ -113,6 +113,29 @@ describe("buildSliceable", () => {
     expect(extruders).toEqual(["1", "2", "1", "2"]);
   });
 
+  test("footprint and height size each object, and the default stays a 20 mm cube", () => {
+    const extent = (model: string, axis: "x" | "z") => {
+      const re = new RegExp(`<vertex[^>]* ${axis}="([\\d.]+)"`, "g");
+      return Math.max(...[...model.matchAll(re)].map((m) => Number(m[1])));
+    };
+    const entry = (o: object) =>
+      sliceableEntries({ plates: 1, filaments: 1, ...o }).get("3D/3dmodel.model") ?? "";
+    const small = entry({});
+    expect([extent(small, "x"), extent(small, "z")]).toEqual([20, 20]);
+    const slab = entry({ footprint: 300, height: 10 });
+    expect([extent(slab, "x"), extent(slab, "z")]).toEqual([300, 10]);
+    const bigger = entry({ cubeSize: 30 });
+    expect([extent(bigger, "x"), extent(bigger, "z")]).toEqual([30, 30]);
+  });
+
+  test("a size that is not a positive number is refused", () => {
+    expect(() => buildSliceable({ plates: 1, filaments: 1, cubeSize: 0 })).toThrow(/cubeSize/);
+    expect(() => buildSliceable({ plates: 1, filaments: 1, footprint: Number.NaN })).toThrow(
+      /footprint/,
+    );
+    expect(() => buildSliceable({ plates: 1, filaments: 1, height: -1 })).toThrow(/height/);
+  });
+
   test("options outside 1 to 128 plates or 1 to 16 filaments are refused", () => {
     expect(() => buildSliceable({ plates: 0, filaments: 1 })).toThrow(/plates/);
     expect(() => buildSliceable({ plates: 129, filaments: 1 })).toThrow(/plates/);

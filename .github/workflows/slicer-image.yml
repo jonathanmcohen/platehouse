@@ -5,7 +5,8 @@
 # Keeps ghcr.io/jonathanmcohen/platehouse-slicer current with OrcaSlicer:
 #
 #   detect: pick the Orca version -> resolve its pins -> check the registry
-#   build:  OCI labels -> build (load) -> smoke slice -> check the labels
+#   build:  OCI labels -> build (load) -> smoke slice -> whole container suite
+#           -> check the labels
 #           -> Trivy report (never fails)
 #           -> push by digest -> check the pushed image is the one tested
 #           -> tag orca-X.Y.Z, the run tag and, on a run from a release
@@ -36,9 +37,9 @@
 #   GitHub runs a schedule or a dispatch only for a workflow file on the
 #   default branch, so neither works until this file reaches main.
 #
-# The pins. apps/slicer/Dockerfile pins Orca 2.5.0 by the AppImage's sha256
-# (ORCA_SHA256) and the commit its tag points to (ORCA_SRC_SHA, for the
-# profile JSON). For the version picked here both are resolved again: the
+# The pins. apps/slicer/Dockerfile pins its Orca version (ORCA_VERSION) by
+# the AppImage's sha256 (ORCA_SHA256) and the commit its tag points to
+# (ORCA_SRC_SHA, for the profile JSON). For the version picked here both are resolved again: the
 # sha256 from the release asset's digest in GitHub's API, the commit from git
 # ls-remote (the peeled commit of an annotated tag, else the tag's own), and
 # both are passed as build args with ORCA_VERSION. If either cannot be
@@ -507,6 +508,60 @@ jobs:
             echo "The smoke slice passed for OrcaSlicer ${VERSION}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/smoke.log"
 
+      # 2b) The whole container suite against the same image, so a new
+      #     OrcaSlicer version is checked by every container test (refusal
+      #     codes, limits, STEP, renders) and not only the smoke slice. It runs
+      #     after the smoke step, so force_fail works as before, and before
+      #     anything is scanned, pushed or tagged: a failure publishes nothing.
+      #     The STEP sample is fetched as ci.yml fetches it.
+      #     EXPECTED_ORCA_VERSION is the version this run built, which the
+      #     health and profiles tests check the image reports; without it
+      #     they expect the Dockerfile's own pin, as in ci.yml.
+      - name: Fetch the STEP sample
+        env:
+          NIST_URL: https://www.nist.gov/system/files/documents/noindex/2024/06/19/NIST-PMI-STEP-Files.zip
+          NIST_SHA256: 8fa78429e6d8d9b0d7681d223b6aa9ec98c3772185c55b1a0e3679b21c181911
+          NIST_STEP_SHA256: e081d518484d5c708c6729353237f94a7d97da2b74a10d60d4c0d146d67a5855
+        run: |
+          dir="$RUNNER_TEMP/step"
+          mkdir -p "$dir"
+          curl -fsSL --retry 3 -o "$dir/nist.zip" "$NIST_URL"
+          echo "$NIST_SHA256  $dir/nist.zip" | sha256sum -c -
+          unzip -j -q "$dir/nist.zip" 'NIST-PMI-STEP-Files/AP203 geometry only/nist_ctc_01_asme1_rd.stp' -d "$dir"
+          echo "$NIST_STEP_SHA256  $dir/nist_ctc_01_asme1_rd.stp" | sha256sum -c -
+          echo "STEP_SAMPLE=$dir/nist_ctc_01_asme1_rd.stp" >>"$GITHUB_ENV"
+      - name: Whole container suite
+        id: suite
+        env:
+          SLICER_IMAGE: ${{ env.LOCAL }}
+          SLICER_IMAGE_PREBUILT: "1"
+          EXPECTED_ORCA_VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            status=0
+            pnpm exec vitest run --project container --reporter=default --reporter=json --outputFile=suite-report.json || status=$?
+            if [ -s suite-report.json ]; then
+              total="$(jq '.numTotalTests' suite-report.json)"
+              skipped="$(jq '.numPendingTests + .numTodoTests' suite-report.json)"
+              ran=$((total - skipped))
+              echo "suite: ${ran} tests ran, ${skipped} skipped, ${total} collected"
+            fi
+            if [ "$status" -ne 0 ]; then
+              echo "::error::the container suite failed (vitest exit ${status}); its output above names the test"
+              exit "$status"
+            fi
+            if [ ! -s suite-report.json ]; then
+              echo "::error::No tests ran (vitest wrote no report)"
+              exit 1
+            fi
+            if [ "$ran" -eq 0 ]; then
+              echo "::error::No tests ran"
+              exit 1
+            fi
+            echo "The whole container suite passed"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/suite.log"
+
       # The tested image carries the labels, before anything is pushed: the
       # version the run should have (the release's on a run from a release
       # tag, else the Orca version), this commit and this repository, and the
@@ -705,6 +760,7 @@ jobs:
             labels=${{ steps.labels.outcome }}
             load=${{ steps.load.outcome }}
             smoke=${{ steps.smoke.outcome }}
+            suite=${{ steps.suite.outcome }}
             labelcheck=${{ steps.labelcheck.outcome }}
             login=${{ steps.login.outcome }}
             push=${{ steps.push.outcome }}
@@ -722,6 +778,7 @@ jobs:
             labels) name="Labels for this image" ;;
             load) name="Build (load)" ;;
             smoke) name="Smoke slice" ;;
+            suite) name="Whole container suite" ;;
             labelcheck) name="Check the labels" ;;
             login) name="Log in to GHCR" ;;
             push) name="Push by digest" ;;

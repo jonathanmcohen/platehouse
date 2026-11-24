@@ -66,6 +66,9 @@ function emptyView(): ActivityView {
       busy: false,
       orca: "2.5.0",
       openscad: "2026.10.01",
+      sandbox: "on",
+      sandboxReason: null,
+      unsandboxed: false,
       printerId: P1S,
       printerName: P1S_NAME,
     },
@@ -135,6 +138,9 @@ function busyView(): ActivityView {
     busy: true,
     orca: "2.5.0",
     openscad: "2026.10.01",
+    sandbox: "on",
+    sandboxReason: null,
+    unsandboxed: false,
     printerId: P1S,
     printerName: P1S_NAME,
   };
@@ -528,6 +534,9 @@ describe("the page", () => {
         busy: null,
         orca: null,
         openscad: null,
+        sandbox: null,
+        sandboxReason: null,
+        unsandboxed: null,
         printerId: P1S,
         printerName: P1S_NAME,
       };
@@ -538,6 +547,93 @@ describe("the page", () => {
     expect(stat(s, "Status")).toBe("Not reachable");
     expect(stat(s, "OrcaSlicer")).toBe("Unknown");
     expect(text(s)).toContain("The slicer is not answering");
+  });
+
+  describe("sandbox", () => {
+    const OFF_KERNEL =
+      "Sandbox: off. This server's kernel is older than Linux 6.12, so pictures, OpenSCAD renders, STEP previews and estimates are off.";
+    const OFF_CHECK =
+      "Sandbox: off. Its check failed, so pictures, OpenSCAD renders, STEP previews and estimates are off.";
+    const OFF_KERNEL_SHORT = "Sandbox: off. This server's kernel is older than Linux 6.12.";
+    const OFF_CHECK_SHORT = "Sandbox: off. Its check failed.";
+    const UNSANDBOXED =
+      "Estimates and STEP previews still run, without the sandbox, because SLICER_ALLOW_UNSANDBOXED is set. Pictures and OpenSCAD renders are off.";
+
+    async function renderWith(sandbox: Partial<ActivityView["slicer"]>) {
+      answer = () => {
+        const v = busyView();
+        v.slicer = { ...v.slicer, ...sandbox };
+        return v;
+      };
+      await render();
+      return text(section("Slicer"));
+    }
+
+    test("says it is on", async () => {
+      const t = await renderWith({ sandbox: "on" });
+      expect(t).toContain("Sandbox: on");
+      expect(t).not.toContain("Sandbox: off");
+    });
+
+    test("says it is being checked", async () => {
+      expect(await renderWith({ sandbox: "checking" })).toContain("Sandbox: checking");
+    });
+
+    test("says it is off for an old kernel, and nothing more when not allowed", async () => {
+      const t = await renderWith({
+        sandbox: "off",
+        sandboxReason: "old_kernel",
+        unsandboxed: false,
+      });
+      expect(t).toContain(OFF_KERNEL);
+      expect(t).not.toContain("SLICER_ALLOW_UNSANDBOXED");
+    });
+
+    test("says it is off for a failed check", async () => {
+      const t = await renderWith({
+        sandbox: "off",
+        sandboxReason: "check_failed",
+        unsandboxed: false,
+      });
+      expect(t).toContain(OFF_CHECK);
+    });
+
+    // Allowed to run without it, estimates and STEP previews are not off, so
+    // the off line gives only the reason, and the next line what still runs.
+    test("says what still runs when the slicer is allowed to run without it, for an old kernel", async () => {
+      const t = await renderWith({
+        sandbox: "off",
+        sandboxReason: "old_kernel",
+        unsandboxed: true,
+      });
+      expect(t).toContain(OFF_KERNEL_SHORT);
+      expect(t).toContain(UNSANDBOXED);
+      expect(t).not.toContain(OFF_KERNEL);
+      expect(t).not.toContain("estimates are off");
+    });
+
+    test("says what still runs when the slicer is allowed to run without it, for a failed check", async () => {
+      const t = await renderWith({
+        sandbox: "off",
+        sandboxReason: "check_failed",
+        unsandboxed: true,
+      });
+      expect(t).toContain(OFF_CHECK_SHORT);
+      expect(t).toContain(UNSANDBOXED);
+      expect(t).not.toContain(OFF_CHECK);
+      expect(t).not.toContain("estimates are off");
+    });
+
+    test("says nothing about it when the slicer did not answer", async () => {
+      const t = await renderWith({
+        reachable: false,
+        busy: null,
+        sandbox: null,
+        sandboxReason: null,
+        unsandboxed: null,
+      });
+      expect(t).not.toContain("Sandbox");
+    });
   });
 });
 

@@ -1,5 +1,5 @@
 // The app's slicer client against a slicer stub that
-// answers only what slicer contract v1 allows. A 409 busy and a lost
+// answers only what slicer contract v2 allows. A 409 busy and a lost
 // connection are told apart from a refusal, because the slice job retries the
 // first two and records the third.
 import { Readable } from "node:stream";
@@ -10,6 +10,7 @@ import {
   SliceBodyUnreadable,
   SlicerBusy,
   SlicerRefused,
+  SlicerSandboxOff,
   SlicerUnreachable,
   sliceTimeoutMs,
 } from "../../src/estimates/client.js";
@@ -18,6 +19,7 @@ import {
   type SlicerStub,
   STUB_FILAMENTS,
   STUB_PRINTERS,
+  sandboxOff,
   startSlicerStub,
 } from "../support/slicer-stub.js";
 
@@ -46,7 +48,7 @@ beforeEach(() => {
 describe("slicer client", () => {
   test("the HTTP timeout is the slicer's own kill time plus 30 s", () => {
     // The slicer kills a plate at SLICE_TIMEOUT_SECONDS, --mstpp + 60 by
-    // default, and the app waits 30 s longer (Slicer HTTP contract v1).
+    // default, and the app waits 30 s longer (Slicer HTTP contract v2).
     expect(sliceTimeoutMs(120)).toBe(210_000);
     expect(sliceTimeoutMs(600)).toBe(690_000);
   });
@@ -54,10 +56,12 @@ describe("slicer client", () => {
   test("health and profiles come back as the contract has them", async () => {
     const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
     expect(await client.health()).toEqual({
-      contract: 1,
+      contract: 2,
       orca: "2.5.0",
       openscad: "2026.11-RC0",
       busy: false,
+      sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+      timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
     });
     const profiles = await client.profiles();
     expect(profiles.printers).toEqual(STUB_PRINTERS);
@@ -111,6 +115,41 @@ describe("slicer client", () => {
     ).rejects.toBeInstanceOf(SlicerBusy);
   });
 
+  test("503 sandbox_off is SlicerSandboxOff, with its reason", async () => {
+    const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
+    for (const reason of ["old_kernel", "check_failed"] as const) {
+      stub.onSlice(() => sandboxOff(reason));
+      const error = await client
+        .slice({ printerId: P1S, plate: 1, ...body(build3mf({ plates: 1 })) })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(SlicerSandboxOff);
+      expect((error as SlicerSandboxOff).reason).toBe(reason);
+    }
+  });
+
+  test("a 503 that is not a valid sandbox_off body stays SlicerRefused", async () => {
+    const { createServer } = await import("node:http");
+    const server = createServer((req, res) => {
+      req.resume();
+      res.writeHead(503, { "content-type": "application/json", connection: "close" });
+      res.end(JSON.stringify({ error: "sandbox_off", reason: "other", detail: "x" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (address === null || typeof address === "string") throw new Error("no port");
+      const client = createSlicerClient({
+        url: `http://127.0.0.1:${address.port}`,
+        plateSeconds: 5,
+      });
+      await expect(
+        client.slice({ printerId: P1S, plate: 1, ...body(build3mf({ plates: 1 })) }),
+      ).rejects.toMatchObject({ name: "SlicerRefused", status: 503 });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   test("a busy answer to a large body is still SlicerBusy, not a lost connection", async () => {
     stub.onSlice(() => ({ kind: "busy" }));
     const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
@@ -158,6 +197,59 @@ describe("slicer client", () => {
     await expect(
       client.slice({ printerId: P1S, plate: 1, ...body(build3mf({ plates: 1 })) }),
     ).rejects.toBeInstanceOf(SlicerUnreachable);
+  });
+
+  test("the answer timer starts when the body ends: a slow body then a slow answer succeeds", async () => {
+    // Body 600 ms (under a 900 ms upload allowance), then an answer 600 ms
+    // later (under a 900 ms answer allowance). One timer over both would
+    // have run out at 900 ms.
+    stub.onSlice(() => ({ kind: "ok" }));
+    const gate = stub.hold();
+    const file = build3mf({ plates: 1 });
+    const cut = Math.ceil(file.length / 3);
+    const slow = new Readable({ read() {} });
+    const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
+    const pending = client.slice({
+      printerId: P1S,
+      plate: 1,
+      body: slow,
+      size: file.length,
+      timeouts: { uploadMs: 900, answerMs: 900 },
+    });
+    for (let i = 0; i < 3; i++) {
+      slow.push(file.subarray(i * cut, (i + 1) * cut));
+      await sleep(200);
+    }
+    slow.push(null);
+    await sleep(600);
+    gate.release();
+    await expect(pending).resolves.toMatchObject({ status: "ok" });
+  });
+
+  test("a body that stalls fails after the upload allowance with SlicerUnreachable", async () => {
+    const file = build3mf({ plates: 1 });
+    let pushed = false;
+    const stuck = new Readable({
+      read() {
+        if (!pushed) {
+          pushed = true;
+          this.push(file.subarray(0, 16));
+        }
+      },
+    });
+    const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
+    const started = Date.now();
+    const error = await client
+      .slice({
+        printerId: P1S,
+        plate: 1,
+        body: stuck,
+        size: file.length,
+        timeouts: { uploadMs: 300, answerMs: 60_000 },
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SlicerUnreachable);
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 
   test("a slicer that is not listening is SlicerUnreachable", async () => {
@@ -208,11 +300,11 @@ describe("slicer client", () => {
 
   test("an answer outside the contract is a refusal, not a result", async () => {
     // A slicer of another contract version, simulated by a stub that is not
-    // the contract's: health reports contract 2.
+    // the contract's: health reports contract 1.
     const { createServer } = await import("node:http");
     const server = createServer((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ contract: 2, orca: "9.9.9", openscad: "x", busy: false }));
+      res.end(JSON.stringify({ contract: 1, orca: "9.9.9", openscad: "x", busy: false }));
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
@@ -222,7 +314,11 @@ describe("slicer client", () => {
         url: `http://127.0.0.1:${address.port}`,
         plateSeconds: 5,
       });
-      await expect(client.health()).rejects.toBeInstanceOf(SlicerRefused);
+      const refused = client.health();
+      await expect(refused).rejects.toBeInstanceOf(SlicerRefused);
+      await expect(refused).rejects.toMatchObject({
+        message: "The slicer's answer is not one slicer contract 2 allows",
+      });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

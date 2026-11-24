@@ -14,7 +14,7 @@
 // and .weight); the return code from result.json. Orca checks --mstpp only
 // after a plate finishes (OrcaSlicer.cpp), so the server also kills the
 // plate's process group at SLICE_TIMEOUT_SECONDS.
-import { existsSync, readFileSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import {
   CONTRACT_VERSION,
@@ -23,7 +23,7 @@ import {
   type SliceResult,
 } from "@platehouse/slicer-contract";
 import { orcaMessage, reasonFor } from "./reasons.js";
-import type { GroupResult } from "./sandbox.js";
+import { type GroupResult, readOutputFile } from "./sandbox.js";
 
 export interface OrcaJob {
   plate: number;
@@ -59,7 +59,7 @@ export function orcaArgs(job: OrcaJob): string[] {
 }
 
 /** The environment Orca runs with: everything it writes stays in the job folder. */
-export function scratchEnv(dir: string): NodeJS.ProcessEnv {
+export function scratchEnv(dir: string): Record<string, string> {
   return {
     PATH: "/usr/local/bin:/usr/bin:/bin",
     HOME: join(dir, "home"),
@@ -73,7 +73,53 @@ export function scratchEnv(dir: string): NodeJS.ProcessEnv {
   };
 }
 
-/** Folders scratchEnv points at; the server creates them before Orca runs. */
+/**
+ * What OrcaSlicer 2.5.0's AppImage launcher sets before it runs
+ * bin/orca-slicer, so the server can run that binary itself, in the sandbox,
+ * without the launcher. Read from the scripts that build the AppImage, at the
+ * commit the v2.5.0 tag points to (40ecc66, the Dockerfile's ORCA_SRC_SHA):
+ * src/dev-utils/platform/unix/build_linux_image.sh.in writes both files.
+ *
+ * - AppRun, a bash script, sets APPDIR to its own folder and LC_ALL=C (a
+ *   workaround for a crash on unexpected locales), and only on a Wayland
+ *   desktop (XDG_SESSION_TYPE=wayland, never set here) runs glxinfo and
+ *   nvidia-smi. Then it execs libexec/orca-slicer-env bin/orca-slicer.
+ * - libexec/orca-slicer-env, a sh script, sets LD_LIBRARY_PATH to
+ *   lib/orca-runtime:bin (the image has lib/orca-runtime; the Dockerfile
+ *   checks it). It checks with ldd and ldconfig that the host has
+ *   libOpenGL.so.0 and WebKitGTK 4.1, and exits if not; the image installs
+ *   both (libopengl0, libwebkit2gtk-4.1-0), and its build checks that every
+ *   library bin/orca-slicer links resolves with this library path
+ *   (check-libs.sh), so a missing one fails the build instead. Only an
+ *   AppImage that bundles its own WebKitGTK (lib/libwebkit2gtk-4.x.so.0)
+ *   would set more (GStreamer, GIO and WebKit paths); the release AppImage
+ *   is built without it (ORCA_BUNDLE_DESKTOP_STACK unset, and
+ *   scripts/appimage_lib_policy.sh keeps WebKitGTK a host library), and the
+ *   Dockerfile fails the build if such a library is there.
+ *
+ * So for this image the launcher's environment is fixed, and the server
+ * runs bin/orca-slicer directly with it (the preferred choice), rather than
+ * letting bash, sh, ldd, ldconfig and grep run inside Orca's sandbox. The
+ * binary finds its resources from its own path (/proc/self/exe), as under
+ * the launcher.
+ */
+export function launcherEnv(orcaDir: string): Record<string, string> {
+  return {
+    APPDIR: orcaDir,
+    LC_ALL: "C",
+    LD_LIBRARY_PATH: `${orcaDir}/lib/orca-runtime:${orcaDir}/bin`,
+  };
+}
+
+/**
+ * Orca's own folder inside the job folder, the only one its sandbox may
+ * write: the input, out/, data/, home/ and tmp/ are all in it. Files the
+ * server owns, GNU time's report among them, stay in the job folder above
+ * it, out of Orca's reach. The server deletes the whole job folder.
+ */
+export const ORCA_FOLDER = "orca";
+
+/** Folders scratchEnv points at, inside ORCA_FOLDER; the server creates them before Orca runs. */
 export const SCRATCH_DIRS = [
   "home/.config",
   "home/.cache",
@@ -88,11 +134,54 @@ function numberOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function readJsonOrNull(file: string): unknown {
+const KIB = 1024;
+const MIB = 1024 * KIB;
+/** The most the server reads of result.json and of GNU time's report. */
+const RESULT_MAX_BYTES = 64 * KIB;
+const TIME_MAX_BYTES = 64 * KIB;
+/** The most it reads of a plate's statistics file. */
+const STATISTICS_MAX_BYTES = MIB;
+
+/**
+ * A small file a slice left, read with readOutputFile: its text, null when
+ * there is none, or the problem that stops the slice when it is not a
+ * regular file (a link, a FIFO) or is over `limit`. Orca can change every
+ * file in its own folder, so nothing there is opened any other way.
+ */
+function readSmall(
+  file: string,
+  limit: number,
+  name: string,
+): { text: string } | { problem: string } | null {
+  const read = readOutputFile(file, limit);
+  if (read.ok) return { text: read.bytes.toString("utf8") };
+  if ("missing" in read) return null;
+  if ("notRegular" in read) {
+    return { problem: `${name} was not a regular file, so it was not read.` };
+  }
+  const cap = limit >= MIB ? `${limit / MIB} MiB` : `${limit / KIB} KiB`;
+  return { problem: `${name} is over the ${cap} limit, so it was not read.` };
+}
+
+function jsonOrNull(text: string): unknown {
   try {
-    return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+    return JSON.parse(text);
   } catch {
     return null;
+  }
+}
+
+/**
+ * null when `dir` is a real folder, true when nothing has that name, and the
+ * problem that stops the slice when it is anything else, a link included.
+ */
+function outDirProblem(dir: string): string | null | true {
+  try {
+    return lstatSync(dir).isDirectory()
+      ? null
+      : "Orca's output folder was not a folder, so nothing in it was read.";
+  } catch {
+    return true;
   }
 }
 
@@ -137,7 +226,12 @@ export interface SliceContext {
 
 const cut = (s: string) => s.slice(0, LIMITS.detailChars);
 
-/** Turns one Orca run and the files it left in outDir into the contract's answer. */
+/**
+ * Turns one Orca run and the files it left in outDir into the contract's
+ * answer. outDir must be a real folder, not a link, and every file is read
+ * with readSmall, so a file Orca made into a link, a FIFO or a huge file
+ * fails the slice instead of being read.
+ */
 export function sliceOutcome(
   ctx: SliceContext,
   run: GroupResult,
@@ -158,7 +252,16 @@ export function sliceOutcome(
       `Slicing took longer than ${ctx.timeoutSeconds} s and was stopped.`,
     );
   }
-  const result = readJsonOrNull(join(files.outDir, "result.json")) as {
+  const outDir = outDirProblem(files.outDir);
+  if (typeof outDir === "string") return failed(null, "slicer_error", outDir);
+  const resultFile =
+    outDir === true
+      ? null
+      : readSmall(join(files.outDir, "result.json"), RESULT_MAX_BYTES, "Orca's result.json");
+  if (resultFile && "problem" in resultFile) {
+    return failed(null, "slicer_error", resultFile.problem);
+  }
+  const result = (resultFile ? jsonOrNull(resultFile.text) : null) as {
     return_code?: unknown;
     error_string?: unknown;
   } | null;
@@ -201,9 +304,14 @@ export function sliceOutcome(
       `Orca wrote its numbers, then exited with ${run.signal ?? run.code}`,
     );
   }
-  const stats = parseStatistics(
-    readJsonOrNull(join(files.outDir, `plate_${ctx.plate}.statistics.json`)),
+  const statsName = `plate_${ctx.plate}.statistics.json`;
+  const statsFile = readSmall(
+    join(files.outDir, statsName),
+    STATISTICS_MAX_BYTES,
+    `Orca's ${statsName}`,
   );
+  if (statsFile && "problem" in statsFile) return failed(0, "slicer_error", statsFile.problem);
+  const stats = parseStatistics(statsFile ? jsonOrNull(statsFile.text) : null);
   const time = stats?.timeSeconds ?? 0;
   const weight = stats?.weightGrams ?? 0;
   if (!stats || !(time > 0) || !(weight > 0)) {
@@ -213,7 +321,9 @@ export function sliceOutcome(
       "Orca reported success without a time and a weight above zero",
     );
   }
-  const timeText = existsSync(files.timeFile) ? readFileSync(files.timeFile, "utf8") : "";
+  const timeFile = readSmall(files.timeFile, TIME_MAX_BYTES, "GNU time's report");
+  if (timeFile && "problem" in timeFile) return failed(0, "slicer_error", timeFile.problem);
+  const timeText = timeFile?.text ?? "";
   return {
     ...head,
     status: "ok",

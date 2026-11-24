@@ -117,6 +117,13 @@ inbox waits and tries again, and the log says an outage started and ended.
 - **The slicer is unreachable.** Check that the app and the slicer share the `platehouse-slicer`
   network and that `SLICER_URL` names the slicer's container and port
   (`http://platehouse-slicer:8080` in the example).
+- **"Estimates are off on this server: its kernel is older than Linux 6.12."** or **"Estimates are
+  off on this server: its sandbox check failed."**: the slicer's sandbox is off, so it refused to
+  slice. The plate is recorded as failed once, with that sentence under **Details**, and is not
+  tried again while the sandbox stays off. Upgrade the host's kernel to Linux 6.12 or newer, or, if
+  you accept slicing without the sandbox, set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer. Once
+  the slicer reports its sandbox on (or allowed without it), the plates it refused are estimated
+  again automatically, at most 50 on each Orca version check; no need to press **Retry**.
 
 OrcaSlicer refusals, shown on the plate with OrcaSlicer's own message behind **Details**:
 
@@ -137,15 +144,33 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
 
 ## Renders and STEP files
 
-- **OpenSCAD renders are refused because the sandbox self-test failed**: the host
-  kernel is older than Linux 6.12 (Landlock ABI 6), or the slicer's settings were changed from the
-  example. Slicing and STEP files still work. The slicer's log says which.
+- **"Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12."**:
+  the slicer's sandbox is off because the host kernel has no Landlock ABI 6, so the slicer refuses
+  STL pictures, STEP files' preview pictures and OpenSCAD renders, and the files keep their icon.
+  Upgrade the host to Linux 6.12 or newer and restart the slicer. The files are picked up again by
+  themselves once the slicer reports its sandbox on. `SLICER_ALLOW_UNSANDBOXED` does not cover
+  these.
+- **"Pictures and OpenSCAD renders are off on this server: its sandbox check failed."**: the
+  kernel is new enough, but the slicer's check of its sandbox failed, for example because the
+  slicer's container settings were changed from the example. The slicer's log says what failed,
+  and it checks again by itself, after a minute at first and then less often. Restore the example's
+  settings; the files are picked up again once the check passes.
+- **"STEP previews are off on this server: its kernel is older than Linux 6.12."**: the same
+  kernel limit, for converting a STEP file. Upgrade the kernel, or set
+  `SLICER_ALLOW_UNSANDBOXED=true` on the slicer to convert STEP files without the sandbox. The
+  files are picked up again once conversions can run.
+- **"STEP previews are off on this server: its sandbox check failed."**: the same as the sandbox
+  check above, for a STEP file. Fix the slicer's settings, or set `SLICER_ALLOW_UNSANDBOXED=true`
+  on the slicer to convert STEP files without the sandbox.
 - **"The slicer is not answering. The render will need to be started again."**: the slicer was down
   for over 2 hours. Bring it back and upload the file again.
 - **"The slicer is not answering, so the preview picture could not be made. It will be tried again
   automatically."** (or the same for storage): an STL's or STEP file's preview picture waited over
   2 hours, or could not be queued. Nothing to do once the slicer or storage is back: the background
   job tries it again. With a slicer image older than the app, update the slicer image.
+- **"The preview picture could not be queued. It will be tried again automatically."**: the job
+  for an STL's or STEP file's preview picture could not be queued, for example while the database
+  was down. Nothing to do: the background job queues it again.
 - **"Platehouse could not write a temporary file; it will be tried again automatically."**: an STL's
   or STEP file's preview picture could not be written to the app's temp folder (`TMP_DIR`) on every
   try, usually because the disk is full or the folder is read-only or missing. Free space or fix

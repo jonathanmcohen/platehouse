@@ -6,13 +6,23 @@
 // The conversion runs in its own Node process, started by the server as
 // `node step.js <in.stp> <out.glb>`, so a crash or runaway in OCCT's wasm
 // on an untrusted file cannot take the server down, and the server can kill
-// it at STEP_TIMEOUT_SECONDS. It exits 0 with the GLB written, or 1 with the
-// reason on stderr.
-import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+// it at STEP_TIMEOUT_SECONDS. It runs under prlimit and landrun with the
+// STEP worker's own rules (sandbox.ts): it may read the app and write only
+// its job folder, with no TCP. It exits 0 with the GLB written, or 1
+// with the reason on stderr.
+import { lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runGroup, tailLines } from "./sandbox.js";
+import {
+  ledInMessage,
+  prlimitCommand,
+  readOutputFile,
+  runGroup,
+  type SandboxConfig,
+  sandboxPaths,
+  sandboxRules,
+} from "./sandbox.js";
 
 export interface OcctMesh {
   attributes: {
@@ -160,45 +170,105 @@ export const STEP_INPUT = "input.stp";
 
 const MIB = 1024 * 1024;
 
+export interface StepWorkerOptions extends SandboxConfig {
+  /** The worker module (this file, or a test stand-in), run with this Node. */
+  worker: string;
+  timeoutSeconds: number;
+  maxOutputBytes: number;
+  /**
+   * False only for a conversion the server runs while the sandbox is off
+   * and SLICER_ALLOW_UNSANDBOXED is set: then the worker runs under prlimit
+   * alone, without landrun.
+   */
+  sandboxed: boolean;
+}
+
+/** The size of `file` when it is a regular file itself (not a link), else null. */
+function regularSize(file: string): number | null {
+  try {
+    const st = lstatSync(file);
+    return st.isFile() ? st.size : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Runs the worker (this file, or a test stand-in) on dir/input.stp
- * (STEP_INPUT), which the caller has already written, so the server never
- * holds the body in memory. A mesh over maxOutputBytes (the contract's
- * LIMITS.stepOutputBytes, 256 MiB) is refused from its size on disk, never
- * read or sent: the app streams the answer under the same cap.
+ * Runs the worker on dir/input.stp (STEP_INPUT), which the caller has
+ * already written, so the server never holds the body in memory: prlimit
+ * with the worker's limits (its file-size limit is maxOutputBytes, the
+ * contract's LIMITS.stepOutputBytes, 256 MiB), then landrun with its rules,
+ * then this Node and the worker. A mesh over maxOutputBytes is refused from
+ * its size, never read or sent: the app streams the answer under the same
+ * cap. The output is read with readOutputFile, as a render's is: never
+ * through a link, and anything but a regular file is refused unread.
+ *
+ * The file-size limit shows in two ways. The kernel sends SIGXFSZ to a
+ * program that writes past it, but Node ignores that signal (a Node process
+ * that sends itself SIGXFSZ keeps running), so the worker's write fails
+ * instead (EFBIG) and it exits 1, leaving an output of exactly the limit's
+ * size. Both, a SIGXFSZ or a failed run whose output reached the limit,
+ * answer that the mesh went over the limit.
  */
 export async function runStepWorker(
-  opts: { worker: string; timeoutSeconds: number; maxOutputBytes: number },
+  opts: StepWorkerOptions,
   dir: string,
   track?: (kill: (() => void) | null) => void,
 ): Promise<ConvertResult> {
   const input = join(dir, STEP_INPUT);
   const output = join(dir, "output.glb");
-  const run = await runGroup(process.execPath, [opts.worker, input, output], {
-    cwd: dir,
-    env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dir, TMPDIR: dir, LANG: "C.UTF-8" },
-    timeoutMs: opts.timeoutSeconds * 1000,
-    ...(track ? { track } : {}),
-  });
+  const rules = sandboxRules("step", sandboxPaths(opts, dir));
+  const command = [process.execPath, opts.worker, input, output];
+  const run = await runGroup(
+    opts.prlimitBin,
+    prlimitCommand({
+      program: "step",
+      timeoutSeconds: opts.timeoutSeconds,
+      landrun: opts.sandboxed ? { bin: opts.landrunBin, rules } : null,
+      command,
+    }),
+    {
+      cwd: dir,
+      env: rules.env,
+      timeoutMs: opts.timeoutSeconds * 1000,
+      ...(track ? { track } : {}),
+    },
+  );
+  const limitMib = Math.floor(opts.maxOutputBytes / MIB);
   if (run.timedOut) {
     return {
       ok: false,
       message: `The conversion took longer than ${opts.timeoutSeconds} s and was stopped.`,
     };
   }
-  if (run.code === 0 && existsSync(output) && statSync(output).size > 0) {
-    const size = statSync(output).size;
-    if (size > opts.maxOutputBytes) {
+  const overLimit: ConvertResult = {
+    ok: false,
+    message: `The converted mesh went over the ${limitMib} MiB limit for a mesh, so it was stopped while writing it.`,
+  };
+  if (run.signal === "SIGXFSZ") return overLimit;
+  if (run.code === 0) {
+    const read = readOutputFile(output, opts.maxOutputBytes);
+    if (!read.ok && "notRegular" in read) {
       return {
         ok: false,
-        message: `The converted mesh is ${Math.ceil(size / MIB)} MiB, over the ${Math.floor(opts.maxOutputBytes / MIB)} MiB limit for a mesh, so it was not sent.`,
+        message: "The converted mesh was not a regular file, so it was not read.",
       };
     }
-    return { ok: true, bytes: readFileSync(output) };
+    if (!read.ok && "size" in read) {
+      return {
+        ok: false,
+        message: `The converted mesh is ${Math.ceil(read.size / MIB)} MiB, over the ${limitMib} MiB limit for a mesh, so it was not sent.`,
+      };
+    }
+    if (read.ok && read.bytes.length > 0) return { ok: true, bytes: read.bytes };
   }
+  if (run.code !== 0 && (regularSize(output) ?? 0) >= opts.maxOutputBytes) return overLimit;
+  // The worker's output is always led in; its exit status is the slicer's own.
   return {
     ok: false,
-    message: tailLines(run.stderrTail) || `The converter exited with ${run.signal ?? run.code}.`,
+    message:
+      ledInMessage("The converter said: ", run.stderrTail) ||
+      `The converter exited with ${run.signal ?? run.code}.`,
   };
 }
 

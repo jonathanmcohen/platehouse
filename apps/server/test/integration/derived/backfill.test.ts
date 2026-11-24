@@ -10,10 +10,13 @@
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SandboxState } from "@platehouse/slicer-contract";
+import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { TempFileError } from "../../../src/derived/client.js";
+import { PREVIOUS_RENDERS_SENTENCE, TempFileError } from "../../../src/derived/client.js";
 import {
+  BACKFILL_LOCK_KEY,
   createDerived,
   DERIVED_KINDS,
   DERIVED_MESSAGES,
@@ -21,8 +24,9 @@ import {
   type DerivedJob,
   RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
+import type { SlicerState } from "../../../src/estimates/slicer-state.js";
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
-import { renderedBytes } from "../../support/slicer-stub.js";
+import { renderedBytes, sandboxOff } from "../../support/slicer-stub.js";
 import {
   blobsOf,
   type DerivedEnv,
@@ -30,8 +34,9 @@ import {
   readObject,
   settledFile,
   startDerivedEnv,
+  until,
 } from "../support/derived.js";
-import { STEP_TEXT, writeUpload } from "../support/ingest.js";
+import { SCAD_TEXT, STEP_TEXT, writeUpload } from "../support/ingest.js";
 
 let env: DerivedEnv;
 
@@ -179,6 +184,71 @@ describe("the preview backfill (issue #316)", () => {
     const again = await env.derived.backfillPreviews(later());
     expect(again.queued).toEqual([]);
     for (const id of ours) expect(await previewJobs(id)).toHaveLength(1);
+  });
+
+  test("a run waits while another holds the backfill lock, then queues its batch", async () => {
+    // Jobs held an hour, so the batch stays queued until the test cancels it.
+    const send: PgBoss["send"] = async (...args: unknown[]) => {
+      const [name, data, options] = args as [string, object, Record<string, unknown>];
+      return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
+        ...options,
+        startAfter: 3600,
+      });
+    };
+    const queue: DerivedDeps["queue"] = { send, findJobs: env.boss.findJobs.bind(env.boss) };
+    const batched = createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue,
+      retryDelaySeconds: 1,
+      backfillBatch: 2,
+    });
+    const files = [await legacyStl("Lock one"), await legacyStl("Lock two")];
+    const ours = files.map((f) => f.fileId);
+
+    // Another run, played by a transaction that holds the same advisory lock.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holding: () => void = () => {};
+    const holds = new Promise<void>((resolve) => {
+      holding = resolve;
+    });
+    const holder = env.db
+      .transaction()
+      .execute(async (trx) => {
+        await sql`select pg_advisory_xact_lock(${BACKFILL_LOCK_KEY}::bigint)`.execute(trx);
+        holding();
+        await gate;
+      })
+      .catch((error: unknown) => {
+        holding();
+        throw error;
+      });
+    await holds;
+
+    let settled = false;
+    const run = batched.backfillPreviews(later()).finally(() => {
+      settled = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(settled).toBe(false);
+      for (const id of ours) expect(await previewJobs(id)).toHaveLength(0);
+    } finally {
+      release();
+      await holder;
+    }
+
+    const result = await run;
+    expect(result.queued.filter((id) => ours.includes(id)).sort()).toEqual([...ours].sort());
+    for (const f of files) {
+      for (const job of await previewJobs(f.fileId)) {
+        await env.boss.cancel(QUEUE.slicer, job.id);
+      }
+    }
   });
 
   test("it queues one batch at a time, the next only once none of the last is still waiting", async () => {
@@ -531,5 +601,268 @@ describe("the preview backfill (issue #316)", () => {
         previewMessage: message,
       });
     }
+  });
+});
+
+// A slicer whose sandbox is off refuses pictures, renders and STEP previews
+// and says so in its health. What the app does with the files it refused
+// depends on that health: nothing while it is off or unknown, and a second
+// try once it is on (STEP conversions also when the slicer allows them
+// without the sandbox).
+const ON: SandboxState = { state: "on", reason: null, detail: null, allowUnsandboxed: false };
+const CHECKING: SandboxState = {
+  state: "checking",
+  reason: null,
+  detail: null,
+  allowUnsandboxed: false,
+};
+const off = (allowUnsandboxed: boolean): SandboxState => ({
+  state: "off",
+  reason: "old_kernel",
+  detail: "the kernel is too old",
+  allowUnsandboxed,
+});
+
+/** A derived whose slicer health reports sandbox (null: health has not answered). */
+function derivedReporting(sandbox: SandboxState | null, batch?: number) {
+  const slicerState: SlicerState = {
+    current: async () => ({
+      timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+      sandbox,
+    }),
+  };
+  return createDerived({
+    db: env.db,
+    store: env.store,
+    slicerUrl: env.stub.url,
+    queue: env.boss,
+    retryDelaySeconds: 1,
+    slicerState,
+    ...(batch === undefined ? {} : { backfillBatch: batch }),
+  });
+}
+
+/** Jobs of a file, every kind. */
+async function jobsOf(fileId: string) {
+  return env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
+}
+
+describe("files a slicer with its sandbox off refused", () => {
+  test("a picture refused for the sandbox is a backfill candidate only while health says it is on, and not again right after a new refusal", async () => {
+    const stl = await legacyStl("Sandbox bracket");
+    // Stored long ago as well as refused long ago: a candidate must have been
+    // created before the cutoff too, so the passes at new Date() below test
+    // the refusal's own grace period (updatedAt), not the file's age.
+    const old = new Date(Date.now() - 2 * RENDER_CHECK_GRACE_MS);
+    await env.db
+      .updateTable("files")
+      .set((eb) => ({
+        previewFailureSourceBlobId: eb.ref("blobId"),
+        previewFailureMessage: DERIVED_MESSAGES.sandboxOffKernel,
+        previewStatus: "failed",
+        previewMessage: DERIVED_MESSAGES.sandboxOffKernel,
+        createdAt: old,
+        updatedAt: old,
+      }))
+      .where("id", "=", stl.fileId)
+      .execute();
+
+    for (const sandbox of [off(false), off(true), CHECKING, null]) {
+      const run = await derivedReporting(sandbox).backfillPreviews(later());
+      expect(run.queued).not.toContain(stl.fileId);
+    }
+    expect(await previewJobs(stl.fileId)).toHaveLength(0);
+
+    // The slicer is on, but refuses this one again: recorded again, then
+    // left alone until the grace period has passed once more.
+    env.stub.renders.always("/v1/stl/png", sandboxOff("old_kernel"));
+    const on = derivedReporting(ON);
+    expect((await on.backfillPreviews(later())).queued).toContain(stl.fileId);
+    const again = await until(
+      () => env.repos.files.get(stl.fileId),
+      (f) => f?.previewStatus === "failed" && f.updatedAt.getTime() > old.getTime(),
+    );
+    expect(again).toMatchObject({ previewMessage: DERIVED_MESSAGES.sandboxOffKernel });
+    // The handler writes the row before pg-boss completes its job, and a file
+    // with a live job is never queued, so wait for the job too: the next two
+    // passes then test the grace period, not the job (CI run 45323577150).
+    await until(
+      () => previewJobs(stl.fileId),
+      (js) => js.length === 1 && js.every((j) => j.state === "completed"),
+    );
+    expect((await on.backfillPreviews(new Date())).queued).not.toContain(stl.fileId);
+    expect(await previewJobs(stl.fileId)).toHaveLength(1);
+
+    // Once the sandbox is on for real, the next pass makes the picture.
+    env.stub.renders.reset();
+    await env.db
+      .updateTable("files")
+      .set({ updatedAt: old })
+      .where("id", "=", stl.fileId)
+      .execute();
+    expect((await on.backfillPreviews(new Date())).queued).toContain(stl.fileId);
+    expect(await settledFile(env, stl.fileId)).toMatchObject({ previewStatus: "ok" });
+  });
+
+  /** A .scad or STEP file that a refused render or conversion left failed with message. */
+  async function refused(kind: "scad" | "step", message: string) {
+    const text =
+      kind === "scad"
+        ? `// ${randomBytes(6).toString("hex")}\n${SCAD_TEXT}`
+        : uniqueStep("Refused conversion");
+    const stored = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, text),
+      originalName: kind === "scad" ? "Refused.scad" : "Refused.step",
+      target: "new",
+    });
+    await env.db
+      .updateTable("files")
+      .set({ derivedStatus: "failed", derivedMessage: message })
+      .where("id", "=", stored.fileId)
+      .execute();
+    return stored.fileId;
+  }
+
+  test("a render or conversion refused for the sandbox is queued only when health allows it, and once", async () => {
+    const scad = await refused("scad", DERIVED_MESSAGES.sandboxOffCheck);
+    const step = await refused("step", DERIVED_MESSAGES.convertSandboxOffKernel);
+
+    // Unknown, still being checked, or off and not allowed: nothing.
+    for (const sandbox of [null, CHECKING, off(false)]) {
+      expect(await derivedReporting(sandbox).requeueSandboxOff(new Date())).toBe(0);
+    }
+    expect(await jobsOf(scad)).toHaveLength(0);
+    expect(await jobsOf(step)).toHaveLength(0);
+
+    // Off but the slicer allows STEP conversions without it: the STEP file
+    // only, never a render.
+    expect(await derivedReporting(off(true)).requeueSandboxOff(new Date())).toBe(1);
+    expect((await jobsOf(step)).map((j) => j.data.kind)).toContain(DERIVED_KINDS.convertStep);
+    // Its job has run before the next run, which waits for any still queued.
+    expect(await settledFile(env, step)).toMatchObject({ derivedStatus: "ok" });
+    expect(await jobsOf(scad)).toHaveLength(0);
+    expect(await env.repos.files.get(scad)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.sandboxOffCheck,
+    });
+
+    // On: the render too. The STEP file is pending or done, so not again.
+    const on = derivedReporting(ON);
+    expect(await on.requeueSandboxOff(new Date())).toBe(1);
+    expect((await jobsOf(scad)).map((j) => j.data.kind)).toEqual([DERIVED_KINDS.renderScad]);
+    expect(await settledFile(env, scad)).toMatchObject({ derivedStatus: "ok" });
+    expect(await settledFile(env, step)).toMatchObject({ derivedStatus: "ok" });
+
+    // A second run right after queues nothing.
+    expect(await on.requeueSandboxOff(new Date())).toBe(0);
+    expect(await jobsOf(scad)).toHaveLength(1);
+  });
+
+  /** A queue that holds each job an hour, so what is queued stays queued. */
+  function holding(): DerivedDeps["queue"] {
+    const send: PgBoss["send"] = async (...args: unknown[]) => {
+      const [name, data, options] = args as [string, object, Record<string, unknown>];
+      return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
+        ...options,
+        startAfter: 3600,
+      });
+    };
+    return { send, findJobs: env.boss.findJobs.bind(env.boss) };
+  }
+
+  test("it queues at most one batch per run, and the next only once none of the last is still queued", async () => {
+    const first = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    const second = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    const batched = createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue: holding(),
+      retryDelaySeconds: 1,
+      backfillBatch: 1,
+      slicerState: {
+        current: async () => ({
+          timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+          sandbox: ON,
+        }),
+      },
+    });
+    expect(await batched.requeueSandboxOff(new Date())).toBe(1);
+    // The batch is still queued, so nothing more is queued.
+    expect(await batched.requeueSandboxOff(new Date())).toBe(0);
+    const queued = [...(await jobsOf(first)), ...(await jobsOf(second))];
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.data.requeue).toBe(true);
+
+    for (const j of queued) await env.boss.cancel(QUEUE.slicer, j.id);
+    expect(await batched.requeueSandboxOff(new Date())).toBe(1);
+    for (const j of [...(await jobsOf(first)), ...(await jobsOf(second))]) {
+      await env.boss.cancel(QUEUE.slicer, j.id);
+    }
+  });
+
+  test("both stored forms of the message are queued: the sentence alone, and after the previous-renders sentence", async () => {
+    const plain = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    const led = await refused(
+      "scad",
+      `${PREVIOUS_RENDERS_SENTENCE.scad} ${DERIVED_MESSAGES.sandboxOffCheck}`,
+    );
+    const stepLed = await refused(
+      "step",
+      `${PREVIOUS_RENDERS_SENTENCE.step} ${DERIVED_MESSAGES.convertSandboxOffCheck}`,
+    );
+    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(3);
+    for (const id of [plain, led, stepLed]) expect(await jobsOf(id)).toHaveLength(1);
+  });
+
+  test("a program's message that ends with a sandbox sentence is never queued", async () => {
+    const sentences = [
+      ["scad", DERIVED_MESSAGES.sandboxOffKernel],
+      ["scad", DERIVED_MESSAGES.sandboxOffCheck],
+      ["step", DERIVED_MESSAGES.convertSandboxOffKernel],
+      ["step", DERIVED_MESSAGES.convertSandboxOffCheck],
+    ] as const;
+    const ids: string[] = [];
+    for (const [kind, sentence] of sentences) {
+      const lead = kind === "scad" ? "OpenSCAD said:" : "The converter said:";
+      const previous =
+        kind === "scad" ? PREVIOUS_RENDERS_SENTENCE.scad : PREVIOUS_RENDERS_SENTENCE.step;
+      for (const message of [
+        `${lead} ${sentence}`,
+        `${lead} ERROR: x\n${sentence}`,
+        `${previous} ${lead} ${sentence}`,
+        `${previous} ${lead} ERROR: x\n${sentence}`,
+        `ERROR: x ${sentence}`,
+      ]) {
+        ids.push(await refused(kind, message));
+      }
+    }
+    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(0);
+    for (const id of ids) expect(await jobsOf(id)).toHaveLength(0);
+  });
+
+  test("a file that has a live job, or is no longer failed, is not queued again", async () => {
+    const busy = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    const file = await env.repos.files.get(busy);
+    if (!file) throw new Error("no file");
+    const held: DerivedJob = {
+      kind: DERIVED_KINDS.renderScad,
+      fileId: busy,
+      sourceBlobId: file.blobId,
+    };
+    const id = await (env.boss.send as (...a: unknown[]) => Promise<string | null>)(
+      QUEUE.slicer,
+      held,
+      { ...SLICER_RETRY, startAfter: 3600 },
+    );
+    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(0);
+    expect(await jobsOf(busy)).toHaveLength(1);
+    if (id !== null) await env.boss.cancel(QUEUE.slicer, id);
+  });
+
+  test("a render refused for another reason is left alone", async () => {
+    const other = await refused("scad", `${DERIVED_MESSAGES.previousRendersScad} ERROR: bad file`);
+    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(0);
+    expect(await jobsOf(other)).toHaveLength(0);
   });
 });

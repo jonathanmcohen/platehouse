@@ -1,4 +1,4 @@
-// The reason map (Slicer HTTP contract v1, as amended): Orca
+// The reason map (Slicer HTTP contract 2, as amended): Orca
 // v2.5.0's own return codes (src/libslic3r/Utils.hpp, messages from
 // src/OrcaSlicer.cpp cli_errors), as the slicing gate's lib/classify.mjs
 // reads them. -62 and -101 are legitimate refusals reported with their

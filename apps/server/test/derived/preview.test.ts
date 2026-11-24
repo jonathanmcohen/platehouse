@@ -148,6 +148,20 @@ describe("an STL's preview", () => {
     expect((error as Error).message).toBe(`${DERIVED_MESSAGES.previewRejected} ${message}`);
   });
 
+  // The slicer starts OpenSCAD's own words with "OpenSCAD said: ", and the
+  // preview sentence already ends with that lead-in, so it is said once.
+  test("OpenSCAD's refusal that already starts with the lead-in names it once", async () => {
+    const words = "ERROR: STL import: unexpected end of file";
+    const { target } = await slicer(422, {
+      error: "render_failed",
+      message: `OpenSCAD said: ${words}`,
+    });
+    const error = await failure(
+      stlPreviewOutputs(target, async () => Readable.from([STL]), STL.length, tmp),
+    );
+    expect((error as Error).message).toBe(`${DERIVED_MESSAGES.previewRejected} ${words}`);
+  });
+
   // Issue #379: the slicer refuses an STL with no triangles itself, before
   // OpenSCAD runs, so its sentence follows the preview sentence alone, never
   // "OpenSCAD said:".
@@ -250,6 +264,15 @@ describe("a STEP file's preview, from its stored mesh", () => {
     const { target } = await slicer(422, { error: "render_failed", message });
     const error = await failure(meshPreviewOutputs(target, mesh(stubGlb("mesh"))));
     expect((error as Error).message).toBe(`${DERIVED_MESSAGES.previewRejected} ${message}`);
+  });
+
+  test("OpenSCAD's refusal that already starts with the lead-in names it once", async () => {
+    const { target } = await slicer(422, {
+      error: "render_failed",
+      message: "OpenSCAD said: ERROR: CGAL error",
+    });
+    const error = await failure(meshPreviewOutputs(target, mesh(stubGlb("mesh"))));
+    expect((error as Error).message).toBe(`${DERIVED_MESSAGES.previewRejected} ERROR: CGAL error`);
   });
 
   // The 0.1.1 memory budget: the mesh is read whole into memory, so a mesh

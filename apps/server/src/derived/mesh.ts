@@ -143,8 +143,19 @@ function readGltf(glb: Buffer): { gltf: Gltf; bin: Buffer } {
   return { gltf, bin: glb.subarray(binAt + 8, binAt + 8 + binLength) };
 }
 
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** A list the GLB's JSON may leave out; anything else that is not a list is refused. */
+function listOf(value: unknown, what: string): unknown[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new MeshUnreadable(`the GLB's ${what} are not a list`);
+  return value;
+}
+
 function readParts(gltf: Gltf, bin: Buffer): Part[] {
-  for (const node of gltf.nodes ?? []) {
+  for (const node of listOf(gltf.nodes, "nodes")) {
+    if (!isRecord(node)) throw new MeshUnreadable("a node is not an object");
     for (const key of ["matrix", "translation", "rotation", "scale", "children"]) {
       if (key in node) {
         throw new MeshUnreadable(`a node has a ${key}, which the slicer never writes`);
@@ -152,8 +163,10 @@ function readParts(gltf: Gltf, bin: Buffer): Part[] {
     }
   }
   const parts: Part[] = [];
-  for (const mesh of gltf.meshes ?? []) {
-    for (const primitive of mesh.primitives ?? []) {
+  for (const mesh of listOf(gltf.meshes, "meshes")) {
+    if (!isRecord(mesh)) throw new MeshUnreadable("a mesh is not an object");
+    for (const primitive of listOf(mesh.primitives, "primitives")) {
+      if (!isRecord(primitive)) throw new MeshUnreadable("a primitive is not an object");
       const mode = primitive.mode ?? TRIANGLES;
       if (mode !== TRIANGLES) throw new MeshUnreadable(`a primitive is drawn as mode ${mode}`);
       const attributes = primitive.attributes as Record<string, unknown> | undefined;

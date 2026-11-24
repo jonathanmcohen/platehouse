@@ -265,12 +265,35 @@ container, the slicer, which is locked down.
   dropped, a read-only system, and only an in-memory `/work` folder that it cannot run programs
   from. Each job's folder is deleted afterwards.
 - **Limits.** It has a CPU and memory limit, a process limit, and runs one job at a time. Each plate
-  has a time cap, and the slicer kills a job that runs over, including any processes it started.
-- **OpenSCAD is boxed in further.** OpenSCAD runs under a Linux Landlock sandbox that lets it write
-  only to its own job folder and run only its own programs, with limits on CPU time, memory, file
-  size and processes. Before the first render the slicer checks that the sandbox really blocks a
-  read outside the job folder, and refuses to render until that check passes. It needs Linux 6.12
-  or newer (Landlock ABI 6).
+  has a time cap, and the slicer kills a job that runs over. After each job it also cleans up
+  processes the job left behind, and it stops a job's programs at once when its client goes away.
+  That clean-up runs only when the slicer image's own entrypoint is PID 1, so do not add an init
+  in front of it (`init: true` in Compose, `--init` with `docker run`); the slicer logs at start-up
+  when the clean-up is off.
+- **Each program is boxed in further.** OpenSCAD, OrcaSlicer and the STEP converter each run under
+  a Linux Landlock sandbox that lets them write only to their own job folder, so none can read or
+  change another job's files, and that refuses them any TCP connection. The sandbox does not block
+  UDP; the slicer's internal network is what keeps that from reaching anything (see below). Each
+  may run only its own programs and the system libraries, and read only what it needs:
+  - OpenSCAD reads fonts and the graphics and language settings it renders with.
+  - OrcaSlicer reads its own files, the printer and filament profiles, and fonts.
+  - The STEP converter reads the slicer's own code, which holds the converter.
+
+  Each also runs with limits on CPU time, file size and processes, and OpenSCAD on memory too. The
+  slicer reads a program's results only when each is an ordinary file of a limited size, never
+  through a link. OrcaSlicer works in its own folder inside the job folder, and the slicer keeps
+  the files it writes itself, such as the slice's time and memory report, in the job folder above
+  it, out of OrcaSlicer's reach.
+- **The sandbox is checked first.** At start-up the slicer checks that the sandbox really blocks a
+  read outside the job folder, and runs no render, slice or STEP conversion until that check
+  passes. It needs Linux 6.12 or newer (Landlock ABI 6). On an older kernel, or while the check
+  fails, renders and STL pictures are off. Slices and STEP conversions are off too, unless
+  `SLICER_ALLOW_UNSANDBOXED` is set on the slicer: then they run without the sandbox, with only
+  the limits above and the container's own isolation. Without the sandbox, a slice or STEP
+  conversion can also read and change other files the slicer's user can reach, including
+  leftovers of earlier jobs, reach the app over the internal network and send signals to the
+  slicer's own processes. A program that keeps running after its job can also read or change later
+  jobs' files, other members' files included.
 
 **What it does not do:**
 
@@ -287,8 +310,11 @@ container, the slicer, which is locked down.
   is why that is acceptable. A deployment pinned to a version tag gets the fixes with the next
   Platehouse release's version tag, so update Platehouse to get them: pulling the same version tag
   again gets nothing new.
-- OpenSCAD can still read the system libraries, fonts and programs it needs to run; the sandbox
-  keeps it away from your data, not from the operating system files inside its own container.
+- A new OrcaSlicer version that the slicer image workflow builds, other than the one the Dockerfile
+  pins, takes its AppImage hash and profile commit from upstream as found, without a human review.
+- Each program can still read the system libraries, fonts and programs it needs to run; the
+  sandbox keeps it away from your data and other jobs' files, not from the operating system files
+  inside its own container.
 - Some limits are documented in the code as known: for example, the sandbox does not block UDP.
   The network isolation is what keeps the slicer from reaching anything with it.
 - The app itself also reads untrusted files: it unpacks each `.3mf` to read its plates and
