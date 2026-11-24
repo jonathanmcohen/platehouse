@@ -450,7 +450,13 @@ export function UploadDialog({
           {t("upload.supported")}
         </p>
         <p className="studio-muted">{t("upload.duplicates")}</p>
-        <div className="studio-visually-hidden" role="status" aria-live="polite">
+        <div
+          className="studio-visually-hidden"
+          role="status"
+          aria-live="polite"
+          aria-atomic="false"
+          aria-relevant="additions"
+        >
           {said.map((line) => (
             <p key={line.id}>{line.text}</p>
           ))}
@@ -478,6 +484,7 @@ export function UploadDialog({
                   }
                   tabIndex={-1}
                 >
+                  <span className="studio-visually-hidden">{item.file.name}: </span>
                   {statusText(item, i18n)}
                 </span>
                 {item.status === "duplicate" ? (
@@ -490,8 +497,7 @@ export function UploadDialog({
                       className="studio-button"
                       aria-label={t("upload.importAnywayFile", { name: item.file.name })}
                       onClick={(event) => {
-                        sentKeys.current.add(item.key);
-                        upload.importAnyway(item.key);
+                        if (upload.importAnyway(item.key)) sentKeys.current.add(item.key);
                         focusRowStatus(event.currentTarget);
                       }}
                     >
@@ -506,8 +512,7 @@ export function UploadDialog({
                       className="studio-button"
                       aria-label={t("upload.retryFile", { name: item.file.name })}
                       onClick={(event) => {
-                        sentKeys.current.add(item.key);
-                        upload.retry(item.key);
+                        if (upload.retry(item.key)) sentKeys.current.add(item.key);
                         focusRowStatus(event.currentTarget);
                       }}
                     >

@@ -462,3 +462,15 @@ test("the CSS is ASCII only", () => {
   const offending = [...CSS].findIndex((c) => (c.codePointAt(0) ?? 0) > 0x7f);
   expect(offending, `a non-ASCII character at offset ${offending}`).toBe(-1);
 });
+
+describe("the upload dialog's combine switch", () => {
+  const UPLOAD_CSS = readFileSync(new URL("../src/upload/upload.css", import.meta.url), "utf8");
+
+  test("looks unavailable while it is aria-disabled", () => {
+    const block = /\.ph-switch:has\(input\[aria-disabled="true"\]\)\s*\{([^}]*)\}/.exec(
+      UPLOAD_CSS,
+    )?.[1];
+    expect(block).toMatch(/cursor:\s*not-allowed/);
+    expect(block).toMatch(/opacity:\s*0\.6/);
+  });
+});
