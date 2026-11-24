@@ -306,6 +306,8 @@ container, the slicer, which is locked down.
   is why that is acceptable. A deployment pinned to a version tag gets the fixes with the next
   Platehouse release's version tag, so update Platehouse to get them: pulling the same version tag
   again gets nothing new.
+- A new OrcaSlicer version that the slicer image workflow builds, other than the one the Dockerfile
+  pins, takes its AppImage hash and profile commit from upstream as found, without a human review.
 - Each program can still read the system libraries, fonts and programs it needs to run; the
   sandbox keeps it away from your data and other jobs' files, not from the operating system files
   inside its own container.

@@ -113,6 +113,25 @@ describe("buildSliceable", () => {
     expect(extruders).toEqual(["1", "2", "1", "2"]);
   });
 
+  test("cubeSize makes each object larger than the bed, and the default stays 20 mm", () => {
+    const edge = (model: string) => {
+      const xs = [...model.matchAll(/<vertex x="([\d.]+)"/g)].map((m) => Number(m[1]));
+      return Math.max(...xs);
+    };
+    const small = sliceableEntries({ plates: 1, filaments: 1 }).get("3D/3dmodel.model") ?? "";
+    const big =
+      sliceableEntries({ plates: 1, filaments: 1, cubeSize: 300 }).get("3D/3dmodel.model") ?? "";
+    expect(edge(small)).toBe(20);
+    expect(edge(big)).toBe(300);
+  });
+
+  test("a cubeSize that is not a positive number is refused", () => {
+    expect(() => buildSliceable({ plates: 1, filaments: 1, cubeSize: 0 })).toThrow(/cubeSize/);
+    expect(() => buildSliceable({ plates: 1, filaments: 1, cubeSize: Number.NaN })).toThrow(
+      /cubeSize/,
+    );
+  });
+
   test("options outside 1 to 128 plates or 1 to 16 filaments are refused", () => {
     expect(() => buildSliceable({ plates: 0, filaments: 1 })).toThrow(/plates/);
     expect(() => buildSliceable({ plates: 129, filaments: 1 })).toThrow(/plates/);

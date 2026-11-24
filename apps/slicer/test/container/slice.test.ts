@@ -46,4 +46,20 @@ describe("slicing in the image", () => {
       expect(body.peakRssBytes).toBeGreaterThan(0);
     },
   );
+
+  // Orca's own refusal, mapped by reasons.ts: -52 is "objects partly outside
+  // the bed". A 300 mm cube cannot sit on the P1S's 256 mm bed.
+  test("an object larger than the bed is refused with code -52 and reason bed_too_small", async () => {
+    const tooBig = buildSliceable({ plates: 1, filaments: 1, cubeSize: 300 });
+    const res = await fetch(
+      `${slicer.base}/v1/slice?printer=${encodeURIComponent(PRINTERS[0]?.printer ?? "")}&plate=1`,
+      { method: "POST", headers: { "content-type": "application/octet-stream" }, body: tooBig },
+    );
+    expect(res.status).toBe(200);
+    const body = slicerContract.sliceResult.parse(await res.json());
+    expect(body.status).toBe("failed");
+    if (body.status !== "failed") return;
+    expect(body.code).toBe(-52);
+    expect(body.reason).toBe("bed_too_small");
+  });
 });

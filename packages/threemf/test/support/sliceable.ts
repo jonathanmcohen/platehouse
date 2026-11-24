@@ -48,6 +48,8 @@ const COLOURS = [
 export interface SliceableOptions {
   plates: number;
   filaments: number;
+  /** Edge of each cube in mm (default 20). A value above the bed's 256 makes an object the bed cannot hold. */
+  cubeSize?: number;
   /** Extra field bytes for the first entry's central record, to build a crafted directory. */
   firstEntryExtra?: Buffer;
 }
@@ -111,6 +113,10 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
   if (!Number.isInteger(filaments) || filaments < 1 || filaments > COLOURS.length) {
     throw new RangeError(`filaments must be 1 to ${COLOURS.length}, not ${filaments}`);
   }
+  const cubeSize = opts.cubeSize ?? CUBE;
+  if (!Number.isFinite(cubeSize) || cubeSize <= 0) {
+    throw new RangeError(`cubeSize must be a positive number, not ${cubeSize}`);
+  }
   const placed: Placed[] = [];
   for (let p = 0; p < plates; p++) {
     const origin = plateOrigin(p, plates);
@@ -125,7 +131,7 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
     }
   }
 
-  const mesh = cubeMesh(CUBE);
+  const mesh = cubeMesh(cubeSize);
   const model = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021">',
