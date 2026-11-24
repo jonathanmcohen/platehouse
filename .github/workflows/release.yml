@@ -227,6 +227,23 @@ jobs:
           cache-dir: ${{ runner.temp }}/trivy-cache
           version: v0.76.2
 
+      # The library gate (issue #453), beside the OS gate: a fixable CRITICAL
+      # finding in a library the image ships (the npm packages and the Node
+      # binary) fails the job before the push. The OS gate above is
+      # unchanged; HIGH library findings are not gated and show in the full
+      # report below.
+      - name: Trivy library gate (fail on fixable CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.LOCAL }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          vuln-type: library
+          exit-code: "1"
+          format: table
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          version: v0.76.2
+
       - name: Trivy full report (informational, does not fail the job)
         if: ${{ !cancelled() }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

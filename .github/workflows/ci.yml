@@ -95,11 +95,13 @@ jobs:
       # would leave no gate path in the list and skip the jobs.
       # The tests list holds tools/slicing-gate and every file the gate tests
       # read from outside it (issue #222), all in
-      # tools/slicing-gate/test/ciworkflow.test.mjs, rctarget.test.mjs and
-      # aptsnapshot.test.mjs: this workflow, .node-version, release.yml,
-      # slicer-image.yml, rc-tag.yml, apt-snapshot.yml, docs-pages.yml,
+      # tools/slicing-gate/test/ciworkflow.test.mjs, rctarget.test.mjs,
+      # aptsnapshot.test.mjs and baseimages.test.mjs: this workflow,
+      # .node-version, release.yml, slicer-image.yml, rc-tag.yml,
+      # apt-snapshot.yml, base-images.yml, docs-pages.yml,
       # .github/scripts/rc-target.mjs, .github/scripts/apt-snapshot.mjs,
-      # .github/scripts/release-gate.mjs,
+      # .github/scripts/base-images.mjs, .github/scripts/release-gate.mjs,
+      # pnpm-workspace.yaml (the overrides test in baseimages.test.mjs),
       # docker/app.Dockerfile, docker/check-image-labels.sh (the slicer
       # image's label check step runs it), docker/test-app-image.sh, docker/app.Dockerfile.dockerignore, the root
       # tsconfig.json and tools/brand/tsconfig.json (workflowpins.test.mjs),
@@ -132,7 +134,7 @@ jobs:
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|docs-pages)\.yml$|\.github/scripts/(rc-target|apt-snapshot|release-gate)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|docker/app\.Dockerfile\.dockerignore$|tsconfig\.json$|tools/brand/tsconfig\.json$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|base-images|docs-pages)\.yml$|\.github/scripts/(rc-target|apt-snapshot|base-images|release-gate)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|docker/app\.Dockerfile\.dockerignore$|pnpm-workspace\.yaml$|tsconfig\.json$|tools/brand/tsconfig\.json$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
               echo "The slicing gate or a file its tests read changed; the gate tests run."
             else
               tests=false
@@ -252,6 +254,14 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
+      # Issues #432 and #453: a critical advisory in a package the server, web
+      # app, slicer or importer ships fails the job. Production dependencies
+      # only; the overrides in pnpm-workspace.yaml keep the docs site's known
+      # advisories out of the report. The exit code is pnpm's and nothing
+      # waves it through. It asks the advisory service live, so a new
+      # advisory can fail a pull request that changed nothing.
+      - name: Audit shipped dependencies (fail on critical)
+        run: pnpm audit --prod --audit-level=critical
       - name: Biome
         run: pnpm exec biome ci .
 
@@ -799,6 +809,22 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           vuln-type: os
+          exit-code: "1"
+          format: table
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          version: v0.76.2
+
+      # The library gate (issue #453), beside the OS gate: a fixable CRITICAL
+      # finding in a library the image ships (the npm packages and the Node
+      # binary) fails the job. The OS gate above is unchanged, and HIGH
+      # library findings are not gated.
+      - name: Trivy library gate (fail on fixable CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          vuln-type: library
           exit-code: "1"
           format: table
           cache-dir: ${{ runner.temp }}/trivy-cache

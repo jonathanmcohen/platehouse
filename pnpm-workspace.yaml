@@ -32,3 +32,15 @@ overrides:
   tldts: 7.5.2
   tldts-core: 7.5.2
   archiver-utils>glob: 14.0.6
+
+  # The docs site (apps/docs, Docusaurus) pulls in three packages with known
+  # advisories in their old releases (issue #432): tinypool 1.1.1 (prototype
+  # pollution reaching worker options), serialize-javascript 6.0.2 (code
+  # execution, CPU exhaustion and XSS) and uuid 8.3.2 (a missing buffer bounds
+  # check). They run only when the site is built, never in the server, web app,
+  # slicer or importer. The ranges are the first fixed releases and up; pnpm
+  # resolves each to the newest release that passes its minimumReleaseAge.
+  # "pnpm audit --prod --audit-level=critical" runs in CI (the lint job).
+  tinypool: ">=2.1.2"
+  serialize-javascript: ">=7.1.3"
+  uuid: ">=11.1.1"

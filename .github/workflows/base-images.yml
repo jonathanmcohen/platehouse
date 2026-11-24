@@ -1,0 +1,406 @@
+# Base image and Node refresh (issue #453).
+#
+# The app image (docker/app.Dockerfile), the slicer image
+# (apps/slicer/Dockerfile) and the slicing gate image
+# (tools/slicing-gate/Dockerfile) pin their base image by digest in an ARG
+# BASE line, and the slicer and the gate download Node from nodejs.org with a
+# pinned sha256 (NODE_URL, NODE_SHA256). Dependabot does not read ARG-based
+# images, and apt upgrade does not move a digest-frozen Node, so nothing else
+# proposes new ones. Once a week this workflow does, in a pull request:
+#
+#   refresh:     run only from main -> resolve the newest digest of the app
+#                image's node:X.Y.Z-trixie-slim and of ubuntu:24.04 (docker
+#                buildx imagetools inspect) and the newest Node of the same
+#                major (nodejs.org index.json and its SHASUMS256.txt) ->
+#                rewrite the pins (.github/scripts/base-images.mjs) -> push
+#                the bot branch and open its one pull request
+#   dispatch-ci: start the ci workflow on the bot branch
+#
+# One Node release drives both: the app image's node tag and the slicer and
+# gate downloads move to the same X.Y.Z, and the script refuses to read files
+# where they differ. A Node release that nodejs.org lists but Docker Hub does
+# not have as an image yet is passed over for a week: Node stays where it is
+# and only the digests move. Node never moves to another major, and never
+# backwards. The four files that hold the pins (the three Dockerfiles and the
+# slicing gate README's pins table) move together, and nothing else is
+# written: .node-version, e2e/compose.yml and the Node version in README.md
+# keep their value, and the pull request says so. After the rewrite, the
+# leftover check (node .github/scripts/base-images.mjs leftovers) stops the
+# run before it pushes when any other tracked file but CHANGELOG.md still
+# names a digest that moved.
+#
+# The pull request. As in apt-snapshot.yml: at most one open, from the fixed
+# branch bot/base-images into main, holding one commit on the current main.
+# When the branch already holds the same change, nothing is pushed and an
+# open pull request is left as it is (one is opened if none is). When the
+# branch holds anything else, it is replaced rather than moved: the open pull
+# request from it, if any, is closed with a comment, the branch is deleted,
+# pushed again from main, and a new pull request is opened that names the one
+# it replaces. GitHub refuses a job token's push that changes files under
+# .github/workflows, and moving an old branch onto the current main would
+# usually carry such changes. The branch is the workflow's: a fix pushed to
+# it is lost at the next run, so fix a broken update on another branch.
+#
+# CI on the bot pull request. Events made with the job's GITHUB_TOKEN start no
+# workflow run, with two documented exceptions: a workflow_dispatch always
+# does, and a pull_request opened by the token starts its runs only once
+# someone with write access approves them. So dispatch-ci starts ci.yml on the
+# bot branch with workflow_dispatch (ci.yml accepts it); with no base commit
+# to compare, ci runs every path-scoped job. No personal token, GitHub App or
+# new secret is used. Opening the pull request needs the repository setting
+# "Allow GitHub Actions to create and approve pull requests" (Settings,
+# Actions, General, Workflow permissions); without it the open step fails and
+# says so.
+#
+# When it runs: at 06:00 UTC on Mondays, and by hand from main
+# (workflow_dispatch); any other branch is refused before anything runs.
+# GitHub runs a schedule or a dispatch only for a workflow file on the
+# default branch. One concurrency group, never cancelled part way.
+#
+# Permissions: contents: read at the top; refresh alone holds contents: write
+# (the push) and pull-requests: write, and dispatch-ci alone actions: write
+# (starting ci.yml). Actions are pinned to full commit SHAs, with the release
+# tag as a comment (#420). The checkout keeps no token on disk; the push, and
+# the fetch before it, pass the job token to git in the environment of that
+# one command.
+name: base-images
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: base-images
+  cancel-in-progress: false
+
+env:
+  BRANCH: bot/base-images
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  refresh:
+    name: Move the base images and Node forward in a pull request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      ci: ${{ steps.pr.outputs.ci }}
+    steps:
+      # A run by hand from any other branch would push that branch's code to
+      # the bot branch and propose it as a base image update.
+      - name: Run only from main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::${REF} is not main; base-images runs only from main, so nothing is changed"
+            exit 1
+          fi
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+
+      # Reads the current pins, then asks nodejs.org and Docker Hub for the
+      # new ones. Nothing is written to the repository, and nothing is handed
+      # on unless every lookup answered: a failed lookup fails the run.
+      - name: Resolve the newest base images and Node
+        id: resolve
+        run: |
+          script=.github/scripts/base-images.mjs
+          pins="$(node "$script" read)"
+          get() { sed -n "s/^$1=//p" <<<"$pins"; }
+          old_app_base="$(get old_app_base)"
+          old_ubuntu_base="$(get old_ubuntu_base)"
+          old_node_version="$(get old_node_version)"
+          old_node_sha="$(get old_node_sha)"
+          major="$(get node_major)"
+          ubuntu_image="$(get ubuntu_image)"
+
+          # The digest of the multi-arch index Docker Hub serves for a tag:
+          # returns 1 when Docker Hub has no such image, 2 when its answer is
+          # not a digest.
+          digest_of() {
+            local d
+            d="$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}')" || return 1
+            if [[ ! "$d" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::${1}: ${d} is not an image digest" >&2
+              return 2
+            fi
+            printf '%s\n' "$d"
+          }
+
+          curl -fsSL --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/index.json" https://nodejs.org/dist/index.json
+          version="$(node "$script" latest-node "$major" "${RUNNER_TEMP}/index.json" "$old_node_version")"
+
+          # A new Node release is used only once Docker Hub has its image, so
+          # the app image and the downloads stay on one release.
+          if [ "$version" != "$old_node_version" ]; then
+            status=0
+            app_digest="$(digest_of "node:${version}-trixie-slim")" || status=$?
+            if [ "$status" -eq 2 ]; then exit 1; fi
+            if [ "$status" -ne 0 ]; then
+              echo "::notice::node:${version}-trixie-slim is not on Docker Hub yet; Node stays at ${old_node_version} this run"
+              version="$old_node_version"
+            fi
+          fi
+          if [ "$version" = "$old_node_version" ]; then
+            app_digest="$(digest_of "node:${version}-trixie-slim")" || { echo "::error::could not read the digest of node:${version}-trixie-slim from Docker Hub" >&2; exit 1; }
+            node_sha="$old_node_sha"
+          else
+            curl -fsSL --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/SHASUMS256.txt" "https://nodejs.org/dist/v${version}/SHASUMS256.txt"
+            node_sha="$(node "$script" node-sha "${RUNNER_TEMP}/SHASUMS256.txt" "node-v${version}-linux-x64.tar.xz")"
+          fi
+          ubuntu_digest="$(digest_of "$ubuntu_image")" || { echo "::error::could not read the digest of ${ubuntu_image} from Docker Hub" >&2; exit 1; }
+
+          {
+            echo "old_app_base=${old_app_base}"
+            echo "old_ubuntu_base=${old_ubuntu_base}"
+            echo "old_node_version=${old_node_version}"
+            echo "old_node_sha=${old_node_sha}"
+            echo "next_app_base=node:${version}-trixie-slim@${app_digest}"
+            echo "next_ubuntu_base=${ubuntu_image}@${ubuntu_digest}"
+            echo "next_node_version=${version}"
+            echo "next_node_sha=${node_sha}"
+            echo "next_date=$(date -u +%F)"
+          } >>"$GITHUB_OUTPUT"
+
+      # Writes the new pins into the four files. changed=false when they were
+      # all current already.
+      - name: Rewrite the pins
+        id: rewrite
+        env:
+          NEXT_APP_BASE: ${{ steps.resolve.outputs.next_app_base }}
+          NEXT_UBUNTU_BASE: ${{ steps.resolve.outputs.next_ubuntu_base }}
+          NEXT_NODE_VERSION: ${{ steps.resolve.outputs.next_node_version }}
+          NEXT_NODE_SHA: ${{ steps.resolve.outputs.next_node_sha }}
+          NEXT_DATE: ${{ steps.resolve.outputs.next_date }}
+        run: |
+          node .github/scripts/base-images.mjs rewrite
+          changed="$(git diff --name-only | sort)"
+          if [ -z "$changed" ]; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            echo "Up to date: the base images and Node ${NEXT_NODE_VERSION} are current; nothing was pushed."
+            echo "Up to date: the base images and Node \`${NEXT_NODE_VERSION}\` are current; nothing was pushed." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          allowed="$(printf '%s\n' docker/app.Dockerfile apps/slicer/Dockerfile tools/slicing-gate/Dockerfile tools/slicing-gate/README.md)"
+          stray="$(grep -vxF -f <(printf '%s\n' "$allowed") <<<"$changed" || true)"
+          if [ -n "$stray" ]; then
+            echo "::error::the rewrite changed these files, not only the pinned four:"
+            printf '%s\n' "$stray"
+            exit 1
+          fi
+          echo "changed=true" >>"$GITHUB_OUTPUT"
+
+      # One commit on the current main, holding the changed pinned files and
+      # nothing else; pushed only when the bot branch does not already hold
+      # the same tree. A bot branch holding anything else is replaced, never
+      # moved (see the header), closing its open pull request first. Then a
+      # pull request is opened unless one is open for this same change.
+      # ci=true when there is something new for CI to run: a push, or a pull
+      # request opened for a branch pushed earlier.
+      - name: Push the branch and open the pull request
+        id: pr
+        if: ${{ steps.rewrite.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OLD_APP_BASE: ${{ steps.resolve.outputs.old_app_base }}
+          OLD_UBUNTU_BASE: ${{ steps.resolve.outputs.old_ubuntu_base }}
+          OLD_NODE_VERSION: ${{ steps.resolve.outputs.old_node_version }}
+          OLD_NODE_SHA: ${{ steps.resolve.outputs.old_node_sha }}
+          NEXT_APP_BASE: ${{ steps.resolve.outputs.next_app_base }}
+          NEXT_UBUNTU_BASE: ${{ steps.resolve.outputs.next_ubuntu_base }}
+          NEXT_NODE_VERSION: ${{ steps.resolve.outputs.next_node_version }}
+          NEXT_NODE_SHA: ${{ steps.resolve.outputs.next_node_sha }}
+          SERVER_URL: ${{ github.server_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          files=(docker/app.Dockerfile apps/slicer/Dockerfile tools/slicing-gate/Dockerfile tools/slicing-gate/README.md)
+          changed="$(git diff --name-only | sort)"
+          stray="$(grep -vxF -f <(printf '%s\n' "${files[@]}") <<<"$changed" || true)"
+          if [ -z "$changed" ] || [ -n "$stray" ]; then
+            echo "::error::the rewrite changed these files, not only the pinned four:"
+            printf '%s\n' "$changed"
+            exit 1
+          fi
+          # The leftover check: a file other than the pinned four that names
+          # a digest the rewrite moved is a copy of the old pin it left behind.
+          moved=()
+          if [ "$OLD_APP_BASE" != "$NEXT_APP_BASE" ]; then moved+=("${OLD_APP_BASE##*@sha256:}"); fi
+          if [ "$OLD_UBUNTU_BASE" != "$NEXT_UBUNTU_BASE" ]; then moved+=("${OLD_UBUNTU_BASE##*@sha256:}"); fi
+          if [ "$OLD_NODE_SHA" != "$NEXT_NODE_SHA" ]; then moved+=("$OLD_NODE_SHA"); fi
+          status=0
+          node .github/scripts/base-images.mjs leftovers "${moved[@]}" || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the leftover check failed (exit ${status}); nothing is pushed"
+            exit 1
+          fi
+
+          if [ "$OLD_NODE_VERSION" != "$NEXT_NODE_VERSION" ]; then
+            title="Move the base images and Node to ${NEXT_NODE_VERSION}"
+            what="Node ${OLD_NODE_VERSION} to ${NEXT_NODE_VERSION} (the app image's node tag and the slicer and gate downloads move together) and the base image digests"
+          else
+            title="Refresh the base image digests (Node stays at ${NEXT_NODE_VERSION})"
+            what="the base image digests; Node stays at ${NEXT_NODE_VERSION}"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -q -C "$BRANCH"
+          git add "${files[@]}"
+          git commit -q -F - <<EOF
+          ${title}
+
+          The app, slicer and slicing gate images pin their base images, and
+          the slicer and gate their Node download, by digest. This moves
+          ${what}
+          to what Docker Hub and nodejs.org serve today (#453).
+
+          Made by ${RUN_URL}
+          EOF
+          # authgit: git with the job token as an HTTP header, passed in the
+          # environment of that one command, so it is never written to disk
+          # or put on a command line. The header value is masked in the log.
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::${basic}"
+          authgit() {
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.${SERVER_URL}/.extraheader" \
+              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${basic}" git "$@"
+          }
+          # The ARG BASE and NODE_SHA256 lines of the three Dockerfiles at a
+          # ref, to tell "the same pins on an older main" from "older pins".
+          pins_at() {
+            local f
+            for f in docker/app.Dockerfile apps/slicer/Dockerfile tools/slicing-gate/Dockerfile; do
+              git show "${1}:${f}" 2>/dev/null | grep -E '^ARG (BASE|NODE_SHA256)=' || true
+            done
+          }
+          remote="$(authgit ls-remote origin "refs/heads/${BRANCH}" | awk '{ print $1 }')"
+          # --head matches the branch name only, whoever owns the branch, and
+          # anyone can open a pull request from a fork branch of the same
+          # name; only one from this repository is the bot's.
+          existing="$(gh pr list --repo "$REPO" --head "$BRANCH" --base main --state open --json number,isCrossRepository --jq '[.[] | select(.isCrossRepository | not)][0].number // empty')"
+          pushed=false
+          replaced=""
+          was=""
+          if [ -n "$remote" ] && authgit fetch -q origin "refs/heads/${BRANCH}" &&
+            [ "$(git rev-parse 'FETCH_HEAD^{tree}')" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+            echo "${BRANCH} already holds this change on this main; nothing is pushed"
+          else
+            if [ -n "$remote" ]; then
+              if [ "$(pins_at FETCH_HEAD)" = "$(pins_at HEAD)" ]; then
+                why="Replaced because main moved since it was opened: it proposed these same pins on an older main"
+                was="proposed the same change on an older main"
+              else
+                why="Replaced by newer pins"
+                was="proposed an older change"
+              fi
+              # Replaced, not moved: close its open pull request (deleting
+              # the branch would close it anyway, with no word why), then
+              # delete the branch, if it is still where it was read.
+              if [ -n "$existing" ]; then
+                gh pr close "$existing" --repo "$REPO" --comment "${why}: the base-images workflow opens a new pull request from the same branch. ${RUN_URL}"
+                echo "Closed pull request #${existing}; a new one replaces it"
+                replaced="$existing"
+                existing=""
+              fi
+              authgit push -q --force-with-lease="refs/heads/${BRANCH}:${remote}" origin ":refs/heads/${BRANCH}"
+              echo "Deleted ${BRANCH} (was ${remote})"
+            fi
+            authgit push -q origin "HEAD:refs/heads/${BRANCH}"
+            pushed=true
+            echo "Pushed ${BRANCH} at $(git rev-parse HEAD)"
+          fi
+
+          runs="${SERVER_URL}/${REPO}/actions/workflows/ci.yml?query=branch%3A${BRANCH//\//%2F}"
+          {
+            echo "The app image, the slicer image and the slicing gate image pin their base images by digest (ARG BASE), and the slicer and the gate download Node with a pinned sha256. Dependabot and other updaters do not read ARG-based images, and apt upgrade does not move a digest-frozen Node, so nothing else proposes these updates. This weekly pull request moves ${what} to what Docker Hub and nodejs.org serve today."
+            echo ""
+            echo "**What changed:** the pins in docker/app.Dockerfile, apps/slicer/Dockerfile, tools/slicing-gate/Dockerfile and the pins table in tools/slicing-gate/README.md. Nothing else."
+            echo ""
+            echo "- app image: \`${OLD_APP_BASE}\` to \`${NEXT_APP_BASE}\`"
+            echo "- Ubuntu (slicer and gate): \`${OLD_UBUNTU_BASE}\` to \`${NEXT_UBUNTU_BASE}\`"
+            echo "- Node download (slicer and gate): ${OLD_NODE_VERSION} to ${NEXT_NODE_VERSION}"
+            if [ "$OLD_NODE_VERSION" != "$NEXT_NODE_VERSION" ]; then
+              echo ""
+              echo "**Node version elsewhere:** \`.node-version\` (the Node CI itself runs on), e2e/compose.yml and the version named in README.md are not moved by this pull request. Move them on top of it if CI should follow the images."
+            fi
+            echo ""
+            echo "**Checks:** GitHub holds the usual pull request checks of a pull request a workflow opened until someone approves them, so the workflow has started the full ci workflow on this branch itself: ${runs}. It builds the app image and both slicing images, runs their tests, and fails on a fixable OS finding of HIGH or CRITICAL and a fixable library finding of CRITICAL in the app image. If the merge box offers to approve workflows for this pull request, approving runs the same checks a second time; it is not needed."
+            echo ""
+            echo "**To merge:** merge when ci is green. Merging publishes nothing: the published images get the new bases with their next build. If the update breaks a build or a test, fix it on another branch, because the next run replaces this one, or close this pull request; the next weekly run opens a new one."
+            if [ -n "$replaced" ]; then
+              echo ""
+              echo "This replaces #${replaced}, which ${was} and was not merged."
+            fi
+            echo ""
+            echo "Opened by the base-images workflow: ${RUN_URL}"
+          } >body.md
+
+          ci="$pushed"
+          if [ -n "$existing" ]; then
+            echo "Pull request #${existing} already proposes this change; left as it is"
+            number="$existing"
+          else
+            status=0
+            url="$(gh pr create --repo "$REPO" --base main --head "$BRANCH" --title "$title" --body-file body.md 2>pr-error.txt)" || status=$?
+            if [ "$status" -ne 0 ]; then
+              cat pr-error.txt
+              if [ -n "$replaced" ]; then echo "Pull request #${replaced} was closed as replaced before this failure."; fi
+              if grep -qi 'not permitted to create or approve pull requests' pr-error.txt; then
+                echo "::error::GitHub refused to let the workflow open the pull request. Turn on Settings, Actions, General, Workflow permissions, \"Allow GitHub Actions to create and approve pull requests\", then run base-images again by hand from main. ${BRANCH} is pushed and holds the change."
+              else
+                echo "::error::gh pr create failed (exit ${status}); ${BRANCH} is pushed and holds the change, so run base-images again by hand from main"
+              fi
+              exit 1
+            fi
+            number="${url##*/}"
+            ci=true
+            echo "Opened pull request #${number}: ${url}"
+          fi
+          echo "ci=${ci}" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Base images and Node ${OLD_NODE_VERSION} -> ${NEXT_NODE_VERSION}"
+            echo ""
+            echo "- pull request: #${number}"
+            echo "- branch pushed: ${pushed}"
+            if [ -n "$replaced" ]; then echo "- replaced and closed: #${replaced}"; fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  # Starts ci.yml on the bot branch, as the bot's own pull request event
+  # waits for an approval. Only this job may start workflows.
+  dispatch-ci:
+    name: Start CI on the bot branch
+    needs: refresh
+    if: ${{ !cancelled() && needs.refresh.result == 'success' && needs.refresh.outputs.ci == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Start the ci workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          gh workflow run ci.yml --repo "$REPO" --ref "$BRANCH"
+          runs="${SERVER_URL}/${REPO}/actions/workflows/ci.yml?query=branch%3A${BRANCH//\//%2F}"
+          echo "Started ci.yml on ${BRANCH}: ${runs}"
+          echo "Started ci on \`${BRANCH}\`: ${runs}" >>"$GITHUB_STEP_SUMMARY"

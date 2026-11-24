@@ -102,6 +102,10 @@ test("every RUN that calls need sources it, and both stages copy it in", () => {
 // the Node tarball and the NIST zip). See the PR for the listing lines.
 test("the build checks the paths the pinned artifacts really hold", () => {
   const all = runs().join("\n");
+  // The Node release the Dockerfile downloads (the weekly base-images
+  // workflow moves it), not a literal that would fail that pull request.
+  const node = readFileSync(join(HERE, "Dockerfile"), "utf8").match(/^ARG NODE_URL=\S+\/dist\/v(\d+\.\d+\.\d+)\//m)?.[1];
+  assert.ok(node, "NODE_URL names a release");
   for (const check of [
     "need -x /opt/orca/AppRun",
     "need -x /opt/orca/libexec/orca-slicer-env",
@@ -111,7 +115,7 @@ test("the build checks the paths the pinned artifacts really hold", () => {
     "need -x /opt/openscad/AppRun",
     "need -x /opt/openscad/usr/bin/openscad",
     "need -x /usr/local/bin/landrun",
-    'need "$(node --version)" = v26.13.0',
+    `need "$(node --version)" = v${node}`,
     "need -f /opt/gate/node_modules/occt-import-js/dist/occt-import-js.js",
     "need -f /opt/gate/node_modules/occt-import-js/dist/occt-import-js.wasm",
   ]) {

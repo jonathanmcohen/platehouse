@@ -340,7 +340,7 @@ function stepInputs(step) {
   return { uses, inputs };
 }
 
-test("the app image job runs the release workflow's Trivy gate on the image it built, last", () => {
+test("the app image job runs the release workflow's Trivy gate on the image it built, then the library gate, last", () => {
   const app = jobBlock(text(), "app-image");
   const release = readFileSync(RELEASE, "utf8");
   const ours = stepInputs(stepBlock(app, TRIVY_GATE));
@@ -363,9 +363,11 @@ test("the app image job runs the release workflow's Trivy gate on the image it b
     assert.equal(ours.inputs[k], v, `${k}: ${v}`);
   }
   assert.doesNotMatch(stepBlock(app, TRIVY_GATE), /\n {8}(if|continue-on-error):/, "nothing softens the gate");
-  // After both image checks, and the job's last step.
+  // After both image checks, and the job's last two steps: the OS gate, then
+  // the library gate (issue #453), which baseimages.test.mjs pins.
   const steps = app.split(/\n(?= {6}- )/).slice(1);
-  assert.ok(steps.at(-1).startsWith(`      - name: ${TRIVY_GATE}\n`), "the gate is the last step");
+  assert.ok(steps.at(-2).startsWith(`      - name: ${TRIVY_GATE}\n`), "the gate is the second to last step");
+  assert.ok(steps.at(-1).startsWith("      - name: Trivy library gate (fail on fixable CRITICAL)\n"), "the library gate is the last step");
   assert.ok(app.indexOf("test-app-image.sh \"$NO_WEB_IMAGE\" unhealthy") < app.indexOf(`name: ${TRIVY_GATE}`));
   assert.ok(app.indexOf("test-app-image.sh \"$IMAGE\" healthy") < app.indexOf(`name: ${TRIVY_GATE}`));
 });
@@ -378,7 +380,11 @@ test("every Trivy step in ci.yml and release.yml sets the same exact Trivy versi
   const steps = [text(), readFileSync(RELEASE, "utf8")].flatMap((t) =>
     t.split(/\n(?= {6}- )/).filter((s) => /\n {8}uses: aquasecurity\/trivy-action@/.test(s)),
   );
-  assert.equal(steps.length, 4, "the CI gate, the CI slicer report, the release gate and the release full report");
+  assert.equal(
+    steps.length,
+    6,
+    "the CI OS and library gates, the CI slicer report, the release OS and library gates and the release full report",
+  );
   const versions = steps.map((s) => stepInputs(s).inputs.version);
   for (const v of versions) assert.match(v ?? "", /^v\d+\.\d+\.\d+$/, `an exact version: ${v}`);
   assert.equal(new Set(versions).size, 1, `one version in all of them: ${versions.join(", ")}`);
@@ -937,6 +943,9 @@ for (const [file, want] of [
   [".github/scripts/rc-target.mjs", TESTS],
   [".github/workflows/apt-snapshot.yml", TESTS],
   [".github/scripts/apt-snapshot.mjs", TESTS],
+  [".github/workflows/base-images.yml", TESTS],
+  [".github/scripts/base-images.mjs", TESTS],
+  ["pnpm-workspace.yaml", TESTS],
   ["docker/app.Dockerfile", TESTS],
   ["docker/check-image-labels.sh", TESTS],
   ["apps/slicer/Dockerfile", TESTS],
@@ -1174,6 +1183,9 @@ test("gate jobs decision: every file the gate tests read outside tools/slicing-g
     ".github/scripts/rc-target.mjs",
     ".github/workflows/apt-snapshot.yml",
     ".github/scripts/apt-snapshot.mjs",
+    ".github/workflows/base-images.yml",
+    ".github/scripts/base-images.mjs",
+    "pnpm-workspace.yaml",
     "docker/app.Dockerfile",
     "docker/check-image-labels.sh",
     "apps/slicer/Dockerfile",
