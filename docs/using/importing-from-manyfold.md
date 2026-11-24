@@ -15,7 +15,8 @@ happy with the result.
   servers. The importer is not part of the app image.
 - Both servers on **https**. The importer refuses a plain http address, and it sends its tokens only
   to the two addresses you give it (a file download that Manyfold redirects to its object store is
-  fetched with no token at all).
+  fetched with no token at all). A redirect to a private, loopback or link-local address, or to a name
+  without a dot, is refused. Names are not looked up for this check.
 - A Manyfold OAuth application that allows the client credentials grant with the `read` scope. Its
   client id and client secret are what the importer signs in with. The importer stops before reading
   anything if Manyfold grants it more than `read`. The token is renewed during a long import, shortly

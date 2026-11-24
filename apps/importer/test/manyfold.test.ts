@@ -14,7 +14,7 @@ import {
   setup,
   useServer,
 } from "./support/harness.js";
-import { library } from "./support/library.js";
+import { library, sha256 } from "./support/library.js";
 import { bytesOf } from "./support/manyfold-stub.js";
 
 useServer();
@@ -459,6 +459,68 @@ describe("file downloads", () => {
     expect(seen.some((x) => x.url.startsWith("http://objects.example.test"))).toBe(false);
     const ref = [...s.platehouse.models.values()].find((m) => m.externalRef === "manyfold:m3");
     expect(ref === undefined ? [] : s.platehouse.filesOf(ref.id)).toHaveLength(0);
+  });
+
+  it("refuse a redirect to a private address and import nothing for that file", async () => {
+    const s = setup(library());
+    server.use(
+      http.get(
+        `${MANYFOLD}/models/m3/model_files/f5.3mf`,
+        () =>
+          new HttpResponse(null, {
+            status: 302,
+            headers: { location: "https://10.0.0.5/x?sig=abcdefgh12345" },
+          }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3?.files[0]?.status).toBe("failed");
+    expect(m3?.files[0]?.reason).toMatch(/private address/);
+    expect(m3?.files[0]?.reason).toContain("10.0.0.5");
+    expect(seen.some((x) => x.url.includes("10.0.0.5"))).toBe(false);
+    const ref = [...s.platehouse.models.values()].find((m) => m.externalRef === "manyfold:m3");
+    expect(ref === undefined ? [] : s.platehouse.filesOf(ref.id)).toHaveLength(0);
+  });
+
+  it.each([
+    "https://intranet/x",
+    "https://[::ffff:10.0.0.1]/x",
+    "https://[fe80::1]/x",
+    "https://2130706433/x",
+  ])("refuse a redirect to %s", async (target) => {
+    const s = setup(library());
+    server.use(
+      http.get(
+        `${MANYFOLD}/models/m3/model_files/f5.3mf`,
+        () => new HttpResponse(null, { status: 302, headers: { location: target } }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3?.files[0]?.status).toBe("failed");
+    expect(m3?.files[0]?.reason).toMatch(/private address/);
+  });
+
+  it("still follow a redirect to a public object store", async () => {
+    const s = setup(library());
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(seen.some((x) => x.url.startsWith(OBJECTS))).toBe(true);
+  });
+
+  it("hand over exactly the bytes of a file larger than one chunk", async () => {
+    const big = bytesOf("big", 256 * 1024);
+    const data = library();
+    data.models[2]?.files.push({ id: "f9", filename: "big.3mf", bytes: big });
+    const s = setup(data);
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    const m3 = [...s.platehouse.models.values()].find((m) => m.externalRef === "manyfold:m3");
+    const stored = s.platehouse.filesOf(m3?.id ?? "").find((f) => f.originalName === "big.3mf");
+    expect(stored?.size).toBe(big.length);
+    expect(stored?.sha256).toBe(sha256(big));
   });
 
   it("follow at most a few redirects", async () => {

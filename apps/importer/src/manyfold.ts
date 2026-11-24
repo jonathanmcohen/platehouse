@@ -26,7 +26,10 @@
 //   Authorization header, since the presigned URL's signature is its
 //   credential, and that query string is handed to the sensitive callback and
 //   never logged), or to anything that is not https, its own host included
-//   (refused, not upgraded). At most 3 redirects. Every redirect's query,
+//   (refused, not upgraded). A redirect to another host is also refused when
+//   that host is a private, loopback or link-local address (IPv4-mapped IPv6
+//   included) or a name with no dot or ending .localhost; names are not
+//   looked up for this (private-host.ts). At most 3 redirects. Every redirect's query,
 //   one back to Manyfold's own host included, goes to the sensitive callback
 //   before the redirect is followed or refused, and each sensitive value of
 //   such a query (a signature, a credential, a session token) is handed to
@@ -53,6 +56,7 @@
 
 import { type IdleWatch, idleReason, idleWatch } from "./idle.js";
 import { fileNameFor } from "./plan.js";
+import { isPrivateHost } from "./private-host.js";
 import { quoteBody } from "./redact.js";
 
 /** The media type of Manyfold's JSON API (v0). */
@@ -697,6 +701,11 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
         for (const value of signedQueryValues(next.search, { requireSigned: sameHost })) {
           sensitive(value);
         }
+        if (!sameHost && isPrivateHost(next.hostname)) {
+          throw new ManyfoldError(
+            `GET ${downloadPath(url)}: refusing a redirect to a private address, to ${next.host}`,
+          );
+        }
         if (next.protocol !== "https:") {
           // Refused on Manyfold's own host too, not upgraded: a non-https
           // redirect is always refused.
@@ -708,7 +717,9 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
         continue;
       }
       if (res.status !== 200) throw await failure(url, res, downloadPath);
-      const chunks: Buffer[] = [];
+      // One buffer of the size Manyfold promised, filled as chunks arrive, so
+      // a file is held once in memory rather than as chunks and again joined.
+      const body = Buffer.allocUnsafe(expectedSize);
       let got = 0;
       if (res.body !== null) {
         const reader = res.body.getReader();
@@ -735,7 +746,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
                 got,
               );
             }
-            chunks.push(Buffer.from(next.value));
+            body.set(next.value, got - next.value.byteLength);
           }
         } catch (error) {
           await reader.cancel().catch(() => {});
@@ -753,7 +764,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
           got,
         );
       }
-      return Buffer.concat(chunks);
+      return body;
     }
   }
 
