@@ -24,15 +24,17 @@
 #   the slicer wrapper ships with the release. It always builds. A prerelease
 #   tag (v0.1.0-rc.1) publishes only its run tag and its X.Y.Z-rc.N version
 #   tag, and leaves orca-X.Y.Z and stable alone (the maintainer, 2026-11-15;
-#   issue #435); a plain vX.Y.Z tag moves both. The next daily run builds
+#   issue #435); so does a plain vX.Y.Z tag that is not the highest release
+#   (a backport such as v0.1.2 after v0.2.0): it publishes only its run tag
+#   and its version tag. Only the highest plain release moves both (#450). The next daily run builds
 #   that Orca version when its orca-X.Y.Z does not exist yet, and moves both;
 #   the run's summary says so.
 # - by hand (workflow_dispatch), at orca_version when given, else the latest
 #   release. It must be started from main or a release tag (like release.yml,
 #   it refuses any other branch before anything is built, so unreviewed slicer
-#   code never reaches stable); from main or a plain vX.Y.Z tag it always
-#   builds and moves stable, from a prerelease tag it leaves orca-X.Y.Z and
-#   stable alone, as a push of that tag would. force_fail fails the smoke
+#   code never reaches stable); from main or the highest plain vX.Y.Z tag it
+#   always builds and moves stable, from a prerelease tag or a backport tag it
+#   leaves orca-X.Y.Z and stable alone, as a push of that tag would. force_fail fails the smoke
 #   slice on purpose after it ran, to test the failure path.
 #   GitHub runs a schedule or a dispatch only for a workflow file on the
 #   default branch, so neither works until this file reaches main.
@@ -63,7 +65,7 @@
 # (not on a prerelease tag) and the run tag, orca-X.Y.Z-r<run number> (orca-X.Y.Z-r<run number>.<attempt>
 # on a re-run, which keeps the run number; issue #221), are pointed at that
 # digest and read back, and
-# only then stable (neither orca-X.Y.Z nor stable on a prerelease tag).
+# only then stable (neither orca-X.Y.Z nor stable on a prerelease tag or a backport tag).
 #
 # The release's version tag. A run started from a release tag vX.Y.Z or
 # vX.Y.Z-rc.N (its push, a re-run of it, or a run by hand from that tag) also
@@ -250,7 +252,8 @@ jobs:
                 latest="$(printf '%s\n' "$refs" | sed -n 's#^refs/tags/##p' | node .github/scripts/release-gate.mjs latest "${REF#refs/tags/}")"
                 if [ "$latest" != "true" ]; then
                   stable=false
-                  echo "${REF#refs/tags/} is not the highest release: stable will not move"
+                  orca=false
+                  echo "${REF#refs/tags/} is not the highest release: stable and orca-X.Y.Z will not move"
                 fi
               fi
               release="${REF#refs/tags/v}"
@@ -792,7 +795,7 @@ jobs:
               echo "- digest: \`${DIGEST}\`"
               echo "- tags: ${tags}"
               if [ "$MOVE_ORCA" != "true" ]; then
-                echo "- orca-${VERSION} and stable not moved (prerelease tag). The next daily run builds orca-${VERSION} if it does not exist yet and moves both; a plain release tag or a run by hand moves them too."
+                echo "- orca-${VERSION} and stable not moved (a prerelease tag, or a release below the highest one). The next daily run builds orca-${VERSION} if it does not exist yet and moves both; a plain release tag or a run by hand moves them too."
               fi
             } >>"$GITHUB_STEP_SUMMARY"
             echo "Published ${tags} at ${DIGEST}"
@@ -971,8 +974,8 @@ jobs:
   # A run cancelled by hand reports too; the issue says which job.
   report-failure:
     name: Open an issue on failure
-    needs: [detect, build, stable]
-    if: ${{ always() && (needs.detect.result == 'failure' || needs.build.result == 'failure' || needs.stable.result == 'failure' || (github.event_name == 'push' && (needs.detect.result == 'cancelled' || needs.build.result == 'cancelled' || needs.stable.result == 'cancelled'))) }}
+    needs: [gate, detect, build, stable]
+    if: ${{ always() && (needs.gate.result == 'failure' || needs.detect.result == 'failure' || needs.build.result == 'failure' || needs.stable.result == 'failure' || (github.event_name == 'push' && (needs.gate.result == 'cancelled' || needs.detect.result == 'cancelled' || needs.build.result == 'cancelled' || needs.stable.result == 'cancelled'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

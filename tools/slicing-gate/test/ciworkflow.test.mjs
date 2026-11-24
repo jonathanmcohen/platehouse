@@ -1618,10 +1618,10 @@ test("slicer-image: jobs run on ubuntu-24.04 with timeouts, chained with !cancel
     "build runs only after detect succeeded and said to build",
   );
   const report = jobBlock(t, "report-failure");
-  assert.match(report, /\n {4}needs: \[detect, build, stable\]\n/);
+  assert.match(report, /\n {4}needs: \[gate, detect, build, stable\]\n/);
   assert.ok(
     report.includes(
-      "if: ${{ always() && (needs.detect.result == 'failure' || needs.build.result == 'failure' || needs.stable.result == 'failure' || (github.event_name == 'push' && (needs.detect.result == 'cancelled' || needs.build.result == 'cancelled' || needs.stable.result == 'cancelled'))) }}",
+      "if: ${{ always() && (needs.gate.result == 'failure' || needs.detect.result == 'failure' || needs.build.result == 'failure' || needs.stable.result == 'failure' || (github.event_name == 'push' && (needs.gate.result == 'cancelled' || needs.detect.result == 'cancelled' || needs.build.result == 'cancelled' || needs.stable.result == 'cancelled'))) }}",
     ),
     "the report runs when a job failed, or was cancelled on a push (issue #451)",
   );
@@ -1715,8 +1715,17 @@ test("slicer-image version pick: a backport tag leaves stable alone but still bu
   });
   assert.equal(r.status, 0, r.log);
   assert.equal(r.outputs.stable, "false");
-  assert.equal(r.outputs.orca, "true");
+  assert.equal(r.outputs.orca, "false", "orca-X.Y.Z moves exactly when stable does");
   assert.equal(r.outputs.release, "0.1.2");
+});
+
+test("slicer-image version pick: a daily run and a run from main never look at the repository's tags", () => {
+  for (const env of [{ EVENT: "schedule", REF: "refs/heads/main" }, { EVENT: "workflow_dispatch", INPUT_VERSION: "", REF: "refs/heads/main" }]) {
+    const r = runSlicerStep("detect", "Pick the version", { setup: withGateScripts, stubs: GH_RELEASES_STUB, env: { LATEST: release("v2.5.1"), ...env } });
+    assert.equal(r.status, 0, r.log);
+    assert.doesNotMatch(r.calls, /matching-refs/);
+    assert.equal(r.outputs.stable, "true");
+  }
 });
 
 test("slicer-image version pick: a dispatch from a backport tag leaves stable alone", () => {
@@ -2335,7 +2344,7 @@ test("slicer-image tag: a prerelease tag's run pushes the run tag and the releas
   ]);
   assert.doesNotMatch(r.calls, /:stable/, "stable is neither moved nor read");
   assert.doesNotMatch(r.calls, /:orca-2\.5\.1[ \n]/, "orca-X.Y.Z is neither moved nor read");
-  assert.match(r.summary, /- tags: orca-2\.5\.1-r42, 0\.2\.0-rc\.1\n- orca-2\.5\.1 and stable not moved \(prerelease tag\)/);
+  assert.match(r.summary, /- tags: orca-2\.5\.1-r42, 0\.2\.0-rc\.1\n- orca-2\.5\.1 and stable not moved \(a prerelease tag, or a release below the highest one\)/);
   // The summary says what will move them.
   assert.match(r.summary, /next daily run builds orca-2\.5\.1 if it does not exist yet/);
   assert.match(r.summary, /plain release tag or a run by hand/);

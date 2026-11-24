@@ -395,7 +395,7 @@ jobs:
       # The manifest list from exactly the two arch digests, with the tags
       # metadata-action gave and the index annotations; then read back from
       # the registry: the version tag must list both platforms at those
-      # digests, and latest, when the gate found this the highest release, must be the same
+      # digests, and latest, when the live check above found this the highest release, must be the same
       # manifest list. Each digest's config must still carry the labels the
       # build set, and the index the annotations (docker/check-image-labels.sh).
       - name: Create the manifest list and check it
