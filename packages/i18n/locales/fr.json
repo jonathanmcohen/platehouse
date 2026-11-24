@@ -603,6 +603,7 @@
   "trash.intro": "Un mod\u00e8le mis \u00e0 la corbeille est supprim\u00e9 d\u00e9finitivement 30 jours plus tard. Restaurer le remet en place avec ses fichiers, ses \u00e9tiquettes et ses collections.",
   "trash.isEmpty": "La corbeille est vide.",
   "trash.loading": "Chargement de la corbeille.",
+  "trash.pageOf": "Page {page} sur {count}",
   "trash.purgeAfter": "Supprim\u00e9 d\u00e9finitivement apr\u00e8s le <time>{date}</time>.",
   "trash.purging": "Il est en cours de suppression et ne peut plus \u00eatre restaur\u00e9.",
   "trash.restore": "Restaurer",

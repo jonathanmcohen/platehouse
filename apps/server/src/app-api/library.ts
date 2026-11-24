@@ -399,7 +399,7 @@ export interface AppLibrary {
    * are more. Cursor and page are ignored.
    */
   ids(query: AppLibraryQuery): Promise<MatchingIds>;
-  /** Tag names live models carry, for the tag filter, alphabetical ignoring case. */
+  /** Tag names live models carry, for the tag filter, most-used first (with how many models carry each). */
   tags(): Promise<Array<{ name: string; models: number }>>;
 }
 

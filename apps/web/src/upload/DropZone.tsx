@@ -3,6 +3,11 @@
 // hands them to onFiles, which opens the upload dialog. While files are
 // dragged over it, it is outlined in the accent colour. Text or links
 // dragged over it are left alone, so the browser's own handling stays.
+// While a modal dialog is open (a Select-mode dialog, say) the zone takes
+// no part: a drop on the dialog's backdrop would open the upload dialog
+// under it, and each dialog would make the other inert. The window-level
+// guard in UploadDialog (guardFileDrops) still stops the browser opening
+// the file.
 // Dropping is a pointer gesture. The keyboard routes to the same dialogs
 // are the top bar's Add, for new models, and the model page's Add files,
 // for that model, each with the dialog's Choose files button
@@ -19,6 +24,10 @@ function carriesFiles(event: DragEvent): boolean {
   return types !== undefined && Array.from(types).includes("Files");
 }
 
+function modalIsOpen(): boolean {
+  return document.querySelector('[aria-modal="true"]') !== null;
+}
+
 export function DropZone({ onFiles, children }: DropZoneProps) {
   const [active, setActive] = useState(false);
   // dragenter and dragleave fire for every child crossed; count them.
@@ -30,13 +39,13 @@ export function DropZone({ onFiles, children }: DropZoneProps) {
       className={active ? "ph-dropzone ph-dropzone-active" : "ph-dropzone"}
       data-dropzone=""
       onDragEnter={(event) => {
-        if (!carriesFiles(event)) return;
+        if (!carriesFiles(event) || modalIsOpen()) return;
         event.preventDefault();
         depth.current += 1;
         setActive(true);
       }}
       onDragOver={(event) => {
-        if (!carriesFiles(event)) return;
+        if (!carriesFiles(event) || modalIsOpen()) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "copy";
       }}
@@ -46,7 +55,7 @@ export function DropZone({ onFiles, children }: DropZoneProps) {
         if (depth.current === 0) setActive(false);
       }}
       onDrop={(event) => {
-        if (!carriesFiles(event)) return;
+        if (!carriesFiles(event) || modalIsOpen()) return;
         event.preventDefault();
         depth.current = 0;
         setActive(false);

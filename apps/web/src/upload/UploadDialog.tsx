@@ -21,8 +21,7 @@
 // it is inert (useInertOutside) so Tab and a screen reader stay inside it,
 // Escape closes it (handled on the document, as focus can sit on the body),
 // and focus goes back where it was. Pressing the backdrop keeps focus in the
-// dialog. Closing while
-// files are still sending only hides it: the uploads go on, and every row
+// dialog. Closing while files are still sending only hides it: the uploads go on, and every row
 // still sending, failed or not yet sent is there when it is opened again (a
 // row that went in is cleared when its round ends while hidden). Files that
 // are not a supported type are listed with the reason and never sent.
@@ -349,7 +348,8 @@ export function UploadDialog({
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      // Another overlay that handled this Escape has marked it.
+      if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       closeRef.current();
     };

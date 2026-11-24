@@ -603,6 +603,7 @@
   "trash.intro": "Un modelo en la papelera se elimina definitivamente 30 d\u00edas despu\u00e9s de moverlo all\u00ed. Restaurar lo devuelve con sus archivos, etiquetas y colecciones.",
   "trash.isEmpty": "La papelera est\u00e1 vac\u00eda.",
   "trash.loading": "Cargando la papelera.",
+  "trash.pageOf": "P\u00e1gina {page} de {count}",
   "trash.purgeAfter": "Se eliminar\u00e1 definitivamente despu\u00e9s del <time>{date}</time>.",
   "trash.purging": "Se est\u00e1 eliminando ahora y no se puede restaurar.",
   "trash.restore": "Restaurar",

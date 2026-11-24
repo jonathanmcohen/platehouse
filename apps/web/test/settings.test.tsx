@@ -1717,6 +1717,33 @@ describe("the trash", () => {
     expect(pageLink(1).getAttribute("href")).toBe("/trash");
   });
 
+  test("after the pager loads another page, focus is on the page line, not the body", async () => {
+    state.trash = trashOf(101);
+    await show("/trash", <TrashPage />);
+    await click(pageLink(2));
+    const active = document.activeElement as HTMLElement;
+    expect(active.tabIndex).toBe(-1);
+    expect(active.getAttribute("role")).toBe("status");
+    expect(active.textContent).toBe("Page 2 of 2");
+  });
+
+  test("restoring the last model of the last page never flashes the empty trash, and the address follows the page served", async () => {
+    state.trash = trashOf(101);
+    await show("/trash?page=2", <TrashPage />);
+    expect(text()).toContain("Model 100");
+    let flashed = false;
+    const watcher = new MutationObserver(() => {
+      if (text().includes("The trash is empty.")) flashed = true;
+    });
+    watcher.observe(document.body, { childList: true, subtree: true, characterData: true });
+    await click(button("Restore Model 100"));
+    watcher.disconnect();
+    expect(flashed).toBe(false);
+    expect(text()).toContain("Model 99");
+    expect(text()).not.toContain("The trash is empty.");
+    expect(callsTo("GET", "/app/api/trash")).toHaveLength(1);
+  });
+
   test("the trash shows no pager when everything fits on one page", async () => {
     await show("/trash", <TrashPage />);
     expect(document.querySelector("nav.ph-pager")).toBeNull();

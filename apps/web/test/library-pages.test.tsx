@@ -730,6 +730,10 @@ describe("reloads keep focus and place", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/signed out/i);
     expect(container.textContent).not.toMatch(/could not be loaded/i);
     expect(buttonNamed(/try again/i)).toBeUndefined();
+    // With no Try again to take focus, it goes to the sentence.
+    expect(document.activeElement?.textContent).toMatch(/signed out/i);
+    expect(document.activeElement?.tagName).toBe("P");
+    expect((document.activeElement as HTMLElement).tabIndex).toBe(-1);
   });
 
   test("a long q is sent trimmed to 200 characters", async () => {

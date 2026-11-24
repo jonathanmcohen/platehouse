@@ -80,7 +80,9 @@ export function useInertOutside(ref: RefObject<HTMLElement | null>, active: bool
         }
       });
       // A dialog mounted later as a sibling on another open dialog's path
-      // would be made inert here too; no caller does that.
+      // would be made inert here too. No caller does that on purpose: a file
+      // drop that would open the upload dialog under an open dialog is
+      // ignored by DropZone, so the two never isolate each other.
       observer.observe(parent, { childList: true });
       observers.push(observer);
       node = parent;

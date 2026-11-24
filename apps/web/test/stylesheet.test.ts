@@ -448,6 +448,17 @@ describe("layout", () => {
   });
 });
 
+describe("button chips", () => {
+  // More tags is a button in a chip's clothes: it takes the page's font and
+  // line height, as the link chips do, and the pointer.
+  test("button.studio-chip matches the link chips", () => {
+    const rule = declarationsFor("button.studio-chip");
+    expect(rule).toMatch(/font-family:\s*inherit/);
+    expect(rule).toMatch(/line-height:\s*inherit/);
+    expect(rule).toMatch(/cursor:\s*pointer/);
+  });
+});
+
 describe("links", () => {
   // WCAG 1.4.1: a link inside running text must not differ from the text
   // around it by colour alone.

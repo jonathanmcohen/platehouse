@@ -664,6 +664,12 @@ img {
   white-space: nowrap;
 }
 
+button.studio-chip {
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
 .studio-chip:hover {
   background: var(--raised);
   text-decoration: none;

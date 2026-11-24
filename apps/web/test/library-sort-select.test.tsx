@@ -242,6 +242,19 @@ function WithOverlays() {
   );
 }
 
+/** The library with the upload dialog beside it, opened by a file drop as main.tsx does. */
+function DropOpensUpload() {
+  const [files, setFiles] = useState<File[] | null>(null);
+  return (
+    <>
+      <Routes>
+        <Route path="/" element={<LibraryPage onFiles={setFiles} />} />
+      </Routes>
+      <UploadDialog open={files !== null} files={files ?? []} onClose={() => setFiles(null)} />
+    </>
+  );
+}
+
 async function renderWithOverlays() {
   await act(async () =>
     root.render(
@@ -670,6 +683,35 @@ describe("Select mode", () => {
       // With the dialog closed, Escape is Select mode's again.
       await key(checkbox("Model 001"), "Escape");
       expect(button("Select").getAttribute("aria-pressed")).toBe("false");
+    });
+
+    test("a file drop on a Select dialog's backdrop does not open the upload dialog and the page is not left inert", async () => {
+      stubServer(cards(3));
+      await act(async () =>
+        root.render(
+          <MemoryRouter initialEntries={["/"]}>
+            <DropOpensUpload />
+          </MemoryRouter>,
+        ),
+      );
+      await settle();
+      await selectMode();
+      await click(checkbox("Model 001"));
+      await click(button("Add tags"));
+      const backdrop = dialog()?.parentElement as HTMLElement;
+      expect(backdrop).not.toBeNull();
+      const file = new File(["solid x"], "drop.stl");
+      const drop = new Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(drop, "dataTransfer", { value: { types: ["Files"], files: [file] } });
+      await act(async () => {
+        backdrop.dispatchEvent(drop);
+      });
+      await settle();
+      expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1);
+      expect(dialog()?.textContent).toContain("Add tags to 1 model");
+      expect(document.querySelector("[inert]")?.contains(dialog())).not.toBe(true);
+      // The browser still must not open the file.
+      expect(drop.defaultPrevented).toBe(true);
     });
 
     test("Escape with the narrow-screen menu open closes the menu only; Select mode and the selection stay", async () => {

@@ -596,6 +596,7 @@
   "trash.intro": "A model in the trash is deleted for good 30 days after it was trashed. Restore brings it back with its files, tags and collections.",
   "trash.isEmpty": "The trash is empty.",
   "trash.loading": "Loading the trash.",
+  "trash.pageOf": "Page {page} of {count}",
   "trash.purgeAfter": "Deleted for good after <time>{date}</time>.",
   "trash.purging": "It is being deleted now and cannot be restored.",
   "trash.restore": "Restore",

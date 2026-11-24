@@ -237,6 +237,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const count = useRef<HTMLParagraphElement>(null);
   /** The failed block's Try again: focus lands here when a load fails. */
   const tryAgain = useRef<HTMLButtonElement>(null);
+  const signedOutText = useRef<HTMLParagraphElement>(null);
   /** The header's printer switch: whose times and weights the cards show. */
   const printer = usePrinterChoice();
   const { choice, settle: settlePrinter } = printer;
@@ -610,11 +611,14 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
 
   // Focus follows a pager link to the new page's count, once it is in.
   useEffect(() => {
-    // A failed load puts focus on Try again, so a keyboard user is not left on nothing.
+    // A failed load puts focus on Try again, so a keyboard user is not left on nothing;
+    // signed out has no Try again, so it goes to the sentence.
     // Only a load the user waited on (not a quiet reload) takes focus.
     const was = stateBefore.current;
     stateBefore.current = load.state;
-    if (load.state === "failed" && was === "loading") tryAgain.current?.focus();
+    if (load.state === "failed" && was === "loading") {
+      (load.signedOut ? signedOutText : tryAgain).current?.focus();
+    }
     if (load.state === "loading" || !focusCount.current) return;
     focusCount.current = false;
     if (load.state === "ready") count.current?.focus();
@@ -767,7 +771,12 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         {load.state === "loading" ? <p className="studio-muted">{t("library.loading")}</p> : null}
         {load.state === "failed" ? (
           <div className="studio-alert studio-alert-alert" role="alert">
-            <p>{load.signedOut ? t("common.signedOut") : t("library.failed")}</p>
+            <p
+              ref={load.signedOut ? signedOutText : undefined}
+              tabIndex={load.signedOut ? -1 : undefined}
+            >
+              {load.signedOut ? t("common.signedOut") : t("library.failed")}
+            </p>
             {load.signedOut ? null : (
               <button
                 type="button"
