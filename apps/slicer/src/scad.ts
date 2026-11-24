@@ -25,6 +25,7 @@ import { join } from "node:path";
 import {
   type GroupResult,
   landrunArgs,
+  ledInMessage,
   MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
   prlimitArgs,
@@ -32,7 +33,6 @@ import {
   runGroup,
   type ScadOutput,
   scadArgs,
-  tailLines,
 } from "./sandbox.js";
 
 export interface ScadConfig {
@@ -252,14 +252,12 @@ export async function renderScad(
       };
     }
   }
-  // OpenSCAD's own words are led in, so they read as what it said and never
-  // as one of the slicer's sentences; its exit status is the slicer's own.
-  const said = tailLines(output);
+  // OpenSCAD's output is always led in; its exit status is the slicer's own.
   return {
     ok: false,
-    message: said
-      ? `OpenSCAD said: ${said}`
-      : `OpenSCAD exited with ${run.signal ?? run.code} and wrote no ${kind.toUpperCase()}.`,
+    message:
+      ledInMessage("OpenSCAD said: ", output) ||
+      `OpenSCAD exited with ${run.signal ?? run.code} and wrote no ${kind.toUpperCase()}.`,
     output,
   };
 }

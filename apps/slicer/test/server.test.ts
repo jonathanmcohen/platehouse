@@ -1276,17 +1276,15 @@ describe("OpenSCAD and STEP", () => {
     expect(body.message).toBe("OpenSCAD said: ERROR: Parser error in file input.scad, line 1");
   });
 
-  // OpenSCAD's output is shown to the user as the reason a file failed. It is
-  // led in with "OpenSCAD said: ", so whatever it prints reads as OpenSCAD's
-  // words and never as one of the slicer's own messages.
-  test("a render whose OpenSCAD output reads like a slicer message is led in as OpenSCAD's own words", async () => {
+  // OpenSCAD's output is always led in with "OpenSCAD said: ".
+  test("a failed render's message from OpenSCAD's output starts with the OpenSCAD lead-in", async () => {
     const s = setup();
-    const lr = fakeLandrun(s.stubs, { kind: "fail", stderr: "OpenSCAD renders are off: nope" });
+    const lr = fakeLandrun(s.stubs, { kind: "fail", stderr: "ERROR: something odd in input.scad" });
     const base = await start({ ...s.config, landrunBin: lr.bin });
     const res = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(" });
     expect(res.status).toBe(422);
     const body = slicerContract.renderError.parse(await res.json());
-    expect(body.message).toBe("OpenSCAD said: OpenSCAD renders are off: nope");
+    expect(body.message).toBe("OpenSCAD said: ERROR: something odd in input.scad");
   });
 
   test("the slicer's own render sentences carry no lead-in", async () => {

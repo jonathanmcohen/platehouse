@@ -60,9 +60,7 @@ describe("meshesToGlb", () => {
   });
 });
 
-// A conversion's message is shown to the user as the reason a file failed.
-// When it is the worker's own output, it says so, so it reads as what the
-// converter said and never as a sentence of the slicer's.
+// The worker's output is always led in with "The converter said: ".
 describe("runStepWorker messages", () => {
   const run = (worker: string, over: { timeoutSeconds?: number; maxOutputBytes?: number } = {}) =>
     runStepWorker(
@@ -75,6 +73,13 @@ describe("runStepWorker messages", () => {
       fakeStepWorker(stubDir(), { kind: "fail", stderr: "no shapes in the file" }),
     );
     expect(r).toEqual({ ok: false, message: "The converter said: no shapes in the file" });
+  });
+
+  test("a multi-line worker output is one line that starts with the lead-in", async () => {
+    const r = await run(
+      fakeStepWorker(stubDir(), { kind: "fail", stderr: "first\nsecond\u202e\nthird" }),
+    );
+    expect(r).toEqual({ ok: false, message: "The converter said: first / second / third" });
   });
 
   test("the slicer's own sentences carry no lead-in", async () => {

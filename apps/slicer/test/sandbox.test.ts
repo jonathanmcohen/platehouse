@@ -12,6 +12,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   LANDRUN_STRICT_ABI,
   landrunArgs,
+  ledInMessage,
   leftoverProcesses,
   MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
@@ -541,3 +542,33 @@ describe("reading the kernel's Landlock ABI from a strict landrun run", () => {
 
 // Every fake /proc folder a test made.
 afterEach(removeTempDirs);
+
+// A program's output is always shown after a lead-in that names the program,
+// on one line, with control and direction-changing characters removed.
+describe("ledInMessage", () => {
+  test("a multi-line output becomes one line that starts with the lead-in", () => {
+    const out = ledInMessage("OpenSCAD said: ", "first\r\n\nsecond\n  \nthird\n");
+    expect(out).toBe("OpenSCAD said: first / second / third");
+    expect(out).not.toContain("\n");
+  });
+
+  test("control characters other than the line break and direction controls are removed", () => {
+    const text = "a\u0000b\u001bc\u007fd\u0085e\u009ff\u202eg\u2066h\u2069i\tj\nk";
+    expect(ledInMessage("X: ", text)).toBe("X: abcdefghij / k");
+  });
+
+  test("an output with nothing left is an empty string, for the caller's own sentence", () => {
+    expect(ledInMessage("X: ", " \n\u0000\u202e\n")).toBe("");
+  });
+
+  test("keeps the last 20 lines and the last 2000 characters, cutting from the front", () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n");
+    const out = ledInMessage("X: ", lines);
+    expect(out.startsWith("X: line 11 / ")).toBe(true);
+    expect(out.endsWith("line 30")).toBe(true);
+    const long = ledInMessage("X: ", `${"a".repeat(3000)}\nend`);
+    expect(long.length).toBe("X: ".length + 2000);
+    expect(long.startsWith("X: a")).toBe(true);
+    expect(long.endsWith(" / end")).toBe(true);
+  });
+});

@@ -12,7 +12,7 @@ import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runGroup, tailLines } from "./sandbox.js";
+import { ledInMessage, runGroup } from "./sandbox.js";
 
 export interface OcctMesh {
   attributes: {
@@ -196,14 +196,12 @@ export async function runStepWorker(
     }
     return { ok: true, bytes: readFileSync(output) };
   }
-  // The worker's own words are led in, so they read as what it said and never
-  // as one of the slicer's sentences; its exit status is the slicer's own.
-  const said = tailLines(run.stderrTail);
+  // The worker's output is always led in; its exit status is the slicer's own.
   return {
     ok: false,
-    message: said
-      ? `The converter said: ${said}`
-      : `The converter exited with ${run.signal ?? run.code}.`,
+    message:
+      ledInMessage("The converter said: ", run.stderrTail) ||
+      `The converter exited with ${run.signal ?? run.code}.`,
   };
 }
 

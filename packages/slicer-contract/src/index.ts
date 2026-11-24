@@ -138,6 +138,9 @@ const contract = z.literal(CONTRACT_VERSION);
 export const SANDBOX_OFF_REASONS = ["old_kernel", "check_failed"] as const;
 const sandboxOffReason = z.enum(SANDBOX_OFF_REASONS);
 
+/** SLICER_ALLOW_UNSANDBOXED: a slice or STEP conversion may run unsandboxed. */
+const allowUnsandboxed = z.boolean();
+
 const wholeSeconds = z.number().int().positive();
 
 export const health = z.strictObject({
@@ -145,13 +148,26 @@ export const health = z.strictObject({
   orca: z.string().min(1),
   openscad: z.string().min(1),
   busy: z.boolean(),
-  sandbox: z.strictObject({
-    state: z.enum(["checking", "on", "off"]),
-    reason: sandboxOffReason.nullable(),
-    detail: z.string().nullable(),
-    /** SLICER_ALLOW_UNSANDBOXED: a slice or STEP conversion may run unsandboxed. */
-    allowUnsandboxed: z.boolean(),
-  }),
+  sandbox: z.discriminatedUnion("state", [
+    z.strictObject({
+      state: z.literal("checking"),
+      reason: z.null(),
+      detail: z.null(),
+      allowUnsandboxed,
+    }),
+    z.strictObject({
+      state: z.literal("on"),
+      reason: z.null(),
+      detail: z.null(),
+      allowUnsandboxed,
+    }),
+    z.strictObject({
+      state: z.literal("off"),
+      reason: sandboxOffReason,
+      detail: z.string().min(1),
+      allowUnsandboxed,
+    }),
+  ]),
   timeouts: z.strictObject({
     sliceSeconds: wholeSeconds,
     scadSeconds: wholeSeconds,

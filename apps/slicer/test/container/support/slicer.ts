@@ -17,6 +17,7 @@
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { slicerContract } from "@platehouse/slicer-contract";
 
 const ROOT = resolve(fileURLToPath(new URL("../../../../../", import.meta.url)));
 export const IMAGE = process.env.SLICER_IMAGE ?? "platehouse-slicer:test";
@@ -161,9 +162,31 @@ export async function startSlicer(): Promise<RunningSlicer> {
       }
       await new Promise((r) => setTimeout(r, 1000));
     }
+    // The image's healthcheck passes on any 200, and health answers 200 while
+    // the start-up sandbox check holds the heavy-job lock, where a request is
+    // 409 busy. A test starts once that check is done.
+    const base = `http://127.0.0.1:${port}`;
+    let last = "no answer";
+    for (;;) {
+      try {
+        const res = await fetch(`${base}/v1/health`);
+        const body = res.status === 200 ? slicerContract.health.parse(await res.json()) : null;
+        last = body ? `sandbox ${body.sandbox.state}, busy ${body.busy}` : `status ${res.status}`;
+        if (body && body.sandbox.state !== "checking" && !body.busy) break;
+      } catch (err) {
+        last = err instanceof Error ? err.message : String(err);
+      }
+      if (Date.now() > until) {
+        const logs = docker(["logs", id]);
+        throw new Error(
+          `the slicer's start-up sandbox check did not finish (${last}):\n${logs.stdout}${logs.stderr}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
     return {
       id,
-      base: `http://127.0.0.1:${port}`,
+      base,
       exec: (args) => docker(["exec", id, ...args]),
       health,
       logs: () => {

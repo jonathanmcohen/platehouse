@@ -498,6 +498,39 @@ export function tailLines(text: string, lines = 20, chars = 2000): string {
   return out.length > chars ? out.slice(out.length - chars) : out;
 }
 
+/**
+ * Control characters other than the line break (C0, DEL and C1), and the
+ * direction-changing ones (U+202A to U+202E, U+2066 to U+2069).
+ */
+function isUnsafeChar(code: number): boolean {
+  return (
+    (code <= 0x1f && code !== 0x0a) ||
+    (code >= 0x7f && code <= 0x9f) ||
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069)
+  );
+}
+
+/**
+ * A program's output as a message: the lead-in naming the program, then the
+ * output's last 20 lines on one line, joined with " / ", after the control
+ * and direction-changing characters are removed. Program output is always
+ * led in. At most `chars` characters of output are kept, cut from the front
+ * before the lead-in is added. "" when no output is left, for the caller's
+ * own sentence.
+ */
+export function ledInMessage(leadIn: string, text: string, lines = 20, chars = 2000): string {
+  const one = [...text]
+    .filter((ch) => !isUnsafeChar(ch.charCodeAt(0)))
+    .join("")
+    .split("\n")
+    .filter((l) => l.trim().length > 0)
+    .slice(-lines)
+    .join(" / ");
+  if (one.length === 0) return "";
+  return `${leadIn}${one.length > chars ? one.slice(one.length - chars) : one}`;
+}
+
 export type ScadOutput = "stl" | "png";
 
 /**

@@ -74,7 +74,7 @@ describe("slicer contract v2", () => {
   });
 
   test("health takes the three sandbox states and a reason and detail when it is off", () => {
-    for (const state of ["checking", "on", "off"]) {
+    for (const state of ["checking", "on"]) {
       const sandbox = { state, reason: null, detail: null, allowUnsandboxed: true };
       expect(slicerContract.health.safeParse({ ...HEALTH, sandbox }).success).toBe(true);
     }
@@ -92,6 +92,28 @@ describe("slicer contract v2", () => {
     ]) {
       expect(slicerContract.health.safeParse({ ...HEALTH, sandbox: bad }).success).toBe(false);
     }
+  });
+
+  test("health ties the sandbox state to its reason and detail", () => {
+    const allow = { allowUnsandboxed: false };
+    const refused = [
+      { state: "on", reason: "old_kernel", detail: null, ...allow },
+      { state: "on", reason: null, detail: "x", ...allow },
+      { state: "checking", reason: "check_failed", detail: null, ...allow },
+      { state: "checking", reason: null, detail: "x", ...allow },
+      { state: "off", reason: null, detail: null, ...allow },
+      { state: "off", reason: null, detail: "x", ...allow },
+      { state: "off", reason: "old_kernel", detail: null, ...allow },
+      { state: "off", reason: "old_kernel", detail: "", ...allow },
+    ];
+    for (const sandbox of refused) {
+      expect(
+        slicerContract.health.safeParse({ ...HEALTH, sandbox }).success,
+        JSON.stringify(sandbox),
+      ).toBe(false);
+    }
+    const off = { state: "off", reason: "check_failed", detail: "x", allowUnsandboxed: true };
+    expect(slicerContract.health.safeParse({ ...HEALTH, sandbox: off }).success).toBe(true);
   });
 
   test("health timeouts are positive whole seconds", () => {
