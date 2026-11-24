@@ -145,8 +145,8 @@ You can run Platehouse any way you run containers, as long as:
 - the slicer can be reached by the app and cannot reach the internet;
 - the slicer keeps the locked-down settings from the example (read-only root, the `/work`
   tmpfs, no capabilities, its own user);
-- the slicer image's own entrypoint is PID 1: do not add an init in front of it (`init: true` in
-  Compose, `--init` with `docker run`), which turns off its clean-up of processes a job left
-  behind;
+- both images run tini as PID 1: do not add an init in front of them (`init: true` in Compose,
+  `--init` with `docker run`); for the slicer image it turns off its clean-up of processes a job
+  left behind;
 - the app can reach Postgres, the bucket and your identity provider;
 - the reverse proxy follows the requirements in [Reverse proxy](./reverse-proxy/index.md).

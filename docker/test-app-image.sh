@@ -167,6 +167,9 @@ code="$(healthz)"
 uid="$(docker exec "$app" id -u)"
 echo "== GET /healthz: ${code}; the server runs as uid ${uid}"
 [ "$uid" != 0 ] || fail "the server runs as root"
+pid1="$(docker exec "$app" cat /proc/1/comm)"
+echo "== PID 1 is ${pid1}"
+[ "$pid1" = tini ] || fail "PID 1 is ${pid1}, not tini"
 
 if [ "$mode" = unhealthy ]; then
   [ "$code" = 503 ] || fail "GET /healthz answered ${code}, not 503, without the web build"

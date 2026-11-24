@@ -64,7 +64,9 @@
 // or if pg-boss cut a job off at its timeout, so the process exits 1 and only
 // a clean stop exits 0 (#106). When start() itself fails, the same stop runs,
 // but a failed cleanup is only logged and the startup error is what start()
-// throws. The signal handler adds that deadline as a last resort: past 30 s
+// throws. A signal during start-up aborts start() (checked between the
+// steps) and waits START_ABORT_WAIT_MS for it to unwind, then exits 0 anyway
+// (#457). The signal handler adds that deadline as a last resort: past 30 s
 // the process exits 1 whatever is still running.
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
@@ -108,6 +110,9 @@ import { defaultWebDir, type WebDeps } from "./web/shell.js";
 
 /** The longest a shutdown may take before the process exits anyway. */
 export const SHUTDOWN_DEADLINE_MS = 30_000;
+
+/** The longest a signal during start-up waits for start() to unwind before the process exits anyway. */
+export const START_ABORT_WAIT_MS = 5_000;
 
 /** How long requests in flight get once the server stops taking new ones. */
 export const HTTP_CLOSE_GRACE_MS = 5_000;
@@ -309,6 +314,12 @@ export interface StartOptions {
    * not required (app.ts's default). The process passes processWeb().
    */
   web?: WebDeps;
+  /**
+   * Aborted when the process is asked to stop while start() is still
+   * running. It is checked between the start-up steps; an abort there goes
+   * through the same clean-up as a failed start and rejects with an AbortError.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -369,8 +380,12 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     return stopping;
   };
 
+  const aborted = (): void => options.signal?.throwIfAborted();
+
   try {
+    aborted();
     await migrate(db);
+    aborted();
 
     const startedBoss = createBoss({ databaseUrl: config.databaseUrl });
     boss = startedBoss;
@@ -378,6 +393,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       queuesRunning = false;
     });
     await startedBoss.start();
+    aborted();
 
     const repos = createRepos(db);
     const slicer = createSlicerClient({
@@ -461,6 +477,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     } satisfies ServerQueueDeps);
     await startQueues(startedBoss, queueDeps);
     queuesRunning = true;
+    aborted();
 
     const startedWatcher = createInboxWatcher({
       dir: config.inbox.dir,
@@ -474,6 +491,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     });
     watcher = startedWatcher;
     startedWatcher.start();
+    aborted();
 
     // The settings page warns while bucket versioning is off; the
     // state is read once here, in the background, so a store that is slow to
@@ -512,6 +530,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       },
     });
     await locales.ready();
+    aborted();
     const startedApp = await buildApp({
       health: {
         database: () => sql`select 1`.execute(db),
@@ -571,6 +590,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       logger: true,
     });
     app = startedApp;
+    aborted();
     await startedApp.listen({ port: config.port, host: "0.0.0.0" });
     return { app: startedApp, stop };
   } catch (error) {
@@ -625,6 +645,39 @@ export function installSignalHandlers(
   proc.on("SIGINT", onSignal);
 }
 
+/**
+ * The stop for a signal that arrives while start() is still running: aborts
+ * it, then waits up to waitMs for it to unwind, which stops whatever it had
+ * started. Abort is only noticed between steps and a step can hang (migrate
+ * on a database that never answers waits for the pool's connect timeout), so
+ * past waitMs this gives up and resolves; the process then exits 0. That is
+ * safe: the migrations are one transaction, pg-boss sets itself up in one,
+ * and Postgres rolls back whatever a dropped connection left open.
+ */
+export async function stopWhileStarting(
+  abort: AbortController,
+  starting: Promise<Server>,
+  waitMs: number = START_ABORT_WAIT_MS,
+  log: (line: string) => void = console.info,
+): Promise<void> {
+  abort.abort();
+  let timer: NodeJS.Timeout | undefined;
+  const gaveUp = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), waitMs);
+  });
+  const unwound = starting.then(
+    (server) => server.stop(),
+    () => undefined,
+  );
+  try {
+    if ((await Promise.race([unwound, gaveUp])) === "late") {
+      log("platehouse: stopped during start-up");
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** The process: configuration from the environment, the server, the signals. */
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   let config: Config;
@@ -638,8 +691,21 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     }
     throw error;
   }
-  const server = await start(config, { web: processWeb() });
-  installSignalHandlers(server.stop);
+  // The handlers are installed before start() runs, so docker stop works
+  // while the app is still starting.
+  const abort = new AbortController();
+  let server: Server | undefined;
+  const starting = start(config, { web: processWeb(), signal: abort.signal });
+  installSignalHandlers(() =>
+    server === undefined ? stopWhileStarting(abort, starting) : server.stop(),
+  );
+  try {
+    server = await starting;
+  } catch (error) {
+    // A start-up a signal ended: the signal handler exits 0, not this.
+    if (abort.signal.aborted) return;
+    throw error;
+  }
 }
 
 if (import.meta.main) {

@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type pg from "pg";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createPool } from "../../src/db/kysely.js";
+import { createPool, POOL_CONNECT_TIMEOUT_MS } from "../../src/db/kysely.js";
 
 // pg-pool emits 'error' on the pool when an idle client it holds loses its
 // connection (Postgres restarted, or the db container was recreated). A client
@@ -25,6 +25,14 @@ afterEach(async () => {
 });
 
 describe("createPool", () => {
+  test("gives up on a connection after 30 s instead of waiting for ever", () => {
+    pool = createPool(URL_NO_SERVER);
+    expect(POOL_CONNECT_TIMEOUT_MS).toBe(30_000);
+    expect((pool.options as { connectionTimeoutMillis?: number }).connectionTimeoutMillis).toBe(
+      POOL_CONNECT_TIMEOUT_MS,
+    );
+  });
+
   test("hands an idle client's error to onError and does not throw", () => {
     const onError = vi.fn();
     pool = createPool(URL_NO_SERVER, { onError });

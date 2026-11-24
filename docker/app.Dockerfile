@@ -137,7 +137,7 @@ LABEL org.opencontainers.image.source="https://github.com/jonathanmcohen/plateho
 # Debian's pending updates, applied here because the base image can lag
 # Debian's security fixes: the release workflow's Trivy gate fails on any
 # fixable OS HIGH or CRITICAL, and run 43661472697 failed on a zlib1g fix the
-# base did not have yet. Upgrades only (no new package, no recommends), with
+# base did not have yet. Upgrades, plus tini for PID 1 (see ENTRYPOINT), no recommends, with
 # apt retrying a failed download 10 times as the other images do (#147), and
 # the package lists removed afterwards. Only this stage needs it: nothing from
 # the build stage's OS reaches the image, only /src.
@@ -156,6 +156,8 @@ RUN echo "Debian updates, stamp ${OS_UPDATES_STAMP}" \
  && apt-get update --error-on=any \
  && DEBIAN_FRONTEND=noninteractive apt-get -y upgrade --no-install-recommends \
       -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+ && DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends tini \
+ && test -x /usr/bin/tini \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
@@ -199,6 +201,10 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --start-interval=2s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 
-# Node runs as PID 1 and stops itself on SIGTERM and SIGINT (main.ts, within
-# 30 s); the server starts no child processes, so nothing needs reaping.
+# tini runs as PID 1 and reaps orphans: a process whose parent has gone is
+# re-parented to PID 1, and Node, which waits only on the children it spawned,
+# would leave it a zombie for the life of the container. tini also passes
+# SIGTERM on to Node, which stops itself on SIGTERM and SIGINT (main.ts,
+# within 30 s), also while it is still starting.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "apps/server/dist/src/main.js"]
