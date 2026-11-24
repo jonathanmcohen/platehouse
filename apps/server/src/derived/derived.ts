@@ -213,7 +213,7 @@ import {
   STORAGE_UNAVAILABLE_MESSAGE,
   type StoredFile,
 } from "../ingest/ingest.js";
-import { QUEUE, SLICER_RETRY, type SlicerJobHandlers } from "../jobs/queues.js";
+import { MAINTENANCE_TASKS, QUEUE, SLICER_RETRY, type SlicerJobHandlers } from "../jobs/queues.js";
 import { type BuildQueue, memoryGate } from "../memory/gate.js";
 import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
@@ -1792,6 +1792,22 @@ export function createDerived(deps: DerivedDeps) {
     job: DerivedJob,
     attempt: { retryCount: number; retryLimit: number; jobId?: string },
   ): Promise<DerivedOutcome> {
+    const outcome = await runJobOnce(job, attempt);
+    // Returned, not thrown: the picture's transaction has committed.
+    if (job.backfill === true && isPreviewKind(job.kind)) {
+      try {
+        await nextBackfillBatch();
+      } catch (error) {
+        console.error(`preview backfill: next batch not sent: ${describe(error)}`);
+      }
+    }
+    return outcome;
+  }
+
+  async function runJobOnce(
+    job: DerivedJob,
+    attempt: { retryCount: number; retryLimit: number; jobId?: string },
+  ): Promise<DerivedOutcome> {
     const selfJobId = attempt.jobId;
     const kind = Object.hasOwn(FILE_KIND_OF, job.kind) ? FILE_KIND_OF[job.kind] : undefined;
     const file = isUuid(job.fileId) ? await repos.files.get(job.fileId) : undefined;
@@ -2469,6 +2485,24 @@ export function createDerived(deps: DerivedDeps) {
       await sql`select pg_advisory_xact_lock(${BACKFILL_LOCK_KEY}::bigint)`.execute(lock);
       return backfillBatchLocked(now);
     });
+  }
+
+  /**
+   * Issue #417: when a backfill picture is done and none is still queued,
+   * sends a backfill-previews maintenance job at once, so the next batch
+   * does not wait for the 5-minute schedule. The job runs backfillPreviews,
+   * which holds BACKFILL_LOCK_KEY and queues nothing while a backfill job is
+   * queued, so one batch at a time still holds and a duplicate is a no-op.
+   * Returns whether it sent a job.
+   */
+  async function nextBackfillBatch(): Promise<boolean> {
+    const waiting = await deps.queue.findJobs<DerivedJob>(QUEUE.slicer, {
+      data: { backfill: true },
+      queued: true,
+    });
+    if (waiting.length > 0) return false;
+    await deps.queue.send(QUEUE.maintenance, { task: MAINTENANCE_TASKS.backfillPreviews });
+    return true;
   }
 
   async function backfillBatchLocked(now: Date): Promise<BackfillResult> {

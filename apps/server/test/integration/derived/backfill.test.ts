@@ -126,6 +126,11 @@ async function previewJobs(fileId: string) {
   );
 }
 
+/** The backfill-previews jobs on the maintenance queue, in any state. */
+async function backfillMaintenanceJobs() {
+  return env.boss.findJobs(QUEUE.maintenance, { data: { task: "backfill-previews" } });
+}
+
 describe("the preview backfill (issue #316)", () => {
   test("existing STL and STEP files get previews, a STEP's from its stored mesh with no second conversion", async () => {
     const stl = await legacyStl("Legacy bracket");
@@ -286,6 +291,66 @@ describe("the preview backfill (issue #316)", () => {
     const two = await batched.backfillPreviews(later());
     expect(two.queued).toEqual([third.fileId]);
     for (const j of await previewJobs(third.fileId)) await env.boss.cancel(QUEUE.slicer, j.id);
+  });
+
+  test("when a batch's last picture is done, the next batch is sent at once", async () => {
+    // The env's worker runs the picture jobs; this derived only queues them.
+    const batched = createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue: env.boss,
+      retryDelaySeconds: 1,
+      backfillBatch: 1,
+    });
+    const first = await legacyStl("Catch-up one");
+    await legacyStl("Catch-up two");
+    const before = await backfillMaintenanceJobs();
+
+    const run = await batched.backfillPreviews(later());
+    expect(run.queued).toContain(first.fileId);
+    await settledFile(env, first.fileId);
+
+    // The maintenance worker of this env may already have taken the job, so
+    // any state counts.
+    await until(backfillMaintenanceJobs, (jobs) => jobs.length > before.length);
+  });
+
+  test("no next batch is sent while another backfill picture is still queued", async () => {
+    // The first job sent is held an hour; the second goes to the worker.
+    let held: string | null = null;
+    const send: PgBoss["send"] = async (...args: unknown[]) => {
+      const [name, data, options] = args as [string, object, Record<string, unknown>];
+      const hold = held === null && name === QUEUE.slicer;
+      const id = await (env.boss.send as (...a: unknown[]) => Promise<string | null>)(
+        name,
+        data,
+        hold ? { ...options, startAfter: 3600 } : options,
+      );
+      if (hold) held = id;
+      return id;
+    };
+    const queue: DerivedDeps["queue"] = { send, findJobs: env.boss.findJobs.bind(env.boss) };
+    const batched = createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue,
+      retryDelaySeconds: 1,
+      backfillBatch: 2,
+    });
+    const a = await legacyStl("Held one");
+    const b = await legacyStl("Held two");
+    const before = await backfillMaintenanceJobs();
+
+    const run = await batched.backfillPreviews(later());
+    expect(run.queued).toEqual([a.fileId, b.fileId]);
+    // The second picture completes while the first stays queued.
+    await settledFile(env, b.fileId);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(await backfillMaintenanceJobs()).toHaveLength(before.length);
+
+    for (const j of await previewJobs(a.fileId)) await env.boss.cancel(QUEUE.slicer, j.id);
   });
 
   test("it leaves alone a file in the trash, a failed render, a STEP with no mesh, and a file inside the grace period", async () => {
