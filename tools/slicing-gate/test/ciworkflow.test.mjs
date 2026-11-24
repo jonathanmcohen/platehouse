@@ -20,6 +20,15 @@ const text = () => readFileSync(WORKFLOW, "utf8");
 // The on: block, from "on:" up to the next top-level key.
 const onBlock = (t) => t.slice(t.indexOf("\non:\n")).split(/\n(?=[a-z])/)[1];
 
+// The release gate needs a successful push run for the tagged commit, so a
+// newer push to main or a release branch must not cancel a running one.
+test("ci: only a pull request run is cancelled by a newer one, never a push run", () => {
+  assert.match(
+    text(),
+    /\nconcurrency:\n {2}group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n/,
+  );
+});
+
 // Issue #16: both triggers carried a paths filter for the gate and this file,
 // so no CI ran on a product PR. The triggers now carry no paths filter; the
 // gate job's own scoping lives in the changes job (tested below).
