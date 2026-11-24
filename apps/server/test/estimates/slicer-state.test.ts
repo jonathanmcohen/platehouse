@@ -116,20 +116,55 @@ describe("createSlicerState", () => {
     expect((await state.current()).timeouts.sliceSeconds).toBe(360);
   });
 
-  test("a failed health after a good one gives the last good snapshot", async () => {
+  test("a failed ask after a good one gives the last good timeouts and no sandbox state", async () => {
     let now = 0;
-    let fail = false;
+    let fail: Error | null = null;
     const state = createSlicerState({
       health: async () => {
-        if (fail) throw new SlicerUnreachable("ECONNREFUSED");
+        if (fail) throw fail;
         return health();
       },
       plateSeconds: 120,
       now: () => now,
     });
     const good = await state.current();
-    fail = true;
+    fail = new SlicerUnreachable("ECONNREFUSED");
     now += 120_000;
-    expect(await state.current()).toEqual(good);
+    expect(await state.current()).toEqual({ timeouts: good.timeouts, sandbox: null });
+    fail = new SlicerRefused(200, "not contract 2");
+    now += 20_000;
+    expect(await state.current()).toEqual({ timeouts: good.timeouts, sandbox: null });
+  });
+
+  test("a failed ask is remembered for 10 s, then asked again", async () => {
+    let now = 0;
+    const ask = vi.fn(async (): Promise<Health> => {
+      throw new SlicerUnreachable("ECONNREFUSED");
+    });
+    const state = createSlicerState({ health: ask, plateSeconds: 120, now: () => now });
+    await state.current();
+    now += 9_000;
+    expect(await state.current()).toEqual({ timeouts: DEFAULTS, sandbox: null });
+    expect(ask).toHaveBeenCalledTimes(1);
+    now += 2_000;
+    await state.current();
+    expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  test("health that answers again after a failure is used at once once the window ends", async () => {
+    let now = 0;
+    let up = false;
+    const state = createSlicerState({
+      health: async () => {
+        if (!up) throw new SlicerUnreachable("ECONNREFUSED");
+        return health();
+      },
+      plateSeconds: 120,
+      now: () => now,
+    });
+    await state.current();
+    up = true;
+    now += 11_000;
+    expect((await state.current()).sandbox).toMatchObject({ state: "on" });
   });
 });

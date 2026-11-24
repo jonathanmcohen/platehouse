@@ -274,6 +274,22 @@ export function slicerSendOptions<T extends object>(
 }
 
 /**
+ * The expiry of a conversion job from the slicer's limits, or
+ * CONVERT_EXPIRE_SECONDS before any are known. Only a STEP conversion is
+ * sent with an expiry, so any other kind answers at once, without asking the
+ * slicer's health.
+ */
+export async function convertExpiryFor(
+  kind: DerivedKind,
+  slicerState: SlicerState | undefined,
+): Promise<number> {
+  if (kind !== DERIVED_KINDS.convertStep || slicerState === undefined) {
+    return CONVERT_EXPIRE_SECONDS;
+  }
+  return convertExpireSeconds((await slicerState.current()).timeouts);
+}
+
+/**
  * The timers of a request to the slicer for a job of this kind, from the
  * slicer's own limits: the answer wait is its time cap for the route plus
  * the app's margin (a STEP conversion has its own cap, a render and a
@@ -734,10 +750,8 @@ export function createDerived(deps: DerivedDeps) {
     }
     return renderTarget(deps.slicerUrl, kind, timeouts, fixed);
   };
-  const convertExpiry = async (): Promise<number> => {
-    const timeouts = await limits();
-    return timeouts === null ? CONVERT_EXPIRE_SECONDS : convertExpireSeconds(timeouts);
-  };
+  const convertExpiry = (kind: DerivedKind): Promise<number> =>
+    convertExpiryFor(kind, deps.slicerState);
   const retry = {
     ...SLICER_RETRY,
     ...(deps.retryDelaySeconds === undefined ? {} : { retryDelay: deps.retryDelaySeconds }),
@@ -827,7 +841,7 @@ export function createDerived(deps: DerivedDeps) {
     }
     if (file.kind !== kind) throw new DerivedError("not_derivable", NOT_DERIVABLE_MESSAGE);
     const job: DerivedJob = { kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: file.blobId };
-    const expiry = await convertExpiry();
+    const expiry = await convertExpiry(job.kind);
     try {
       return await db.transaction().execute(async (trx) => {
         // A file that still shows renders of an earlier source keeps saying
@@ -942,7 +956,7 @@ export function createDerived(deps: DerivedDeps) {
 
     // The staged source's row, the file marked pending, and its job, in one
     // transaction.
-    const expiry = await convertExpiry();
+    const expiry = await convertExpiry(JOB_KIND_OF[kind]);
     const stage = async (trx: Transaction<DB>): Promise<void> => {
       const live = await trx
         .selectFrom("models")
@@ -1671,7 +1685,7 @@ export function createDerived(deps: DerivedDeps) {
           retryLimit: Math.max(0, attempt.retryLimit - attempt.retryCount),
           startAfter,
         },
-        await convertExpiry(),
+        await convertExpiry(next.kind),
       ),
     );
     if (id === null) throw new Error("pg-boss created no job");
@@ -1948,7 +1962,13 @@ export function createDerived(deps: DerivedDeps) {
    * Returns whether it queued one.
    */
   async function queueUnqueued(fileId: string, modelId: string): Promise<boolean> {
-    const expiry = await convertExpiry();
+    // Only a STEP file's job carries an expiry, so only it waits on health.
+    const known = await repos.files.get(fileId);
+    const expiry = await convertExpiry(
+      known !== undefined && hasDerived(known.kind)
+        ? JOB_KIND_OF[known.kind]
+        : DERIVED_KINDS.renderScad,
+    );
     return db.transaction().execute(async (trx) => {
       if (!(await lockModel(trx, modelId, true))) return false;
       const row = await trx

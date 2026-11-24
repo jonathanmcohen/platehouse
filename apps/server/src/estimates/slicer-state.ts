@@ -13,6 +13,9 @@ export const SLICER_MARGIN_SECONDS = 30;
 /** How long a health answer is reused, in milliseconds. */
 const MAX_AGE_MS = 60_000;
 
+/** How long a failed ask is remembered, in milliseconds. */
+const FAILURE_MEMORY_MS = 10_000;
+
 /** Seconds a conversion's mesh may take to be stored after the slicer's answer. */
 const STORE_SECONDS = 300;
 
@@ -52,25 +55,38 @@ export interface SlicerStateOptions {
 export function createSlicerState(opts: SlicerStateOptions): SlicerState {
   const maxAgeMs = opts.maxAgeMs ?? MAX_AGE_MS;
   const now = opts.now ?? Date.now;
-  let last: { at: number; snapshot: SlicerSnapshot } | null = null;
+  let good: { at: number; snapshot: SlicerSnapshot } | null = null;
+  let failedAt: number | null = null;
   let asking: Promise<SlicerSnapshot> | null = null;
+
+  /**
+   * When the latest ask failed: the last good limits, or the defaults, and
+   * never a sandbox state, so an unreadable slicer is unknown, not stale.
+   */
+  const unknown = (): SlicerSnapshot => ({
+    timeouts: good?.snapshot.timeouts ?? defaultTimeouts(opts.plateSeconds),
+    sandbox: null,
+  });
 
   async function ask(): Promise<SlicerSnapshot> {
     try {
       const health = await opts.health();
       const snapshot: SlicerSnapshot = { timeouts: health.timeouts, sandbox: health.sandbox };
-      last = { at: now(), snapshot };
+      good = { at: now(), snapshot };
+      failedAt = null;
       return snapshot;
     } catch {
-      // Unreachable, or an answer outside contract 2: the last good one, or
-      // the defaults. Not remembered, so the next call asks again.
-      return last?.snapshot ?? { timeouts: defaultTimeouts(opts.plateSeconds), sandbox: null };
+      // Unreachable, or an answer outside contract 2. Remembered briefly, so
+      // callers do not each wait on a slicer that is down.
+      failedAt = now();
+      return unknown();
     }
   }
 
   return {
     async current() {
-      if (last && now() - last.at < maxAgeMs) return last.snapshot;
+      if (good && failedAt === null && now() - good.at < maxAgeMs) return good.snapshot;
+      if (failedAt !== null && now() - failedAt < FAILURE_MEMORY_MS) return unknown();
       asking ??= ask().finally(() => {
         asking = null;
       });
