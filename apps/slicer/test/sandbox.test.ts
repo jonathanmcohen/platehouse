@@ -628,21 +628,23 @@ describe("OrcaSlicer's sandbox", () => {
 
 // The STEP worker is this Node and step.js: it may run code only from Node's
 // own folder and the system libraries, read the app (step.js and
-// occt-import-js) and OpenSSL's config file, and write only its job folder.
+// occt-import-js), and write only its job folder. OPENSSL_CONF is empty, so
+// Node loads no OpenSSL config file and needs nothing under /etc.
 describe("the STEP worker's sandbox", () => {
   const command = ["/opt/node/bin/node", "/opt/platehouse/app/apps/slicer/dist/src/step.js"];
   const rules = sandboxRules("step", PATHS);
 
-  test("its rules: Node and the system libraries to run, the app and OpenSSL's config file to read, the job folder to write", () => {
+  test("its rules: Node and the system libraries to run, the app to read, the job folder to write, no OpenSSL config", () => {
     expect(rules).toEqual({
       rox: ["/opt/node", "/usr/lib/x86_64-linux-gnu", "/lib64/ld-linux-x86-64.so.2"],
-      ro: ["/opt/platehouse/app", "/etc/ssl/openssl.cnf"],
+      ro: ["/opt/platehouse/app"],
       rw: [DIR],
       env: {
         PATH: "/usr/local/bin:/usr/bin:/bin",
         HOME: DIR,
         TMPDIR: DIR,
         LANG: "C.UTF-8",
+        OPENSSL_CONF: "",
       },
     });
   });
@@ -654,7 +656,7 @@ describe("the STEP worker's sandbox", () => {
       "--rox",
       "/opt/node,/usr/lib/x86_64-linux-gnu,/lib64/ld-linux-x86-64.so.2",
       "--ro",
-      "/opt/platehouse/app,/etc/ssl/openssl.cnf",
+      "/opt/platehouse/app",
       "--rw",
       DIR,
       "--env",
@@ -665,6 +667,8 @@ describe("the STEP worker's sandbox", () => {
       `TMPDIR=${DIR}`,
       "--env",
       "LANG=C.UTF-8",
+      "--env",
+      "OPENSSL_CONF=",
       "--",
       ...command,
     ]);
