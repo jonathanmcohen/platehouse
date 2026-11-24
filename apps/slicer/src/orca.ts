@@ -7,6 +7,13 @@
 //        [--load-filaments <the printer's default per slot, "" keeps the file's own>]
 //        <job>/input.3mf
 //
+// A plate whose objects sit off the printer's bed (a project saved for a
+// bigger one) makes Orca answer -50. The server then slices it once more with
+// --arrange 1 in front of the input, into ARRANGED_OUT: Orca lays the objects
+// out on the loaded machine's bed without rotating them (rotation needs
+// --allow-rotations, and the server never passes it). A plate with objects
+// that is still -50 does not fit the bed at all (bedTooSmall).
+//
 // Only the machine preset goes in --load-settings, so the file's own process
 // is kept unless Orca refuses the switch (gate item c). The numbers come from
 // Orca's per-plate statistics JSON (src/libslic3r/GCode/GCodeStatistics.cpp
@@ -34,6 +41,8 @@ export interface OrcaJob {
   /** One entry per project filament slot; "" keeps the file's own filament. */
   filamentFiles: string[];
   input: string;
+  /** Adds --arrange 1: Orca lays the plate's objects out on the machine's bed before it slices. */
+  arrange?: boolean;
 }
 
 export function orcaArgs(job: OrcaJob): string[] {
@@ -54,8 +63,48 @@ export function orcaArgs(job: OrcaJob): string[] {
   if (job.filamentFiles.some((f) => f !== "")) {
     args.push("--load-filaments", job.filamentFiles.join(";"));
   }
+  if (job.arrange) args.push("--arrange", "1");
   args.push(job.input);
   return args;
+}
+
+/**
+ * Orca's refusal for a plate with nothing on its bed, which is what a plate
+ * whose objects sit off a smaller printer's bed gets.
+ */
+export const OFF_BED_CODE = -50;
+
+/** The folder, inside ORCA_FOLDER, of the re-arranged retry's output. */
+export const ARRANGED_OUT = "out-arranged";
+
+export const TOO_BIG_DETAIL =
+  "No object on this plate fits the printer's bed, even after OrcaSlicer re-arranged it.";
+
+type Failed = Extract<SliceResult, { status: "failed" }>;
+
+/**
+ * True when `result` is Orca's clean -50 refusal: the code is -50 and the
+ * run ended the way a refusal does, not in a crash (sliceOutcome answers a
+ * crash as slicer_error with the same code). A timeout or an unreadable
+ * result has no code, so it is never one.
+ */
+export function isCleanOffBed(result: SliceResult, run: GroupResult): result is Failed {
+  return (
+    result.status === "failed" &&
+    result.code === OFF_BED_CODE &&
+    !run.signal &&
+    (run.code === null || run.code === cleanStatusOf(OFF_BED_CODE))
+  );
+}
+
+/** The retry's -50 for a plate with objects: it is too big for the bed. */
+export function bedTooSmall(retry: Failed): SliceResult {
+  return { ...retry, reason: "bed_too_small", detail: cut(`${TOO_BIG_DETAIL} ${retry.detail}`) };
+}
+
+/** The exit status of a clean refusal with this code: (256 + code) & 0xff. */
+function cleanStatusOf(code: number): number {
+  return ((code % 256) + 256) % 256;
 }
 
 /** The environment Orca runs with: everything it writes stays in the job folder. */
@@ -285,7 +334,7 @@ export function sliceOutcome(
     // after it wrote the code: a crash, whatever the code says, as the
     // slicing gate rules (tools/slicing-gate/lib/classify.mjs). An unknown
     // status is no evidence.
-    const cleanStatus = ((code % 256) + 256) % 256;
+    const cleanStatus = cleanStatusOf(code);
     if (run.signal || (run.code !== null && run.code !== cleanStatus)) {
       const end = run.signal ? `was killed by ${run.signal}` : `exited with ${run.code}`;
       return failed(

@@ -30,6 +30,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Fixed
 
+- A plate whose objects sit off a smaller printer's bed is now re-arranged onto that bed and estimated. A plate too big for the bed says so ("The plate is too big for this printer's bed.") instead of a general slicer error ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
 - Pressing Escape in the search box no longer ends Select mode or clears the selection ([#446](https://github.com/jonathanmcohen/platehouse/issues/446)).
 - Screen readers now hear the result of a bulk action in Select mode, and Retry on a failed plate keeps keyboard focus on that plate ([#447](https://github.com/jonathanmcohen/platehouse/issues/447)).
 - The upload dialog tells screen readers how each batch went, and Upload, Import anyway and the combine switch no longer drop keyboard focus ([#447](https://github.com/jonathanmcohen/platehouse/issues/447)).

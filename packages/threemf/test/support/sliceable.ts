@@ -54,6 +54,8 @@ export interface SliceableOptions {
   footprint?: number;
   /** Height of each object in mm, default `cubeSize`. */
   height?: number;
+  /** List no object on any plate in model_settings.config, so each plate's object count reads 0 (as when the plate list comes from thumbnails). */
+  noInstances?: boolean;
   /** Extra field bytes for the first entry's central record, to build a crafted directory. */
   firstEntryExtra?: Buffer;
 }
@@ -172,7 +174,7 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
     ),
     ...Array.from({ length: plates }, (_, i) => {
       const mine = placed.filter((o) => o.plate === i + 1);
-      const instances = mine
+      const instances = (opts.noInstances ? [] : mine)
         .map(
           (o) =>
             `    <model_instance>\n      <metadata key="object_id" value="${o.id}"/>\n      <metadata key="instance_id" value="0"/>\n      <metadata key="identify_id" value="${1000 + o.id}"/>\n    </model_instance>`,

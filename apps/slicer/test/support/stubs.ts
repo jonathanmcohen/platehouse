@@ -32,7 +32,21 @@ export type OrcaMode =
   | { kind: "noStats" }
   /** Leaves a FIFO named result.json, as code inside Orca could. */
   | { kind: "fifoResult" }
-  | { kind: "sleep" };
+  | { kind: "sleep" }
+  /**
+   * Orca answers -50 (the plate overhangs the bed) unless it was given
+   * --arrange 1. With it, it either slices (arrangeFixes) or answers -50
+   * again. firstStats leaves a statistics file in the first run's folder
+   * even though it refused; retryStats false makes a successful retry
+   * leave none; sleepMs makes every run take that long.
+   */
+  | {
+      kind: "arrange";
+      arrangeFixes: boolean;
+      firstStats?: boolean;
+      retryStats?: boolean;
+      sleepMs?: number;
+    };
 
 /**
  * A fake orca-slicer. It writes every argument, one per line, to args.log in
@@ -42,17 +56,20 @@ export type OrcaMode =
 export function fakeOrca(
   dir: string,
   mode: OrcaMode,
-): { bin: string; argsLog: string; pids: string } {
+): { bin: string; argsLog: string; pids: string; runsLog: string } {
   const argsLog = join(dir, "args.log");
+  const runsLog = join(dir, "runs.log");
   const pids = join(dir, "pids.txt");
   const head = `#!/bin/sh
 : > '${argsLog}'
 for a in "$@"; do printf '%s\\n' "$a" >> '${argsLog}'; done
-out=""; plate=""
+printf '%s\\n' "$*" >> '${runsLog}'
+out=""; plate=""; arranged=no
 while [ $# -gt 0 ]; do
   case "$1" in
     --outputdir) out="$2"; shift ;;
     --slice) plate="$2"; shift ;;
+    --arrange) arranged=yes; shift ;;
   esac
   shift
 done
@@ -89,6 +106,26 @@ exit 0
 exit 0
 `;
       break;
+    case "arrange": {
+      const stats = `printf '{"version":1,"summary":{"time":77,"weight":7,"filaments":[{"id":1,"weight":7,"volume":1}]}}' > "$out/plate_$plate.statistics.json"`;
+      const refusal = `printf '{"return_code":-50,"error_string":"Nothing to slice on the bed."}' > "$out/result.json"`;
+      const nap = mode.sleepMs ? `sleep ${mode.sleepMs / 1000}\n` : "";
+      body = `${nap}if [ "$arranged" = no ]; then
+  ${refusal}
+  ${mode.firstStats ? stats : ":"}
+  exit 206
+fi
+${
+  mode.arrangeFixes
+    ? `printf '{"return_code":0,"error_string":"Success."}' > "$out/result.json"
+${mode.retryStats === false ? ":" : stats}
+exit 0`
+    : `${refusal}
+exit 206`
+}
+`;
+      break;
+    }
     case "sleep":
       body = `sleep 30 &
 child=$!
@@ -97,7 +134,7 @@ wait
 `;
       break;
   }
-  return { bin: writeScript(join(dir, "orca"), head + body), argsLog, pids };
+  return { bin: writeScript(join(dir, "orca"), head + body), argsLog, pids, runsLog };
 }
 
 /** A fake GNU time: "-v -o FILE cmd ..." runs cmd and writes time -v lines to FILE. */

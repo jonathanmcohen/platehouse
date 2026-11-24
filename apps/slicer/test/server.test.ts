@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import { afterAll, afterEach, describe, expect, test, vi } from "vitest";
+import { TOO_BIG_DETAIL } from "../src/orca.js";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
 import { landrunArgs, PIPE_GRACE_MS, readOutputFile, sandboxRules } from "../src/sandbox.js";
 import { MAX_RENDER_OUTPUT_BYTES } from "../src/scad.js";
@@ -619,6 +620,124 @@ describe("slicing", () => {
 // Anything but a pass (the import works, the probe file is missing, or the
 // render fails for another reason such as a timeout) is a check_failed and
 // is tried again after a back-off; a kernel too old is final until restart.
+describe("a plate that overhangs the bed", () => {
+  const runsOf = (s: ReturnType<typeof setup>) =>
+    readFileSync(s.fake.runsLog, "utf8").trimEnd().split("\n");
+  const post = async (base: string, body: Buffer = sliceable()) =>
+    slicerContract.sliceResult.parse(await (await postSlice(base, body)).json());
+
+  test("is sliced after arranging: two runs, the second with --arrange 1 and no rotation", async () => {
+    const s = setup({}, { kind: "arrange", arrangeFixes: true });
+    const base = await start(s.config);
+    const res = await postSlice(base, sliceable());
+    expect(res.status).toBe(200);
+    expect(slicerContract.sliceResult.parse(await res.json())).toMatchObject({
+      status: "ok",
+      plate: 1,
+      timeSeconds: 77,
+      weightGrams: 7,
+    });
+    const runs = runsOf(s);
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).not.toContain("--arrange");
+    expect(runs[1]).toContain("--arrange 1 ");
+    expect(runs[1]).not.toContain("--orient");
+    expect(runs[1]).not.toContain("--allow-rotations");
+    expect(runs[1]).toContain("/out-arranged ");
+    expect(runs[0]).toMatch(/--outputdir \S+\/out --/);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("still refused after arranging is bed_too_small when the plate has objects", async () => {
+    const s = setup({}, { kind: "arrange", arrangeFixes: false });
+    const base = await start(s.config);
+    const body = await post(base);
+    expect(body).toMatchObject({ status: "failed", code: -50, reason: "bed_too_small" });
+    if (body.status !== "failed") throw new Error("expected a failure");
+    expect(body.detail).toBe(`${TOO_BIG_DETAIL} Nothing to slice on the bed.`);
+    expect(runsOf(s)).toHaveLength(2);
+  });
+
+  test("a plate with no known objects keeps slicer_error after a second -50", async () => {
+    const s = setup({}, { kind: "arrange", arrangeFixes: false });
+    const base = await start(s.config);
+    const body = await post(base, buildSliceable({ plates: 2, filaments: 2, noInstances: true }));
+    expect(body).toMatchObject({
+      status: "failed",
+      code: -50,
+      reason: "slicer_error",
+      detail: "Nothing to slice on the bed.",
+    });
+    expect(runsOf(s)).toHaveLength(2);
+  });
+
+  test.each([
+    ["a refusal other than -50", { kind: "result", code: -52, error: "no fit" } as OrcaMode],
+    ["a success", { kind: "ok", time: 1, weight: 1, grams: [1] } as OrcaMode],
+    [
+      "a -50 followed by a crash exit",
+      { kind: "result", code: -50, error: "x", exit: 1 } as OrcaMode,
+    ],
+  ])("%s is never retried", async (_name, mode) => {
+    const s = setup({}, mode);
+    const base = await start(s.config);
+    await post(base);
+    expect(runsOf(s)).toHaveLength(1);
+  });
+
+  test("a -50 followed by a crash exit stays a slicer_error naming the crash", async () => {
+    const s = setup({}, { kind: "result", code: -50, error: "x", exit: 1 });
+    const base = await start(s.config);
+    const body = await post(base);
+    expect(body).toMatchObject({ status: "failed", code: -50, reason: "slicer_error" });
+    if (body.status !== "failed") throw new Error("expected a failure");
+    expect(body.detail).toMatch(/^Orca wrote return code -50/);
+  });
+
+  test("the retry reads its own output, never the first run's files", async () => {
+    const s = setup(
+      {},
+      { kind: "arrange", arrangeFixes: true, firstStats: true, retryStats: false },
+    );
+    const base = await start(s.config);
+    const body = await post(base);
+    expect(body).toMatchObject({
+      status: "failed",
+      code: 0,
+      reason: "slicer_error",
+      detail: "Orca reported success without a time and a weight above zero",
+    });
+  });
+
+  test("the retry gets only the time that is left", async () => {
+    const s = setup(
+      { sliceTimeoutSeconds: 4 },
+      { kind: "arrange", arrangeFixes: true, sleepMs: 1500 },
+    );
+    const base = await start(s.config);
+    const started = Date.now();
+    const body = await post(base);
+    expect(body.status).toBe("ok");
+    expect(Date.now() - started).toBeLessThan(4000);
+    const cpu = readFileSync(s.prlimit.argsLog, "utf8").match(/--cpu=(\d+)/)?.[1];
+    // The first run's limit is 4 * 4 + 60 = 76 s of CPU; the retry's is sized from what is left.
+    expect(Number(cpu)).toBeLessThan(76);
+  });
+
+  test("a retry that outlasts the time that is left is killed and answered timeout", async () => {
+    const s = setup(
+      { sliceTimeoutSeconds: 2 },
+      { kind: "arrange", arrangeFixes: true, sleepMs: 1200 },
+    );
+    const base = await start(s.config);
+    const started = Date.now();
+    const body = await post(base);
+    expect(body).toMatchObject({ status: "failed", code: null, reason: "timeout" });
+    expect(Date.now() - started).toBeLessThan(3500);
+    expect(runsOf(s)).toHaveLength(2);
+  });
+});
+
 describe("sandbox self-test", () => {
   const lines = (file: string) => readFileSync(file, "utf8").trim().split("\n").length;
   const render = (base: string, kind = "stl") =>
