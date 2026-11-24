@@ -52,8 +52,14 @@ export interface SliceableOptions {
   cubeSize?: number;
   /** Footprint (width and depth) of each object in mm, default `cubeSize`. Above the bed's 256 the bed cannot hold it. */
   footprint?: number;
+  /** Footprint in mm of the object printed with filament k+1, one entry per filament, for plates whose objects differ in size. Overrides `footprint` for the entries it lists. */
+  footprints?: number[];
   /** Height of each object in mm, default `cubeSize`. */
   height?: number;
+  /** Bed position in mm of the first object's centre on each plate (measured from the plate's own corner). Default: the usual grid layout. */
+  at?: { x: number; y: number };
+  /** List no object on any plate in model_settings.config, so each plate's object count reads 0 (as when the plate list comes from thumbnails). */
+  noInstances?: boolean;
   /** Extra field bytes for the first entry's central record, to build a crafted directory. */
   firstEntryExtra?: Buffer;
 }
@@ -130,6 +136,12 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
       throw new RangeError(`${name} must be a positive number, not ${value}`);
     }
   }
+  const sizeOf = (filament: number) => opts.footprints?.[filament - 1] ?? footprint;
+  for (const size of opts.footprints ?? []) {
+    if (!Number.isFinite(size) || size <= 0) {
+      throw new RangeError(`footprints must be positive numbers, not ${size}`);
+    }
+  }
   const placed: Placed[] = [];
   for (let p = 0; p < plates; p++) {
     const origin = plateOrigin(p, plates);
@@ -138,13 +150,13 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
         id: placed.length + 1,
         plate: p + 1,
         filament: f + 1,
-        x: origin.x + 40 + (f % 4) * 45,
-        y: origin.y + 40 + Math.floor(f / 4) * 45,
+        x: origin.x + (f === 0 && opts.at ? opts.at.x - sizeOf(1) / 2 : 40 + (f % 4) * 45),
+        y:
+          origin.y + (f === 0 && opts.at ? opts.at.y - sizeOf(1) / 2 : 40 + Math.floor(f / 4) * 45),
       });
     }
   }
 
-  const mesh = cubeMesh(footprint, height);
   const model = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021">',
@@ -152,7 +164,9 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
     '<metadata name="BambuStudio:3mfVersion">1</metadata>',
     '<metadata name="Title">Platehouse sliceable cubes</metadata>',
     "<resources>",
-    ...placed.map((o) => `<object id="${o.id}" type="model">${mesh}</object>`),
+    ...placed.map(
+      (o) => `<object id="${o.id}" type="model">${cubeMesh(sizeOf(o.filament), height)}</object>`,
+    ),
     "</resources>",
     "<build>",
     ...placed.map(
@@ -172,7 +186,7 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
     ),
     ...Array.from({ length: plates }, (_, i) => {
       const mine = placed.filter((o) => o.plate === i + 1);
-      const instances = mine
+      const instances = (opts.noInstances ? [] : mine)
         .map(
           (o) =>
             `    <model_instance>\n      <metadata key="object_id" value="${o.id}"/>\n      <metadata key="instance_id" value="0"/>\n      <metadata key="identify_id" value="${1000 + o.id}"/>\n    </model_instance>`,

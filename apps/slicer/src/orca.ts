@@ -7,6 +7,11 @@
 //        [--load-filaments <the printer's default per slot, "" keeps the file's own>]
 //        <job>/input.3mf
 //
+// A plate whose objects sit off the printer's bed (a project saved for a
+// bigger one) makes Orca answer -50. By code -50 is still slicer_error here
+// (sliceOutcome), but slice() answers bed_too_small when the run was a clean
+// refusal and the plate has objects (isCleanOffBed, bedTooSmall).
+//
 // Only the machine preset goes in --load-settings, so the file's own process
 // is kept unless Orca refuses the switch (gate item c). The numbers come from
 // Orca's per-plate statistics JSON (src/libslic3r/GCode/GCodeStatistics.cpp
@@ -56,6 +61,46 @@ export function orcaArgs(job: OrcaJob): string[] {
   }
   args.push(job.input);
   return args;
+}
+
+/**
+ * Orca's refusal for a plate with nothing on its bed, which is what a plate
+ * whose objects sit off a smaller printer's bed gets.
+ */
+export const OFF_BED_CODE = -50;
+
+export const TOO_BIG_DETAIL = "No object on this plate fits the printer's bed.";
+
+type Failed = Extract<SliceResult, { status: "failed" }>;
+
+/**
+ * True when `result` is Orca's clean -50 refusal: the code is -50 and the
+ * run ended the way a refusal does, not in a crash (sliceOutcome answers a
+ * crash as slicer_error with the same code). A timeout or an unreadable
+ * result has no code, so it is never one.
+ */
+export function isCleanOffBed(result: SliceResult, run: GroupResult): result is Failed {
+  return (
+    result.status === "failed" && result.code === OFF_BED_CODE && isCleanExit(OFF_BED_CODE, run)
+  );
+}
+
+/** A clean -50 for a plate with objects: none of them fits the bed. */
+export function bedTooSmall(refusal: Failed): SliceResult {
+  return {
+    ...refusal,
+    reason: "bed_too_small",
+    detail: cut(`${TOO_BIG_DETAIL} ${refusal.detail}`),
+  };
+}
+
+/**
+ * Whether a run that wrote refusal `code` ended the way a refusal does: no
+ * signal, and an exit status of (256 + code) & 0xff (or none known). Any other
+ * known status, or a signal, means Orca died after it wrote the code.
+ */
+function isCleanExit(code: number, run: GroupResult): boolean {
+  return !run.signal && (run.code === null || run.code === ((code % 256) + 256) % 256);
 }
 
 /** The environment Orca runs with: everything it writes stays in the job folder. */
@@ -285,8 +330,7 @@ export function sliceOutcome(
     // after it wrote the code: a crash, whatever the code says, as the
     // slicing gate rules (tools/slicing-gate/lib/classify.mjs). An unknown
     // status is no evidence.
-    const cleanStatus = ((code % 256) + 256) % 256;
-    if (run.signal || (run.code !== null && run.code !== cleanStatus)) {
+    if (!isCleanExit(code, run)) {
       const end = run.signal ? `was killed by ${run.signal}` : `exited with ${run.code}`;
       return failed(
         code,

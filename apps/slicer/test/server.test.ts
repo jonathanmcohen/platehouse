@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import { afterAll, afterEach, describe, expect, test, vi } from "vitest";
+import { TOO_BIG_DETAIL } from "../src/orca.js";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
 import { landrunArgs, PIPE_GRACE_MS, readOutputFile, sandboxRules } from "../src/sandbox.js";
 import { MAX_RENDER_OUTPUT_BYTES } from "../src/scad.js";
@@ -619,6 +620,66 @@ describe("slicing", () => {
 // Anything but a pass (the import works, the probe file is missing, or the
 // render fails for another reason such as a timeout) is a check_failed and
 // is tried again after a back-off; a kernel too old is final until restart.
+describe("a plate whose objects sit off the bed", () => {
+  const runsOf = (s: ReturnType<typeof setup>) =>
+    readFileSync(s.fake.runsLog, "utf8").trimEnd().split("\n");
+  const post = async (base: string, body: Buffer = sliceable()) =>
+    slicerContract.sliceResult.parse(await (await postSlice(base, body)).json());
+
+  test("a clean -50 on a plate with objects is bed_too_small, from one run", async () => {
+    const s = setup({}, { kind: "result", code: -50, error: "Nothing to slice on the bed." });
+    const base = await start(s.config);
+    const body = await post(base);
+    expect(body).toMatchObject({ status: "failed", code: -50, reason: "bed_too_small" });
+    if (body.status !== "failed") throw new Error("expected a failure");
+    expect(body.detail).toBe(`${TOO_BIG_DETAIL} Nothing to slice on the bed.`);
+    expect(TOO_BIG_DETAIL).toBe("No object on this plate fits the printer's bed.");
+    expect(runsOf(s)).toHaveLength(1);
+    expect(readFileSync(s.fake.argsLog, "utf8")).not.toContain("--arrange");
+  });
+
+  test("a plate with no known objects keeps slicer_error", async () => {
+    const s = setup({}, { kind: "result", code: -50, error: "Nothing to slice on the bed." });
+    const base = await start(s.config);
+    const body = await post(base, buildSliceable({ plates: 2, filaments: 2, noInstances: true }));
+    expect(body).toMatchObject({
+      status: "failed",
+      code: -50,
+      reason: "slicer_error",
+      detail: "Nothing to slice on the bed.",
+    });
+    expect(runsOf(s)).toHaveLength(1);
+  });
+
+  test("a -50 followed by a crash exit stays a slicer_error naming the crash", async () => {
+    const s = setup({}, { kind: "result", code: -50, error: "x", exit: 1 });
+    const base = await start(s.config);
+    const body = await post(base);
+    expect(body).toMatchObject({ status: "failed", code: -50, reason: "slicer_error" });
+    if (body.status !== "failed") throw new Error("expected a failure");
+    expect(body.detail).toMatch(/^Orca wrote return code -50 .*then exited with 1/);
+    expect(runsOf(s)).toHaveLength(1);
+  });
+
+  test("a -50 followed by a segfault stays a slicer_error naming the crash", async () => {
+    const s = setup({}, { kind: "result", code: -50, error: "x", segfault: true });
+    const base = await start(s.config);
+    const body = await post(base);
+    expect(body).toMatchObject({ status: "failed", code: -50, reason: "slicer_error" });
+    if (body.status !== "failed") throw new Error("expected a failure");
+    expect(body.detail).toMatch(/^Orca wrote return code -50 .*then exited with 139/);
+    expect(runsOf(s)).toHaveLength(1);
+  });
+
+  test("a -52 is unchanged", async () => {
+    const s = setup({}, { kind: "result", code: -52, error: "no fit" });
+    const base = await start(s.config);
+    const body = await post(base);
+    expect(body).toMatchObject({ status: "failed", code: -52, reason: "bed_too_small" });
+    expect(runsOf(s)).toHaveLength(1);
+  });
+});
+
 describe("sandbox self-test", () => {
   const lines = (file: string) => readFileSync(file, "utf8").trim().split("\n").length;
   const render = (base: string, kind = "stl") =>

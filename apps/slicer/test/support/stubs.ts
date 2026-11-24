@@ -42,12 +42,14 @@ export type OrcaMode =
 export function fakeOrca(
   dir: string,
   mode: OrcaMode,
-): { bin: string; argsLog: string; pids: string } {
+): { bin: string; argsLog: string; pids: string; runsLog: string } {
   const argsLog = join(dir, "args.log");
+  const runsLog = join(dir, "runs.log");
   const pids = join(dir, "pids.txt");
   const head = `#!/bin/sh
 : > '${argsLog}'
 for a in "$@"; do printf '%s\\n' "$a" >> '${argsLog}'; done
+printf '%s\\n' "$*" >> '${runsLog}'
 out=""; plate=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -97,7 +99,7 @@ wait
 `;
       break;
   }
-  return { bin: writeScript(join(dir, "orca"), head + body), argsLog, pids };
+  return { bin: writeScript(join(dir, "orca"), head + body), argsLog, pids, runsLog };
 }
 
 /** A fake GNU time: "-v -o FILE cmd ..." runs cmd and writes time -v lines to FILE. */

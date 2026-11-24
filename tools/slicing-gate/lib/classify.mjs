@@ -16,7 +16,8 @@
 // and mixed filament. Those codes (except -62, which the maintainer has decided), and -50
 // (empty plate), are neither a legitimate refusal by Orca's own meaning
 // nor an unexplained error, so the gate reports them as needs-decision for the maintainer
-// instead of passing or failing them silently.
+// instead of passing or failing them silently. The product answers a clean -50 on a
+// plate with objects as bed_too_small; a gate -50 is still needs-decision.
 
 export const CODES = Object.freeze({
   0: "success",

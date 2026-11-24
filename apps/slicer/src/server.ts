@@ -67,7 +67,14 @@ import {
 import { readProject } from "@platehouse/threemf";
 import { z } from "zod";
 import { closeLingering, guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
-import { ORCA_FOLDER, orcaArgs, SCRATCH_DIRS, sliceOutcome } from "./orca.js";
+import {
+  bedTooSmall,
+  isCleanOffBed,
+  ORCA_FOLDER,
+  orcaArgs,
+  SCRATCH_DIRS,
+  sliceOutcome,
+} from "./orca.js";
 import { loadProfiles } from "./profiles.js";
 import {
   prlimitCommand,
@@ -918,7 +925,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
         timeoutMs: config.sliceTimeoutSeconds * 1000,
         track: job.track,
       });
-      const result = sliceOutcome(
+      let result = sliceOutcome(
         {
           orcaVersion: config.orcaVersion,
           plate,
@@ -931,6 +938,14 @@ export function createSlicer(config: SlicerConfig): Slicer {
         run,
         { outDir, timeFile },
       );
+      // A clean -50 on a plate that has objects: they sit off this printer's
+      // bed (a project laid out for a bigger one), so say the plate is too big.
+      if (
+        isCleanOffBed(result, run) &&
+        (project.plates.find((p) => p.index === plate)?.objectCount ?? 0) > 0
+      ) {
+        result = bedTooSmall(result);
+      }
       log(
         `slice plate ${plate} on ${printer}: ${result.status === "ok" ? `ok ${result.timeSeconds} s ${result.weightGrams} g` : `${result.reason} (${result.code})`} in ${run.wallMs} ms`,
       );

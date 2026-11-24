@@ -269,7 +269,8 @@ NEEDS-DECISION: the slicer contract's first reason map sent -61 to -69 to "nozzl
 mismatch", but Orca's own messages say only -66 and -68 are about extruders.
 -61, -63 to -65, -67 and -69 (bed type, collisions, vase mode, TPU count,
 mixed filament), and -50 (empty plate), are reported as needs-decision rather
-than passed or failed, so the maintainer decides them.
+than passed or failed, so the maintainer decides them. The product answers a clean -50 on a
+plate with objects as bed_too_small; a gate -50 is still needs-decision.
 
 A refusal or needs-decision code counts only when the slicer then exited
 cleanly. Orca 2.5.0 records the code in result.json and returns it from main,

@@ -128,12 +128,49 @@ describe("buildSliceable", () => {
     expect([extent(bigger, "x"), extent(bigger, "z")]).toEqual([30, 30]);
   });
 
+  test("at puts the first object's centre at that bed position, and the default layout is unchanged", () => {
+    const corner = (o: object) => {
+      const model =
+        sliceableEntries({ plates: 1, filaments: 2, ...o }).get("3D/3dmodel.model") ?? "";
+      return [...model.matchAll(/<item objectid="\d+" transform="([^"]+)"/g)].map((m) => ({
+        x: Number(m[1]?.split(" ")[9]),
+        y: Number(m[1]?.split(" ")[10]),
+      }));
+    };
+    // The mesh spans 0..size from the item's origin, so the centre is half a size in.
+    const placed = corner({ cubeSize: 20, at: { x: 220, y: 200 } });
+    expect(placed[0]).toEqual({ x: 210, y: 190 });
+    expect(placed[1]).toEqual({ x: 85, y: 40 });
+    expect(corner({})).toEqual([
+      { x: 40, y: 40 },
+      { x: 85, y: 40 },
+    ]);
+  });
+
+  test("footprints sizes each filament's object on its own, and the default is unchanged", () => {
+    const sizes = (o: object) => {
+      const model =
+        sliceableEntries({ plates: 1, filaments: 2, ...o }).get("3D/3dmodel.model") ?? "";
+      return [...model.matchAll(/<object id="\d+"[^>]*>([\s\S]*?)<\/object>/g)].map((m) =>
+        Math.max(
+          ...[...(m[1] ?? "").matchAll(/<vertex[^>]* x="([\d.]+)"/g)].map((v) => Number(v[1])),
+        ),
+      );
+    };
+    expect(sizes({})).toEqual([20, 20]);
+    expect(sizes({ footprints: [20, 200], height: 10 })).toEqual([20, 200]);
+    expect(sizes({ footprints: [30], footprint: 50 })).toEqual([30, 50]);
+  });
+
   test("a size that is not a positive number is refused", () => {
     expect(() => buildSliceable({ plates: 1, filaments: 1, cubeSize: 0 })).toThrow(/cubeSize/);
     expect(() => buildSliceable({ plates: 1, filaments: 1, footprint: Number.NaN })).toThrow(
       /footprint/,
     );
     expect(() => buildSliceable({ plates: 1, filaments: 1, height: -1 })).toThrow(/height/);
+    expect(() => buildSliceable({ plates: 1, filaments: 2, footprints: [20, 0] })).toThrow(
+      /footprints/,
+    );
   });
 
   test("options outside 1 to 128 plates or 1 to 16 filaments are refused", () => {
