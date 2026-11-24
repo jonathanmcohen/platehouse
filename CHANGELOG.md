@@ -30,6 +30,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Fixed
 
+- MakerWorld's CC BY-ND licence is recognised, and a licence Platehouse does not know is kept as a licence note on the model, `License on MakerWorld: <value>`, instead of being dropped ([#445](https://github.com/jonathanmcohen/platehouse/issues/445)).
 - The preview backfill for older files sends its next batch as soon as one finishes, instead of making at most 10 pictures every 5 minutes ([#417](https://github.com/jonathanmcohen/platehouse/issues/417)).
 - Which failed preview pictures are retried in the background now depends on a stored reason code, not on the wording of the message, so rewording a message can no longer stop the retries. Migration 0016 fills in the code for failures already stored ([#418](https://github.com/jonathanmcohen/platehouse/issues/418)).
 - Settings and deleting files were slowed by missing indexes. Migration 0016 adds an index for the time-left rate in Settings, and indexes for the five links to stored files that had none (a file's mesh, its STL render and its PNG render, and a plate's picture and mesh), so deleting files no longer scans the files and plates tables once per stored file. The first start of 0.1.1 builds these indexes before it answers, which takes longer on a large library ([#421](https://github.com/jonathanmcohen/platehouse/issues/421), [#460](https://github.com/jonathanmcohen/platehouse/issues/460)).
