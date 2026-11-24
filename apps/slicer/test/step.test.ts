@@ -121,7 +121,7 @@ describe("runStepWorker messages", () => {
 });
 
 // The worker runs untrusted input, so its output is read the way a render's
-// is (readRenderOutput in scad.ts): never through a link, never past the cap.
+// is (readOutputFile in sandbox.ts): never through a link, never past the cap.
 describe("runStepWorker output", () => {
   const MESSAGE_NOT_REGULAR = "The converted mesh was not a regular file, so it was not read.";
 

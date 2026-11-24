@@ -17,12 +17,12 @@ import { fileURLToPath } from "node:url";
 import {
   ledInMessage,
   prlimitCommand,
+  readOutputFile,
   runGroup,
   type SandboxConfig,
   sandboxPaths,
   sandboxRules,
 } from "./sandbox.js";
-import { readRenderOutput } from "./scad.js";
 
 export interface OcctMesh {
   attributes: {
@@ -193,16 +193,6 @@ function regularSize(file: string): number | null {
   }
 }
 
-/** True when something, a symlink included, has this name. */
-function lexists(file: string): boolean {
-  try {
-    lstatSync(file);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Runs the worker on dir/input.stp (STEP_INPUT), which the caller has
  * already written, so the server never holds the body in memory: prlimit
@@ -210,7 +200,7 @@ function lexists(file: string): boolean {
  * contract's LIMITS.stepOutputBytes, 256 MiB), then landrun with its rules,
  * then this Node and the worker. A mesh over maxOutputBytes is refused from
  * its size, never read or sent: the app streams the answer under the same
- * cap. The output is read with readRenderOutput, as a render's is: never
+ * cap. The output is read with readOutputFile, as a render's is: never
  * through a link, and anything but a regular file is refused unread.
  *
  * The file-size limit shows in two ways. The kernel sends SIGXFSZ to a
@@ -256,21 +246,21 @@ export async function runStepWorker(
     message: `The converted mesh went over the ${limitMib} MiB limit for a mesh, so it was stopped while writing it.`,
   };
   if (run.signal === "SIGXFSZ") return overLimit;
-  if (run.code === 0 && lexists(output)) {
-    const read = readRenderOutput(output, opts.maxOutputBytes);
+  if (run.code === 0) {
+    const read = readOutputFile(output, opts.maxOutputBytes);
     if (!read.ok && "notRegular" in read) {
       return {
         ok: false,
         message: "The converted mesh was not a regular file, so it was not read.",
       };
     }
-    if (!read.ok) {
+    if (!read.ok && "size" in read) {
       return {
         ok: false,
         message: `The converted mesh is ${Math.ceil(read.size / MIB)} MiB, over the ${limitMib} MiB limit for a mesh, so it was not sent.`,
       };
     }
-    if (read.bytes.length > 0) return { ok: true, bytes: read.bytes };
+    if (read.ok && read.bytes.length > 0) return { ok: true, bytes: read.bytes };
   }
   if (run.code !== 0 && (regularSize(output) ?? 0) >= opts.maxOutputBytes) return overLimit;
   // The worker's output is always led in; its exit status is the slicer's own.

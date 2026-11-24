@@ -52,7 +52,7 @@ import {
 } from "node:fs";
 import { open } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import {
@@ -67,7 +67,7 @@ import {
 import { readProject } from "@platehouse/threemf";
 import { z } from "zod";
 import { closeLingering, guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
-import { orcaArgs, SCRATCH_DIRS, sliceOutcome } from "./orca.js";
+import { ORCA_FOLDER, orcaArgs, SCRATCH_DIRS, sliceOutcome } from "./orca.js";
 import { loadProfiles } from "./profiles.js";
 import {
   prlimitCommand,
@@ -240,14 +240,73 @@ export class ConfigError extends Error {
   override name = "ConfigError";
 }
 
-/** Reads the slicer's configuration from the environment; names a bad key, never a value. */
-export function loadConfig(env: NodeJS.ProcessEnv): SlicerConfig {
+/**
+ * Folders no sandbox rule may name: each would let a program run every
+ * system command or read every system library folder, far more than the
+ * rules mean to give.
+ */
+const TOO_WIDE = new Set(["/", "/usr", "/usr/lib", "/usr/lib/x86_64-linux-gnu"]);
+
+/**
+ * Why `folder` cannot be a sandbox folder, or null when it can. It must be
+ * absolute (landrun would resolve a relative one from the job folder), not
+ * one of TOO_WIDE, hold no comma (landrun takes each rule list joined with
+ * commas), and neither be WORK_DIR, sit under it, nor hold it, so no rule
+ * reaches another job's folder.
+ */
+function sandboxFolderProblem(folder: string, workDir: string): string | null {
+  if (!isAbsolute(folder)) return "must be an absolute path";
+  if (folder.includes(",")) return "must not contain a comma";
+  const f = resolve(folder);
+  const w = resolve(workDir);
+  if (TOO_WIDE.has(f)) return "must not be /, /usr, /usr/lib or /usr/lib/x86_64-linux-gnu";
+  const within = (inner: string, outer: string) =>
+    inner === outer || inner.startsWith(outer === "/" ? "/" : `${outer}/`);
+  if (within(f, w) || within(w, f)) return "must not be WORK_DIR, sit under it, or hold it";
+  return null;
+}
+
+/**
+ * Reads the slicer's configuration from the environment; names a bad key,
+ * never a value. `execPath` is the Node that runs the server and the STEP
+ * worker (process.execPath); its folder is a sandbox folder too.
+ */
+export function loadConfig(
+  env: NodeJS.ProcessEnv,
+  execPath: string = process.execPath,
+): SlicerConfig {
   const parsed = envSchema.safeParse(env);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
     throw new ConfigError(`invalid slicer configuration: ${issues.join("; ")}`);
   }
   const e = parsed.data;
+  // The Node running this server runs the worker too (/opt/node/bin/node in
+  // the image, so /opt/node).
+  const nodeDir = dirname(dirname(execPath));
+  const issues: string[] = [];
+  const folders: [string, string][] = [
+    ["ORCA_DIR", e.ORCA_DIR],
+    ["APP_DIR", e.APP_DIR],
+    ["PROFILES_DIR", e.PROFILES_DIR],
+    ["OPENSCAD_DIR", e.OPENSCAD_DIR],
+  ];
+  for (const [key, folder] of folders) {
+    const problem = sandboxFolderProblem(folder, e.WORK_DIR);
+    if (problem) issues.push(`${key}: ${problem}`);
+  }
+  const nodeProblem = sandboxFolderProblem(nodeDir, e.WORK_DIR);
+  if (nodeProblem) {
+    issues.push(
+      `the folder of the Node that runs the slicer (two levels above its binary) ${nodeProblem}`,
+    );
+  }
+  if (!resolve(e.ORCA_BIN).startsWith(`${resolve(e.ORCA_DIR)}/`)) {
+    issues.push("ORCA_BIN: must be inside ORCA_DIR");
+  }
+  if (issues.length > 0) {
+    throw new ConfigError(`invalid slicer configuration: ${issues.join("; ")}`);
+  }
   return {
     port: e.PORT,
     workDir: e.WORK_DIR,
@@ -261,9 +320,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SlicerConfig {
     prlimitBin: e.PRLIMIT_BIN,
     sandboxProbe: e.SANDBOX_PROBE,
     stepWorker: e.STEP_WORKER,
-    // The Node running this server runs the worker too (process.execPath,
-    // /opt/node/bin/node in the image).
-    nodeDir: dirname(dirname(process.execPath)),
+    nodeDir,
     appDir: e.APP_DIR,
     slicePlateSeconds: e.SLICE_PLATE_SECONDS,
     sliceTimeoutSeconds: e.SLICE_TIMEOUT_SECONDS ?? e.SLICE_PLATE_SECONDS + 60,
@@ -750,8 +807,11 @@ export function createSlicer(config: SlicerConfig): Slicer {
     try {
       const gate = passSandboxGate(res, "program", "a slice");
       if (!gate) return;
-      for (const sub of SCRATCH_DIRS) mkdirSync(join(dir, sub), { recursive: true });
-      const input = join(dir, "input.3mf");
+      // Orca's sandbox may write only its own folder, ORCA_FOLDER; GNU
+      // time's report stays in the job folder above it, out of its reach.
+      const box = join(dir, ORCA_FOLDER);
+      for (const sub of SCRATCH_DIRS) mkdirSync(join(box, sub), { recursive: true });
+      const input = join(box, "input.3mf");
       try {
         await saveBody(req, input, config.limits.sliceBodyBytes);
       } catch (err) {
@@ -775,12 +835,12 @@ export function createSlicer(config: SlicerConfig): Slicer {
 
       const slots = [...project.projectFilaments].sort((a, b) => a.slot - b.slot);
       const picks = slots.map((f) => profiles.filamentFor(printer, f.type));
-      const outDir = join(dir, "out");
+      const outDir = join(box, "out");
       const timeFile = join(dir, "time.txt");
       const args = orcaArgs({
         plate,
         mstpp: config.slicePlateSeconds,
-        dataDir: join(dir, "data"),
+        dataDir: join(box, "data"),
         outDir,
         machineFile,
         filamentFiles: picks.map((p) => p?.file ?? ""),
@@ -794,7 +854,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
       // prlimit and GNU time see its LD_LIBRARY_PATH too: both link glibc,
       // which the AppImage never bundles (Orca's appimage_lib_policy.sh),
       // and prlimit also util-linux's libsmartcols; landrun is static.
-      const rules = sandboxRules("orca", sandboxPaths(config, dir));
+      const rules = sandboxRules("orca", sandboxPaths(config, box));
       const command = prlimitCommand({
         program: "orca",
         timeoutSeconds: config.sliceTimeoutSeconds,
@@ -803,7 +863,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
         command: [config.orcaBin, ...args],
       });
       const run = await runGroup(config.prlimitBin, command, {
-        cwd: dir,
+        cwd: box,
         env: rules.env,
         timeoutMs: config.sliceTimeoutSeconds * 1000,
         track: job.track,

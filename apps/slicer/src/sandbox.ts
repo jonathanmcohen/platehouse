@@ -37,7 +37,15 @@
 // then GNU time for a slice, then landrun, then the program): in its own
 // process group, killed whole at its time cap.
 import { spawn } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+} from "node:fs";
 import { join } from "node:path";
 import { LIMITS } from "@platehouse/slicer-contract";
 import { launcherEnv, scratchEnv } from "./orca.js";
@@ -82,7 +90,12 @@ export type SandboxedProgram = "openscad" | "orca" | "step";
 
 /** Where a program's files are: its job folder, and the image's folders. */
 export interface SandboxPaths {
-  /** The job's own folder under WORK_DIR, the only one the program may write. */
+  /**
+   * The only folder the program may write: its job folder under WORK_DIR,
+   * or for Orca its own folder inside the job folder (ORCA_FOLDER in
+   * orca.ts), so files the server reads from the job folder stay out of
+   * its reach.
+   */
   dir: string;
   openscadDir: string;
   orcaDir: string;
@@ -125,9 +138,11 @@ export interface SandboxRules {
 }
 
 /**
- * Each program's rules. Every one may write only its job folder, runs code
- * only from its own tree, the multiarch library folder and the loader
- * (SYSTEM_EXEC), and gets no network rule:
+ * Each program's rules. Every one may write only paths.dir (its job folder,
+ * or for Orca its own folder inside it), runs code only from its own tree,
+ * the multiarch library folder and the loader (SYSTEM_EXEC), and gets no
+ * network rule, so landrun refuses it every TCP bind and connect (Landlock
+ * does not cover UDP; the container's internal network does):
  *
  * - openscad: reads READ_ONLY. These rules are exactly the ones the slicing
  *   gate and the container tests proved, and a unit test pins them.
@@ -135,12 +150,15 @@ export interface SandboxRules {
  *   files it loads are) and READ_ONLY (fonts, EGL's vendor files, Mesa's
  *   driver config and the locale data). Its presets and process_full are in
  *   its own tree. Its environment is scratchEnv's (HOME, TMPDIR and the XDG
- *   folders all in the job folder) plus what its AppImage launcher would set
+ *   folders all in its own folder) plus what its AppImage launcher would set
  *   (launcherEnv in orca.ts, which says why Orca runs without the launcher).
  *   It needs nothing under /etc but the fonts' config, and nothing under
  *   /proc or /sys: OrcaSlicer 2.5.0's command line reads /proc/self/statm
  *   and /proc/version only for its log, and goes on without them
- *   (src/libslic3r/utils.cpp and Platform.cpp at the v2.5.0 commit).
+ *   (src/libslic3r/utils.cpp and Platform.cpp at the v2.5.0 commit). If it
+ *   fails to start under these rules, the likeliest missing read-only paths
+ *   are /usr/share/glib-2.0/schemas, /proc/self and /etc/ld.so.cache;
+ *   landrun logs each denial with LANDRUN_LOG_LEVEL=debug.
  * - step: reads the app, where step.js and occt-import-js are, and runs
  *   Node from its own folder.
  */
@@ -369,6 +387,60 @@ export function prlimitCommand(opts: {
         ]
       : command),
   ];
+}
+
+/** What readOutputFile found. */
+export type OutputRead =
+  | { ok: true; bytes: Buffer }
+  /** A regular file over the limit, left unread. */
+  | { ok: false; size: number }
+  /** A link, FIFO, socket, folder or anything else that is not a regular file, left unread. */
+  | { ok: false; notRegular: true }
+  /** Nothing has that name. */
+  | { ok: false; missing: true };
+
+/**
+ * Reads a file a sandboxed program left in a folder it can change: a
+ * render's output, the STEP worker's mesh, Orca's result.json and statistics
+ * file, and GNU time's report. It reports the size of a file over `limit`
+ * without reading it. The size is taken from the open file, so the file read
+ * is the file measured. The file is opened without following a symlink
+ * (O_NOFOLLOW) and without blocking (O_NONBLOCK, so a FIFO cannot hang the
+ * server), and anything fstat does not call a regular file is refused
+ * unread: the program could swap its output for a link to any file the
+ * server can read, and the server, which is not sandboxed, would send that
+ * file back (issue #153). A name that cannot be opened at all, such as a
+ * symlink (ELOOP) or a Unix socket (ENXIO on Linux), is refused the same way
+ * rather than thrown, since a throw answers 500 and the app records that as
+ * a slicer fault (PR #154 review). A name that is gone reads as missing,
+ * from the same open, so there is no separate look first.
+ */
+export function readOutputFile(file: string, limit: number): OutputRead {
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (err) {
+    // ELOOP: the name is a symlink; ENXIO: a Unix socket. EISDIR is not
+    // raised for O_RDONLY, so a folder is caught by fstat below.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { ok: false, missing: true };
+    return { ok: false, notRegular: true };
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return { ok: false, notRegular: true };
+    const { size } = st;
+    if (size > limit) return { ok: false, size };
+    const bytes = Buffer.alloc(size);
+    let at = 0;
+    while (at < size) {
+      const n = readSync(fd, bytes, at, size - at, at);
+      if (n === 0) break;
+      at += n;
+    }
+    return { ok: true, bytes: bytes.subarray(0, at) };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export interface GroupResult {

@@ -87,8 +87,11 @@ The slicer image sets its own defaults, and the only variable you normally set i
 | `PORT`                             | No               | `8080`                     | The slicer's port inside its network.                                                                                                                                                                                                                                                                                                    |
 | `ORCA_VERSION`, `OPENSCAD_VERSION` | Set by the image | -                          | The versions built into the image. Do not change them.                                                                                                                                                                                                                                                                                   |
 
-The image also sets the paths of the programs it runs (`WORK_DIR`, `PROFILES_DIR`, `ORCA_BIN`,
-`OPENSCAD_BIN` and others). Leave them as they are.
+The image also sets the paths of the programs it runs and the folders its sandbox lets them use
+(`WORK_DIR`, `PROFILES_DIR`, `ORCA_BIN`, `ORCA_DIR`, `APP_DIR`, `OPENSCAD_BIN`, `OPENSCAD_DIR` and
+others). Leave them as they are: the slicer refuses to start when one of those folders is a
+system folder such as `/usr`, sits under or around `WORK_DIR`, or when `ORCA_BIN` is not inside
+`ORCA_DIR`.
 
 ## Fixed limits
 

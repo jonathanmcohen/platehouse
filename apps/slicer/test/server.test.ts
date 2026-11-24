@@ -19,8 +19,8 @@ import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import { afterAll, afterEach, describe, expect, test, vi } from "vitest";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
-import { landrunArgs, PIPE_GRACE_MS, sandboxRules } from "../src/sandbox.js";
-import { MAX_RENDER_OUTPUT_BYTES, readRenderOutput } from "../src/scad.js";
+import { landrunArgs, PIPE_GRACE_MS, readOutputFile, sandboxRules } from "../src/sandbox.js";
+import { MAX_RENDER_OUTPUT_BYTES } from "../src/scad.js";
 import {
   createSlicer,
   loadConfig,
@@ -1161,8 +1161,9 @@ describe("OpenSCAD and STEP", () => {
     expect(MAX_RENDER_OUTPUT_BYTES).toBe(256 * 1024 * 1024);
     const file = join(stubDir(), "output.stl");
     writeFileSync(file, "0123456789");
-    expect(readRenderOutput(file, 10)).toEqual({ ok: true, bytes: Buffer.from("0123456789") });
-    expect(readRenderOutput(file, 9)).toEqual({ ok: false, size: 10 });
+    expect(readOutputFile(file, 10)).toEqual({ ok: true, bytes: Buffer.from("0123456789") });
+    expect(readOutputFile(file, 9)).toEqual({ ok: false, size: 10 });
+    expect(readOutputFile(join(stubDir(), "gone.stl"), 10)).toEqual({ ok: false, missing: true });
   });
 
   // Issue #153 item 2: code running inside OpenSCAD could replace its output
@@ -1176,19 +1177,19 @@ describe("OpenSCAD and STEP", () => {
     writeFileSync(secret, "not for the client");
     const link = join(dir, "output.stl");
     symlinkSync(secret, link);
-    expect(readRenderOutput(link, MAX_RENDER_OUTPUT_BYTES)).toEqual({
+    expect(readOutputFile(link, MAX_RENDER_OUTPUT_BYTES)).toEqual({
       ok: false,
       notRegular: true,
     });
     const fifo = join(dir, "output.png");
     expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
-    expect(readRenderOutput(fifo, MAX_RENDER_OUTPUT_BYTES)).toEqual({
+    expect(readOutputFile(fifo, MAX_RENDER_OUTPUT_BYTES)).toEqual({
       ok: false,
       notRegular: true,
     });
     const folder = join(dir, "folder.stl");
     mkdirSync(folder);
-    expect(readRenderOutput(folder, MAX_RENDER_OUTPUT_BYTES)).toEqual({
+    expect(readOutputFile(folder, MAX_RENDER_OUTPUT_BYTES)).toEqual({
       ok: false,
       notRegular: true,
     });
@@ -1197,7 +1198,7 @@ describe("OpenSCAD and STEP", () => {
   // A Unix socket cannot be opened (ENXIO on Linux, EOPNOTSUPP on macOS).
   // That refusal must read as a render that left no usable output, a 422,
   // not throw: a throw answers 500, which the app records as a slicer fault
-  // (PR #154 review). Only a name that is gone (ENOENT) still throws.
+  // (PR #154 review). A name that is gone reads as missing, not as a throw.
   test("a render output that is a Unix socket is refused, not thrown", async () => {
     const dir = stubDir();
     const sock = join(dir, "output.stl");
@@ -1207,16 +1208,17 @@ describe("OpenSCAD and STEP", () => {
       server.listen(sock, resolve);
     });
     try {
-      expect(readRenderOutput(sock, MAX_RENDER_OUTPUT_BYTES)).toEqual({
+      expect(readOutputFile(sock, MAX_RENDER_OUTPUT_BYTES)).toEqual({
         ok: false,
         notRegular: true,
       });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-    expect(() => readRenderOutput(join(dir, "gone.stl"), MAX_RENDER_OUTPUT_BYTES)).toThrow(
-      expect.objectContaining({ code: "ENOENT" }),
-    );
+    expect(readOutputFile(join(dir, "gone.stl"), MAX_RENDER_OUTPUT_BYTES)).toEqual({
+      ok: false,
+      missing: true,
+    });
   });
 
   test("scad/stl refuses an output OpenSCAD left as a symlink, and sends none of its target", async () => {
@@ -2102,7 +2104,13 @@ describe("OrcaSlicer and the STEP worker in the sandbox", () => {
     const dir = dirname(timeFile);
     expect(dirname(dir)).toBe(s.workDir);
     const orca = argsOf(s.fake.argsLog);
-    const rules = sandboxRules("orca", pathsFor(s.config, dir));
+    // Orca's own folder is a subfolder of the job folder; GNU time's report
+    // sits in the job folder above it, out of Orca's reach.
+    const rules = sandboxRules("orca", pathsFor(s.config, join(dir, "orca")));
+    expect(rules.rw).toEqual([join(dir, "orca")]);
+    expect(orca.at(-1)).toBe(join(dir, "orca", "input.3mf"));
+    expect(orca[orca.indexOf("--outputdir") + 1]).toBe(join(dir, "orca", "out"));
+    expect(orca[orca.indexOf("--datadir") + 1]).toBe(join(dir, "orca", "data"));
     expect(args).toEqual([
       ...ORCA_LIMITS,
       "--",
@@ -2186,6 +2194,25 @@ describe("OrcaSlicer and the STEP worker in the sandbox", () => {
     expect(() => readFileSync(lr.runsLog)).toThrow();
   });
 
+  // Orca's result.json sits in a folder the sandbox lets Orca change, so a
+  // FIFO there must not hold the server: it is opened without blocking and
+  // refused as not a regular file.
+  test("a FIFO left as result.json fails the slice at once, and the server stays free", async () => {
+    const s = setup({}, { kind: "fifoResult" });
+    const base = await start(s.config);
+    const res = await postSlice(base, sliceable());
+    expect(res.status).toBe(200);
+    expect(slicerContract.sliceResult.parse(await res.json())).toMatchObject({
+      status: "failed",
+      reason: "slicer_error",
+      detail: "Orca's result.json was not a regular file, so it was not read.",
+    });
+    expect(slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json()).busy).toBe(
+      false,
+    );
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
   // OrcaSlicer runs as bin/orca-slicer, with its launcher's environment
   // (launcherEnv in orca.ts), not through the AppRun bash launcher, which
   // would need bash and the commands it calls inside the sandbox.
@@ -2195,5 +2222,66 @@ describe("OrcaSlicer and the STEP worker in the sandbox", () => {
     expect(c.orcaDir).toBe("/opt/orca");
     expect(c.nodeDir).toBe(dirname(dirname(process.execPath)));
     expect(c.appDir).toBe("/opt/platehouse/app");
+  });
+});
+
+// Every folder a sandbox rule names comes from the configuration, and landrun
+// takes each list joined with commas. A folder that would let a program run
+// any system command, or reach job folders, is refused at start-up.
+describe("sandbox folders in the configuration", () => {
+  const VERSIONS = { ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" };
+  const NODE = "/opt/node/bin/node";
+
+  test("the image's defaults pass", () => {
+    expect(() => loadConfig(VERSIONS, NODE)).not.toThrow();
+    expect(loadConfig(VERSIONS, NODE).nodeDir).toBe("/opt/node");
+  });
+
+  test.each(["ORCA_DIR", "APP_DIR", "PROFILES_DIR", "OPENSCAD_DIR"])(
+    "%s is refused when it is a system folder, under or around WORK_DIR, relative or holds a comma",
+    (key) => {
+      const bad = [
+        "/",
+        "/usr",
+        "/usr/",
+        "/usr/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/work",
+        "/work/x",
+        "/opt/a,b",
+        "relative/folder",
+      ];
+      for (const value of bad) {
+        const env = { ...VERSIONS, [key]: value, ORCA_BIN: "/opt/orca/bin/orca-slicer" };
+        // ORCA_BIN must stay inside ORCA_DIR, so it moves with it here.
+        if (key === "ORCA_DIR") env.ORCA_BIN = `${value.replace(/\/$/, "")}/bin/orca-slicer`;
+        expect(() => loadConfig(env, NODE), `${key}=${value}`).toThrow(
+          new RegExp(`invalid slicer configuration: .*${key}`),
+        );
+      }
+    },
+  );
+
+  test("a folder that holds WORK_DIR is refused", () => {
+    expect(() => loadConfig({ ...VERSIONS, WORK_DIR: "/opt/platehouse/app/work" }, NODE)).toThrow(
+      /APP_DIR/,
+    );
+  });
+
+  test("ORCA_BIN must be inside ORCA_DIR", () => {
+    expect(() => loadConfig({ ...VERSIONS, ORCA_BIN: "/usr/bin/bash" }, NODE)).toThrow(/ORCA_BIN/);
+    expect(() => loadConfig({ ...VERSIONS, ORCA_BIN: "/opt/orca-other/x" }, NODE)).toThrow(
+      /ORCA_BIN/,
+    );
+  });
+
+  test("a Node installed under /usr is refused, since its folder would be /usr", () => {
+    expect(() => loadConfig(VERSIONS, "/usr/bin/node")).toThrow(/Node/);
+  });
+
+  test("the error names the setting, never its value", () => {
+    expect(() => loadConfig({ ...VERSIONS, APP_DIR: "/secret,value" }, NODE)).toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining("secret") }),
+    );
   });
 });

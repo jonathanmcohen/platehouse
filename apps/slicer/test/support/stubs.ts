@@ -30,6 +30,8 @@ export type OrcaMode =
   | { kind: "result"; code: number; error: string; exit?: number; segfault?: boolean }
   | { kind: "crash"; exit: number }
   | { kind: "noStats" }
+  /** Leaves a FIFO named result.json, as code inside Orca could. */
+  | { kind: "fifoResult" }
   | { kind: "sleep" };
 
 /**
@@ -79,6 +81,11 @@ exit ${mode.exit}
       break;
     case "noStats":
       body = `printf '{"return_code":0,"error_string":"Success."}' > "$out/result.json"
+exit 0
+`;
+      break;
+    case "fifoResult":
+      body = `mkfifo "$out/result.json"
 exit 0
 `;
       break;

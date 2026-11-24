@@ -269,20 +269,26 @@ container, the slicer, which is locked down.
   processes the job left behind, and it stops a job's programs at once when its client goes away.
 - **Each program is boxed in further.** OpenSCAD, OrcaSlicer and the STEP converter each run under
   a Linux Landlock sandbox that lets them write only to their own job folder, so none can read or
-  change another job's files, and open no network connection. Each may run only its own programs
-  and the system libraries, and read only what it needs:
+  change another job's files, and that refuses them any TCP connection. The sandbox does not block
+  UDP; the slicer's internal network is what keeps that from reaching anything (see below). Each
+  may run only its own programs and the system libraries, and read only what it needs:
   - OpenSCAD reads fonts and the graphics and language settings it renders with.
   - OrcaSlicer reads its own files, the printer and filament profiles, and fonts.
   - The STEP converter reads the slicer's own code, which holds the converter.
 
   Each also runs with limits on CPU time, file size and processes, and OpenSCAD on memory too. The
-  slicer reads a program's result only when it is an ordinary file in the job folder.
+  slicer reads a program's results only when each is an ordinary file of a limited size, never
+  through a link. OrcaSlicer works in its own folder inside the job folder, and the slicer keeps
+  the files it writes itself, such as the slice's time and memory report, in the job folder above
+  it, out of OrcaSlicer's reach.
 - **The sandbox is checked first.** At start-up the slicer checks that the sandbox really blocks a
   read outside the job folder, and runs no render, slice or STEP conversion until that check
   passes. It needs Linux 6.12 or newer (Landlock ABI 6). On an older kernel, or while the check
   fails, renders and STL pictures are off. Slices and STEP conversions are off too, unless
   `SLICER_ALLOW_UNSANDBOXED` is set on the slicer: then they run without the sandbox, with only
-  the limits above and the container's own isolation.
+  the limits above and the container's own isolation. Without the sandbox, a slice or STEP
+  conversion can also read and change other jobs' files, reach the app over the internal network
+  and send signals to the slicer's own processes.
 
 **What it does not do:**
 

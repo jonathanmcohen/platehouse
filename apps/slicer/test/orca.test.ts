@@ -10,7 +10,8 @@
 // 239 for -17. GNU time 1.9 exits with its child's status, or 128 + the
 // signal when the child was killed. So a refusal code with any other known
 // status, or with a signal, means Orca crashed after it wrote the code.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { slicerContract } from "@platehouse/slicer-contract";
@@ -113,5 +114,134 @@ describe("a non-zero return code", () => {
   test("an unknown exit status with no signal is no evidence of a crash", () => {
     const body = outcome(-17, { code: null });
     expect(body).toMatchObject({ status: "failed", code: -17, reason: "process_not_compatible" });
+  });
+});
+
+// Orca writes result.json and the statistics file in its own folder, which
+// the sandbox lets it change, so they are read the way a render's output is
+// (readOutputFile in sandbox.ts): never through a link, never a FIFO or
+// other non-regular file, and never past a size cap. GNU time's report sits
+// in the job folder above Orca's, out of Orca's reach, and is read the same
+// way. A file that fails those checks fails the slice, at once.
+describe("files Orca leaves are read only when they are small regular files", () => {
+  const OK_RUN: GroupResult = {
+    code: 0,
+    signal: null,
+    timedOut: false,
+    wallMs: 10,
+    stdoutTail: "",
+    stderrTail: "",
+  };
+  const STATS = JSON.stringify({ summary: { time: 60, weight: 3, filaments: [] } });
+  const TIME = "\tMaximum resident set size (kbytes): 2048\n";
+
+  /** A job folder with Orca's out/ in its own folder and GNU time's report above it. */
+  function job() {
+    const dir = mkdtempSync(join(tmpdir(), "slicer-orca-job-"));
+    dirs.push(dir);
+    const outDir = join(dir, "orca", "out");
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(join(outDir, "result.json"), JSON.stringify({ return_code: 0 }));
+    writeFileSync(join(outDir, "plate_1.statistics.json"), STATS);
+    const timeFile = join(dir, "time.txt");
+    writeFileSync(timeFile, TIME);
+    return { dir, outDir, timeFile };
+  }
+
+  /** Replaces `file` with a FIFO, a link to /dev/zero, or a file one byte over `limit`. */
+  function spoil(file: string, kind: "fifo" | "symlink" | "big", limit: number) {
+    rmSync(file);
+    if (kind === "fifo") expect(spawnSync("mkfifo", [file]).status).toBe(0);
+    if (kind === "symlink") symlinkSync("/dev/zero", file);
+    if (kind === "big") writeFileSync(file, Buffer.alloc(limit + 1, 32));
+  }
+
+  const outcomeOf = (j: { outDir: string; timeFile: string }) =>
+    slicerContract.sliceResult.parse(sliceOutcome(CTX, OK_RUN, j));
+
+  test("control: the same files, all regular and small, give an ok slice", () => {
+    expect(outcomeOf(job())).toMatchObject({
+      status: "ok",
+      timeSeconds: 60,
+      peakRssBytes: 2048 * 1024,
+    });
+  });
+
+  const FILES = [
+    {
+      label: "result.json",
+      path: (j: { outDir: string }) => join(j.outDir, "result.json"),
+      limit: 64 * 1024,
+      code: null,
+      limitText: "64 KiB",
+      name: "Orca's result.json",
+    },
+    {
+      label: "the statistics file",
+      path: (j: { outDir: string }) => join(j.outDir, "plate_1.statistics.json"),
+      limit: 1024 * 1024,
+      code: 0,
+      limitText: "1 MiB",
+      name: "Orca's plate_1.statistics.json",
+    },
+    {
+      label: "GNU time's report",
+      path: (j: { timeFile: string }) => j.timeFile,
+      limit: 64 * 1024,
+      code: 0,
+      limitText: "64 KiB",
+      name: "GNU time's report",
+    },
+  ] as const;
+
+  for (const f of FILES) {
+    test.each(["fifo", "symlink"] as const)(`${f.label} as a %s fails the slice unread`, (kind) => {
+      const j = job();
+      spoil(f.path(j as never), kind, f.limit);
+      expect(outcomeOf(j)).toEqual({
+        contract: 2,
+        orca: "2.5.0",
+        plate: 1,
+        status: "failed",
+        code: f.code,
+        reason: "slicer_error",
+        detail: `${f.name} was not a regular file, so it was not read.`,
+      });
+    });
+
+    test(`${f.label} one byte over ${f.limitText} fails the slice unread`, () => {
+      const j = job();
+      spoil(f.path(j as never), "big", f.limit);
+      expect(outcomeOf(j)).toMatchObject({
+        status: "failed",
+        code: f.code,
+        reason: "slicer_error",
+        detail: `${f.name} is over the ${f.limitText} limit, so it was not read.`,
+      });
+    });
+  }
+
+  test("an out/ that is a link, even to a folder with good files, fails the slice unread", () => {
+    const j = job();
+    const elsewhere = join(j.dir, "elsewhere");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "result.json"), JSON.stringify({ return_code: 0 }));
+    writeFileSync(join(elsewhere, "plate_1.statistics.json"), STATS);
+    rmSync(j.outDir, { recursive: true });
+    symlinkSync(elsewhere, j.outDir);
+    expect(outcomeOf(j)).toMatchObject({
+      status: "failed",
+      code: null,
+      reason: "slicer_error",
+      detail: "Orca's output folder was not a folder, so nothing in it was read.",
+    });
+  });
+
+  test("a missing out/ is a slice that wrote no result.json", () => {
+    const j = job();
+    rmSync(j.outDir, { recursive: true });
+    const body = outcomeOf(j);
+    expect(body).toMatchObject({ status: "failed", code: null, reason: "slicer_error" });
+    expect(body.status === "failed" && body.detail).toMatch(/^Orca wrote no result\.json/);
   });
 });
