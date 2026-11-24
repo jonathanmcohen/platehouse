@@ -15,8 +15,16 @@ import {
   useServer,
 } from "./support/harness.js";
 import { library } from "./support/library.js";
+import { bytesOf } from "./support/manyfold-stub.js";
 
 useServer();
+
+/**
+ * A clock that is jumped ahead by this many ms once a model's own record has
+ * been asked for, which is after the start-up listing.
+ */
+const jumped = (ms: number) => () =>
+  Date.now() + (seen.some((x) => /\/models\/[^/?]+$/.test(x.url)) ? ms : 0);
 
 describe("the Manyfold token", () => {
   it("is asked for exactly once per run", async () => {
@@ -126,14 +134,6 @@ describe("the Manyfold token", () => {
     expect(r.code).toBe(0);
   });
 
-  it("is renewed once when a later request is refused, never asked for again after that", async () => {
-    const s = setup(library());
-    server.use(http.get(`${MANYFOLD}/models/m2`, () => new HttpResponse(null, { status: 401 })));
-    const r = await s.run(["--apply"]);
-    expect(r.code).toBe(1);
-    expect(s.manyfold.tokenRequests).toHaveLength(2);
-  });
-
   it("is not asked for again when the start-up request is refused", async () => {
     const s = setup(library());
     server.use(
@@ -148,8 +148,7 @@ describe("the Manyfold token", () => {
 
   it("is renewed before it expires, and the run carries on", async () => {
     // The clock jumps 590 s once the first model has been read.
-    const now = () => Date.now() + (seen.some((x) => x.url.includes("/models/m")) ? 590_000 : 0);
-    const s = setup(library(), { manyfold: { token: { expiresIn: 600 } }, now });
+    const s = setup(library(), { manyfold: { token: { expiresIn: 600 } }, now: jumped(590_000) });
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(0);
     expect(s.manyfold.tokenRequests).toHaveLength(2);
@@ -157,27 +156,31 @@ describe("the Manyfold token", () => {
     expect(r.report?.models).toHaveLength(3);
   });
 
-  it("a 401 from Manyfold renews the token once and retries the request", async () => {
-    const s = setup(library(), { manyfold: { token: { expireAfterRequests: 3 } } });
+  it("a 401 from Manyfold mid-model renews the token once, retries, and uses the new token after", async () => {
+    // Six reads list the library; the first token is refused from the ninth on.
+    const s = setup(library(), {
+      manyfold: { token: { expireAfterRequests: 8 } },
+      now: jumped(120_000),
+    });
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(0);
     expect(s.manyfold.tokenRequests).toHaveLength(2);
     expect(r.report?.models.map((m) => m.outcome)).not.toContain("failed");
-  });
-
-  it("uses the renewed token for the requests after it", async () => {
-    const s = setup(library(), { manyfold: { token: { expireAfterRequests: 3 } } });
-    await s.run(["--apply"]);
     const [, renewed] = s.manyfold.tokens;
     const reads = seen.filter((x) => x.url.startsWith(MANYFOLD) && x.method === "GET");
-    expect(reads.at(-1)?.authorization).toBe(`Bearer ${renewed}`);
+    const first = reads.findIndex((x) => x.authorization === `Bearer ${renewed}`);
+    // The renewal came while model m1's records were being read.
+    expect(reads.slice(0, first).some((x) => x.url.endsWith("/models/m1"))).toBe(true);
+    for (const x of reads.slice(first)) expect(x.authorization).toBe(`Bearer ${renewed}`);
   });
 
   it("a second 401 after renewing fails that model only", async () => {
-    const s = setup(library());
+    const s = setup(library(), { now: jumped(120_000) });
     server.use(http.get(`${MANYFOLD}/models/m2`, () => new HttpResponse(null, { status: 401 })));
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(1);
+    // The start-up request, and one renewal; the second 401 is the model's failure.
+    expect(s.manyfold.tokenRequests).toHaveLength(2);
     const byId = new Map(r.report?.models.map((m) => [m.manyfoldId, m]));
     expect(byId.get("m2")?.outcome).toBe("failed");
     expect(byId.get("m2")?.reason).toContain("HTTP 401");
@@ -185,14 +188,50 @@ describe("the Manyfold token", () => {
     expect(byId.get("m3")?.outcome).not.toBe("failed");
   });
 
-  it("a renewal granted more than read stops the run", async () => {
+  it("a Manyfold that answers 401 everywhere cannot make it spend token requests", async () => {
+    const data = library();
+    for (let i = 1; i <= 12; i++) {
+      data.models.push({
+        id: `x${i}`,
+        name: `Extra ${i}`,
+        files: [
+          {
+            id: `xf${i}`,
+            filename: `x${i}.stl`,
+            encodingFormat: "model/stl",
+            bytes: bytesOf(`x${i}`, 40),
+          },
+        ],
+      });
+    }
+    const s = setup(data, { now: jumped(120_000) });
+    server.use(
+      http.get(`${MANYFOLD}/models/:id`, ({ params }) =>
+        String(params.id).startsWith("x") ? new HttpResponse(null, { status: 401 }) : undefined,
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expect(s.manyfold.tokenRequests.length).toBeLessThanOrEqual(2);
+    const outcomes = new Map(r.report?.models.map((m) => [m.manyfoldId, m.outcome]));
+    expect(r.report?.models).toHaveLength(15);
+    for (const id of ["m1", "m2", "m3"]) expect(outcomes.get(id)).not.toBe("failed");
+    for (let i = 1; i <= 12; i++) expect(outcomes.get(`x${i}`)).toBe("failed");
+  });
+
+  it("a renewal granted more than read stops the run, after its summary", async () => {
     const s = setup(library(), {
       manyfold: { token: { expireAfterRequests: 8, renewScope: "read write" } },
+      now: jumped(120_000),
     });
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(1);
-    expect(r.stderr.join("\n")).toContain("the Manyfold token could not be renewed:");
-    expect(r.stderr.join("\n")).toContain('scope "read write", not read only');
+    expect(r.stdout.join("\n")).toContain("the Manyfold token could not be renewed:");
+    expect(r.stdout.join("\n")).toContain('scope "read write", not read only');
+    expect(r.stdout.join("\n")).toMatch(/stopped: .*; 2 models not attempted/);
+    expect(r.stdout.join("\n")).toContain("apply done: found 3");
+    expect(r.stderr.join("\n")).not.toContain("unexpected error");
+    expect(r.report?.models).toHaveLength(1);
     // Nothing more was read after the refused renewal.
     const lastToken = seen.findLastIndex((x) => x.url.endsWith("/oauth/token"));
     expect(seen.slice(lastToken + 1).filter((x) => x.url.startsWith(MANYFOLD))).toEqual([]);
@@ -200,8 +239,10 @@ describe("the Manyfold token", () => {
   });
 
   it("two failed renewals in a row stop the run", async () => {
-    // Six reads list the library; the token is refused from the ninth on.
-    const s = setup(library(), { manyfold: { token: { expireAfterRequests: 8 } } });
+    const s = setup(library(), {
+      manyfold: { token: { expireAfterRequests: 8 } },
+      now: jumped(120_000),
+    });
     let asked = 0;
     server.use(
       http.post(`${MANYFOLD}/oauth/token`, () => {
@@ -216,12 +257,62 @@ describe("the Manyfold token", () => {
     );
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(1);
-    expect(r.stderr.join("\n")).toContain("the Manyfold token could not be renewed:");
+    expect(r.stdout.join("\n")).toContain("the Manyfold token could not be renewed:");
+    expect(r.stdout.join("\n")).toContain("models not attempted");
+    expect(r.stderr.join("\n")).not.toContain("unexpected error");
     expect(asked).toBe(3);
   });
 
+  it("a failed early renewal, while the token still holds, does not fail anything", async () => {
+    const s = setup(library(), { now: jumped(590_000) });
+    let asked = 0;
+    server.use(
+      http.post(`${MANYFOLD}/oauth/token`, () => {
+        asked++;
+        if (asked === 2) return new HttpResponse(null, { status: 503 });
+        return HttpResponse.json({
+          access_token: s.manyfold.accessToken,
+          expires_in: 600,
+          scope: "read",
+        });
+      }),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(r.report?.models.map((m) => m.outcome)).not.toContain("failed");
+    expect(r.output).toContain("could not be renewed");
+    expect(asked).toBe(2);
+  });
+
+  it("is not renewed early when expires_in is under a minute", async () => {
+    const s = setup(library(), { manyfold: { token: { expiresIn: 1 } } });
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(s.manyfold.tokenRequests.length).toBeLessThanOrEqual(2);
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["not a number", "soon"],
+    ["negative", -5],
+  ])("is not renewed early when expires_in is %s", async (_what, expiresIn) => {
+    const s = setup(library(), { now: jumped(100_000_000) });
+    server.use(
+      http.post(`${MANYFOLD}/oauth/token`, () =>
+        HttpResponse.json({
+          access_token: s.manyfold.accessToken,
+          scope: "read",
+          ...(expiresIn === undefined ? {} : { expires_in: expiresIn }),
+        }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(manyfoldCalls().filter((c) => c === "POST /oauth/token")).toHaveLength(1);
+  });
+
   it("a 401 from the object store never renews the token", async () => {
-    const s = setup(library());
+    const s = setup(library(), { now: jumped(120_000) });
     server.use(
       http.get(`${OBJECTS}/manyfold/m3/f5`, () => new HttpResponse(null, { status: 401 })),
     );
@@ -230,13 +321,27 @@ describe("the Manyfold token", () => {
     expect(s.manyfold.tokenRequests).toHaveLength(1);
     const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
     expect(m3?.files[0]?.status).toBe("failed");
-    for (const req of s.manyfold.objectRequests) expect(req.authorization).toBeNull();
+    const f5 = seen.filter((x) => x.url.startsWith(`${OBJECTS}/manyfold/m3/f5`));
+    expect(f5.length).toBeGreaterThan(0);
+    for (const req of seen.filter((x) => x.url.startsWith(OBJECTS))) {
+      expect(req.authorization).toBeNull();
+    }
   });
 
-  it("a renewed token is never printed, nor the one it replaced", async () => {
-    const s = setup(library(), { manyfold: { token: { expireAfterRequests: 3 } } });
+  it("a renewed token is never printed, nor the one it replaced, even when Manyfold echoes it", async () => {
+    const s = setup(library(), {
+      manyfold: { token: { expireAfterRequests: 8 } },
+      now: jumped(120_000),
+    });
+    server.use(
+      http.get(
+        `${MANYFOLD}/models/m3`,
+        () => new HttpResponse(`denied ${s.manyfold.accessToken}`, { status: 403 }),
+      ),
+    );
     const r = await s.run(["--apply"]);
     expect(s.manyfold.tokens).toHaveLength(2);
+    expect(r.output).toContain("HTTP 403");
     for (const t of s.manyfold.tokens) expect(r.output).not.toContain(t);
   });
 });

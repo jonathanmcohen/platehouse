@@ -90,8 +90,8 @@ through a filter that removes them.
 
 ## Exit codes
 
-| Code | Meaning                                                                                                                                                                                                |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | Every model was handled.                                                                                                                                                                               |
-| 1    | At least one model failed; the report says which and why. Running again finishes what is missing. Also the exit when Manyfold refuses to renew the token mid-run, which stops the import.              |
-| 2    | The run could not start: a bad argument or address, missing credentials, either server refusing the token or not answering, Manyfold granting more than `read`, or Manyfold's lists could not be read. |
+| Code | Meaning                                                                                                                                                                                                                                                                                     |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Every model was handled.                                                                                                                                                                                                                                                                    |
+| 1    | At least one model failed; the report says which and why. Running again finishes what is missing. One failed token renewal fails only the request that needed it; a renewal that grants more than `read`, or a second failure in a row, stops the import after its summary, with this exit. |
+| 2    | The run could not start: a bad argument or address, missing credentials, either server refusing the token or not answering, Manyfold granting more than `read`, or Manyfold's lists could not be read.                                                                                      |

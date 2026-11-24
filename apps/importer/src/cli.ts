@@ -608,14 +608,16 @@ export async function run(options: RunOptions): Promise<RunResult> {
 
     report = { mode, found: entries.length, models: [] };
     const ctx: Context = { mode, manyfold, platehouse, nameOf: nameBook(manyfold, known) };
+    let stopped: string | null = null;
     for (const [i, entry] of entries.entries()) {
       let result: ModelResult;
+      let stop = false;
       try {
         result = await importModel(ctx, entry);
       } catch (error) {
         // A token that cannot be renewed ends the run: every model left
-        // would fail the same way. The outer catch prints it, exit 1.
-        if (error instanceof TokenRenewalError) throw error;
+        // would fail the same way. This model is reported, then the summary.
+        stop = error instanceof TokenRenewalError;
         result = {
           manyfoldId: entry.id,
           name: entry.name,
@@ -624,12 +626,17 @@ export async function run(options: RunOptions): Promise<RunResult> {
           newModel: false,
           files: [],
         };
+        if (stop) stopped = message(error);
       }
       report.models.push(result);
       for (const line of modelLines(result, i, entries.length)) out(line);
+      if (stop) break;
     }
     out("");
     for (const line of summaryLines(report)) out(line);
+    if (stopped !== null) {
+      out(`stopped: ${stopped}; ${report.found - report.models.length} models not attempted`);
+    }
     return { code: exitCode(report), report };
   } catch (error) {
     err(`platehouse-import: unexpected error: ${message(error)}`);

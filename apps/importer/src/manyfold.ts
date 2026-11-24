@@ -67,6 +67,13 @@ export class ManyfoldError extends Error {
   }
 }
 
+/** A 401 within this long of a token being issued is not an expiry: no renewal. */
+const MIN_RENEW_GAP_MS = 60_000;
+/** After a failed early renewal, the wait before trying again. */
+const RENEW_RETRY_MS = 30_000;
+/** A token that lives less than this is not renewed ahead of time. */
+const MIN_PROACTIVE_LIFETIME_MS = 60_000;
+
 /**
  * A failure that must end the run, not just fail one model: a renewed token
  * granted more than read, or two renewals in a row that failed.
@@ -286,6 +293,9 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
   let lifetimeMs = 0;
   let renewing: Promise<void> | null = null;
   let renewalsFailed = 0;
+  /** When the current token was issued, and the earliest time an early renewal may be tried. */
+  let issuedAt = 0;
+  let nextEarlyTryAt = 0;
 
   /** A URL Manyfold gave, as https on the base origin; refuses any other origin. */
   function safeUrl(link: string): URL {
@@ -326,7 +336,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     const onManyfold = url.origin === origin;
     let renewedOn401 = false;
     for (let attempt = 1; ; attempt++) {
-      if (onManyfold && expiresDue()) await renew();
+      if (onManyfold && expiresDue()) await renew(true);
       const headers: Record<string, string> = { Accept: accept };
       let sent: string | null = null;
       if (onManyfold) {
@@ -353,12 +363,16 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
       }
       if (res.status === 401 && onManyfold && !renewedOn401) {
         // Once per request: a renewal, then the same request again. A token
-        // already renewed since this one was sent is just retried with.
-        renewedOn401 = true;
-        await res.body?.cancel();
-        if (token === sent) await renew();
-        attempt--;
-        continue;
+        // already renewed since this one was sent is just retried with. One
+        // issued under a minute ago was not refused for expiry, so Manyfold
+        // cannot make this client spend its token requests on 401s.
+        if (token !== sent || now() - issuedAt >= MIN_RENEW_GAP_MS) {
+          renewedOn401 = true;
+          await res.body?.cancel();
+          if (token === sent) await renew(false);
+          attempt--;
+          continue;
+        }
       }
       if (res.status === 429 && attempt < attempts) {
         const wait = retryAfter(res.headers.get("retry-after"), attempt);
@@ -464,9 +478,15 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
   function keep(granted: { value: string; expiresIn: unknown }): void {
     token = granted.value;
     const seconds = granted.expiresIn;
-    if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) {
+    issuedAt = now();
+    nextEarlyTryAt = 0;
+    if (
+      typeof seconds === "number" &&
+      Number.isFinite(seconds) &&
+      seconds * 1000 >= MIN_PROACTIVE_LIFETIME_MS
+    ) {
       lifetimeMs = seconds * 1000;
-      expiresAt = now() + lifetimeMs;
+      expiresAt = issuedAt + lifetimeMs;
     } else {
       lifetimeMs = 0;
       expiresAt = null;
@@ -484,7 +504,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
 
   /** Whether the token is within its last tenth, or last 5 minutes, whichever is shorter. */
   function expiresDue(): boolean {
-    if (expiresAt === null || renewing !== null) return false;
+    if (expiresAt === null || renewing !== null || now() < nextEarlyTryAt) return false;
     return expiresAt - now() < Math.min(300_000, 0.1 * lifetimeMs);
   }
 
@@ -493,19 +513,27 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
    * triggers another (it does not go through request()), and callers that
    * arrive during one wait for it. One failure fails the request that needed
    * the renewal; a scope that is not read, or a second failure in a row,
-   * stops the run.
+   * stops the run. An early renewal (early) that fails while the current
+   * token is still valid is not a failure: the current token is used and
+   * the next try waits RENEW_RETRY_MS.
    */
-  function renew(): Promise<void> {
+  function renew(early: boolean): Promise<void> {
     if (renewing !== null) return renewing;
     const attempt = (async () => {
       try {
         keep(await requestToken());
         renewalsFailed = 0;
       } catch (error) {
-        renewalsFailed++;
         const reason = error instanceof Error ? error.message : String(error);
         const text = `the Manyfold token could not be renewed: ${reason}`;
-        if (error instanceof ScopeError || renewalsFailed >= 2) throw new TokenRenewalError(text);
+        if (error instanceof ScopeError) throw new TokenRenewalError(text);
+        if (early && expiresAt !== null && expiresAt > now()) {
+          nextEarlyTryAt = now() + RENEW_RETRY_MS;
+          log(`  ${text}; using the current token, trying again later`);
+          return;
+        }
+        renewalsFailed++;
+        if (renewalsFailed >= 2) throw new TokenRenewalError(text);
         throw new ManyfoldError(text, error instanceof ManyfoldError ? error.status : null);
       } finally {
         renewing = null;
