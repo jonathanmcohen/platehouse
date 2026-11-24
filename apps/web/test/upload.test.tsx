@@ -734,6 +734,8 @@ describe("many files, slow imports and failures", () => {
     test("a lost connection, a 409, a 423, a 429, a 507 and a 503 keep it, so the upload can resume", () => {
       for (const error of [
         connectionLost(),
+        refusedWith(409),
+        refusedWith(423),
         refusedWith(429),
         refusedWith(507),
         refusedWith(503),
@@ -1234,6 +1236,48 @@ describe("many files, slow imports and failures", () => {
     await render(node(false));
     await finish(0);
     await render(node(true));
+    expect(dialogRegion().textContent).toBe("");
+  });
+
+  test("an unsupported-type row is announced exactly once across a re-render", async () => {
+    const { start, fetchResult } = stubUploads(added);
+    const notes = new File([new Uint8Array(5)], "notes.txt");
+    const files = [notes];
+    const node = (onClose: () => void) =>
+      inRouter(
+        <UploadDialog
+          open
+          files={files}
+          onClose={onClose}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      );
+    await render(node(() => {}));
+    expect([...dialogRegion().children]).toHaveLength(1);
+    expect(dialogRegion().textContent).toMatch(/^notes\.txt: /);
+    await render(node(() => {}));
+    await settle();
+    expect([...dialogRegion().children]).toHaveLength(1);
+  });
+
+  test("a row added while the dialog is closed is not announced", async () => {
+    const { start, fetchResult } = stubUploads(added);
+    const notes = new File([new Uint8Array(5)], "notes.txt");
+    const node = (open: boolean, files: File[]) =>
+      inRouter(
+        <UploadDialog
+          open={open}
+          files={files}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      );
+    const dropped = [notes];
+    await render(node(true, []));
+    await render(node(false, dropped));
+    await render(node(true, dropped));
     expect(dialogRegion().textContent).toBe("");
   });
 

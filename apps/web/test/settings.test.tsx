@@ -102,6 +102,8 @@ interface FakeState {
   }>;
   /** When true, a new token is refused because the session's sign-in is too old (issue #322). */
   signInRequired: boolean;
+  /** When true, the token list and the user list cannot be read (500). */
+  listsFail: boolean;
   /** When true, token creation and Sign out everywhere are over the session's limit (429). */
   rateLimited: boolean;
   trash: Array<{
@@ -338,6 +340,9 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
       removed,
     });
   }
+  if (method === "GET" && (path === "/app/api/tokens" || path === "/app/api/users") && state.listsFail) {
+    return json(500, { error: "internal_error" });
+  }
   if (method === "GET" && path === "/app/api/tokens") return json(200, { tokens: state.tokens });
   if (method === "POST" && path === "/app/api/tokens") {
     if (state.rateLimited) return limited();
@@ -566,6 +571,7 @@ beforeEach(() => {
     ],
     users: [{ subject: "subject-me", name: "Synthetic Me", sessions: 1, tokens: 0, you: true }],
     signInRequired: false,
+    listsFail: false,
     rateLimited: false,
     trash: [
       {
@@ -1449,6 +1455,14 @@ describe("the settings page", () => {
       "Made by \u2068Synthetic Maker\u2069 (user id subject-5)",
     );
     expect(row("Nameless maker")?.textContent).toContain("Made by subject-6");
+  });
+
+  test("a token list and a user list that cannot be read are announced as alerts", async () => {
+    state.listsFail = true;
+    await show("/settings", <SettingsPage />);
+    const alerts = [...document.querySelectorAll('[role="alert"]')];
+    expect(alerts).toHaveLength(2);
+    for (const alert of alerts) expect(alert.classList.contains("studio-alert-alert")).toBe(true);
   });
 
   test("a token refused for an old sign-in says to sign in again, with a link that comes back here", async () => {

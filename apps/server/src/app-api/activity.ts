@@ -613,15 +613,24 @@ async function healthWithin(slicer: AppActivityDeps["slicer"], ms: number): Prom
 export function createAppActivity(deps: AppActivityDeps): AppActivity {
   const clock = deps.now ?? (() => new Date());
   const healthMs = deps.healthTimeoutMs ?? SLICER_HEALTH_TIMEOUT_MS;
-  let inboxCache: { at: number; value: { readable: boolean; items: ActivityEvent[] } } | null =
-    null;
+  type InboxFailures = { readable: boolean; items: ActivityEvent[] };
+  let inboxCache: { at: number; value: InboxFailures } | null = null;
+  /** The read in progress, shared by polls that arrive while it runs. */
+  let inboxReading: Promise<InboxFailures> | null = null;
 
-  async function inboxFailures() {
+  async function inboxFailures(): Promise<InboxFailures> {
     const nowMs = clock().getTime();
     if (inboxCache !== null && nowMs - inboxCache.at < INBOX_CACHE_MS) return inboxCache.value;
-    const value = await readInboxFailures(deps.inboxDir, EVENT_LIMIT);
-    inboxCache = { at: nowMs, value };
-    return value;
+    if (inboxReading !== null) return inboxReading;
+    inboxReading = readInboxFailures(deps.inboxDir, EVENT_LIMIT)
+      .then((value) => {
+        inboxCache = { at: nowMs, value };
+        return value;
+      })
+      .finally(() => {
+        inboxReading = null;
+      });
+    return inboxReading;
   }
 
   async function readDatabase(now: Date) {
