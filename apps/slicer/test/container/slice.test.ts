@@ -63,6 +63,7 @@ describe("slicing in the image", () => {
       at: { x: 220, y: 220 },
     });
     for (const printer of ["Bambu Lab A1 mini 0.4 nozzle", PRINTERS[0]?.printer ?? ""]) {
+      const logsBefore = slicer.logs();
       const res = await fetch(
         `${slicer.base}/v1/slice?printer=${encodeURIComponent(printer)}&plate=1`,
         { method: "POST", headers: { "content-type": "application/octet-stream" }, body: overhang },
@@ -74,7 +75,37 @@ describe("slicing in the image", () => {
       expect(body.printer).toBe(printer);
       expect(body.timeSeconds).toBeGreaterThan(0);
       expect(body.weightGrams).toBeGreaterThan(0);
+      // The retry's log line proves which path ran: the A1 mini was re-arranged,
+      // the P1S control was sliced the first time.
+      const added = slicer.logs().slice(logsBefore.length);
+      const line = `slice plate 1 on ${printer}: re-arranged and sliced`;
+      if (printer.includes("A1 mini")) expect(added).toContain(line);
+      else expect(added).not.toContain("re-arranged");
     }
+  });
+
+  // A plate where only some objects fit. The A1 mini's bed is 180 mm: the
+  // 20 mm cube fits it, the 200 mm slab (10 mm high) cannot, even after
+  // --arrange 1. The answer must be a refusal, so a plate where only some
+  // objects fit is never estimated as if it were whole. OrcaSlicer 2.5.2 may
+  // answer -50 or -52 for it; both map to bed_too_small. Only "ok" fails.
+  test("a plate where only some objects fit the bed is refused, never estimated", async () => {
+    const partly = buildSliceable({
+      plates: 1,
+      filaments: 2,
+      footprints: [20, 200],
+      height: 10,
+    });
+    const res = await fetch(
+      `${slicer.base}/v1/slice?printer=${encodeURIComponent("Bambu Lab A1 mini 0.4 nozzle")}&plate=1`,
+      { method: "POST", headers: { "content-type": "application/octet-stream" }, body: partly },
+    );
+    expect(res.status).toBe(200);
+    const body = slicerContract.sliceResult.parse(await res.json());
+    expect(body.status).toBe("failed");
+    if (body.status !== "failed") return;
+    expect(body.reason).toBe("bed_too_small");
+    expect([-50, -52]).toContain(body.code);
   });
 
   // Orca's own refusal, which pins a known return code and its mapping, so a
@@ -87,6 +118,7 @@ describe("slicing in the image", () => {
   // so the slicer answers bed_too_small with its own sentence ahead of Orca's.
   test("an object larger than the bed is bed_too_small after re-arranging", async () => {
     const tooBig = buildSliceable({ plates: 1, filaments: 1, footprint: 300, height: 10 });
+    const logsBefore = slicer.logs();
     const res = await fetch(
       `${slicer.base}/v1/slice?printer=${encodeURIComponent(PRINTERS[0]?.printer ?? "")}&plate=1`,
       { method: "POST", headers: { "content-type": "application/octet-stream" }, body: tooBig },
@@ -101,5 +133,9 @@ describe("slicing in the image", () => {
     // Orca's own sentence follows: "The plate has nothing to slice: it is empty,
     // or no object on it is both printable and fully inside the print volume."
     expect(body.detail).toContain("The plate has nothing to slice");
+    // The retry ran and was refused again.
+    expect(slicer.logs().slice(logsBefore.length)).toContain(
+      `slice plate 1 on ${PRINTERS[0]?.printer}: re-arranged and still bed_too_small (-50)`,
+    );
   });
 });

@@ -649,6 +649,14 @@ describe("a plate that overhangs the bed", () => {
     expect(readdirSync(s.workDir)).toEqual([]);
   });
 
+  test("an out-arranged entry the first run left behind does not stop the retry", async () => {
+    const s = setup({}, { kind: "arrange", arrangeFixes: true, firstLeavesArranged: true });
+    const base = await start(s.config);
+    const body = await post(base);
+    expect(body).toMatchObject({ status: "ok", timeSeconds: 77, weightGrams: 7 });
+    expect(runsOf(s)).toHaveLength(2);
+  });
+
   test("still refused after arranging is bed_too_small when the plate has objects", async () => {
     const s = setup({}, { kind: "arrange", arrangeFixes: false });
     const base = await start(s.config);
@@ -721,7 +729,7 @@ describe("a plate that overhangs the bed", () => {
   });
 
   test("a first run that used the whole budget gets no retry and is answered timeout", async () => {
-    const s = setup({}, { kind: "arrange", arrangeFixes: true });
+    const s = setup({ sliceTimeoutSeconds: 30 }, { kind: "arrange", arrangeFixes: true });
     const base = await start(s.config);
     const realNow = Date.now.bind(Date);
     // The clock jumps by the whole budget once the first run has started.

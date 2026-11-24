@@ -942,6 +942,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
       const started = Date.now();
       let run = await runOrca({ outDir, timeFile, arrange: false, ms: budgetMs });
       let result = sliceOutcome(ctx, run, { outDir, timeFile });
+      let retried = false;
       if (isCleanOffBed(result, run) && !res.destroyed) {
         // The plate's objects are off this printer's bed. Slice it once
         // more with Orca arranging them, in its own folder so none of the
@@ -954,7 +955,11 @@ export function createSlicer(config: SlicerConfig): Slicer {
         if (left <= 0) {
           result = sliceOutcome(ctx, { ...run, timedOut: true }, files);
         } else {
+          // Orca can write anywhere in the box, so the first run may have
+          // left something here; clear it (the box is the job's own).
+          rmSync(files.outDir, { recursive: true, force: true });
           mkdirSync(files.outDir);
+          retried = true;
           run = await runOrca({ ...files, arrange: true, ms: left });
           result = sliceOutcome(ctx, run, files);
           if (
@@ -969,7 +974,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
         }
       }
       log(
-        `slice plate ${plate} on ${printer}: ${result.status === "ok" ? `ok ${result.timeSeconds} s ${result.weightGrams} g` : `${result.reason} (${result.code})`} in ${run.wallMs} ms`,
+        `slice plate ${plate} on ${printer}: ${result.status === "ok" ? `ok ${result.timeSeconds} s ${result.weightGrams} g` : `${result.reason} (${result.code})`} in ${retried ? `${Date.now() - started} ms, both runs` : `${run.wallMs} ms`}`,
       );
       return send(res, 200, result);
     } finally {

@@ -49,8 +49,8 @@ export type OrcaMode =
       retryExit?: number;
       /** With arrangeFixes false: the retry writes -50, then dies of SIGSEGV. */
       retrySegfault?: boolean;
-      /** The first run writes -50, then dies of SIGSEGV. */
-      firstSegfault?: boolean;
+      /** The first run leaves a folder (with a file in it) where the retry's output folder goes. */
+      firstLeavesArranged?: boolean;
       sleepMs?: number;
     };
 
@@ -119,7 +119,8 @@ exit 0
       body = `${nap}if [ "$arranged" = no ]; then
   ${refusal}
   ${mode.firstStats ? stats : ":"}
-  ${mode.firstSegfault ? "kill -SEGV $$" : "exit 206"}
+  ${mode.firstLeavesArranged ? `mkdir -p "$out/../out-arranged" && : > "$out/../out-arranged/stale.txt"` : ":"}
+  exit 206
 fi
 ${
   mode.arrangeFixes
