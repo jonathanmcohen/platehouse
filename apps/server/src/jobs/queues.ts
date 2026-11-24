@@ -149,8 +149,10 @@ export const MAINTENANCE_TASKS = {
  *   outage, only delays it.
  * - Never two runs at once: the upgrade queue is stately and worked one job
  *   at a time, so at most one job waits and one runs, and the run itself
- *   holds a database lock (reconvert.ts exclusive), so a second server does
- *   nothing. The step has its own queue (#412): on the maintenance queue the
+ *   holds a lease row that it renews while it goes (repos/descriptions.ts
+ *   exclusive), so a second server does nothing while it is held. A run that
+ *   can no longer show it holds the lease stops after the model it is on,
+ *   and a server that dies leaves a lease that runs out within a minute. The step has its own queue (#412): on the maintenance queue the
  *   schedule and each paused slice added a job, about two for every one
  *   finished, and the other maintenance tasks waited behind them.
  * - Each job is sent with no pg-boss retry, and its handler never throws for

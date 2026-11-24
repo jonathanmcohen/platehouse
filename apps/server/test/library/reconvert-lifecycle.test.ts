@@ -305,7 +305,7 @@ class World {
         if (w.lockOwner !== null && w.alive.has(w.lockOwner)) return null;
         w.lockOwner = epoch;
         try {
-          return await fn();
+          return await fn(new AbortController().signal);
         } finally {
           if (w.lockOwner === epoch) w.lockOwner = null;
         }

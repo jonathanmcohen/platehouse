@@ -47,6 +47,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await env.db.deleteFrom("upgradeSteps").execute();
+  await env.db.deleteFrom("upgradeLeases").execute();
 });
 
 /** A new model from a MakerWorld .3mf with HTML as its description. */
@@ -376,7 +377,7 @@ describe("a run", () => {
   test("does nothing and records nothing while another run holds the step", async () => {
     const old = await ingestMakerWorld(HTML);
     await asBefore011(old.modelId, BY_RC);
-    const held = await descriptionsRepo(env.db).exclusive(RECONVERT_STEP, async () =>
+    const held = await descriptionsRepo(env.db).exclusive(RECONVERT_STEP, async (_lost) =>
       reconvert().run.run(),
     );
     expect(held).toBeNull();
@@ -385,6 +386,66 @@ describe("a run", () => {
     // Once the step is free, a run goes.
     expect(await reconvert().run.run()).not.toBeNull();
     expect((await row(old.modelId)).descriptionMd).toBe(NOW);
+  });
+
+  test("an expired lease is taken over", async () => {
+    const old = await ingestMakerWorld(HTML);
+    await asBefore011(old.modelId, BY_RC);
+    await sql`insert into upgrade_leases (name, holder, expires_at)
+      values (${RECONVERT_STEP}, 'a-server-that-died', now() - interval '1 second')`.execute(
+      env.db,
+    );
+    expect(await reconvert().run.run()).not.toBeNull();
+    expect((await row(old.modelId)).descriptionMd).toBe(NOW);
+    expect(await env.db.selectFrom("upgradeLeases").selectAll().execute()).toEqual([]);
+  });
+
+  test("a run that loses its lease stops after the model it is on", async () => {
+    for (let i = 0; i < 2; i += 1) {
+      const m = await ingestMakerWorld(HTML);
+      await asBefore011(m.modelId, BY_RC);
+    }
+    const repo = descriptionsRepo(env.db);
+    let first = true;
+    const store = {
+      ...repo,
+      exclusive: <T>(name: string, fn: (lost: AbortSignal) => Promise<T>) =>
+        repo.exclusive(name, fn, { renewMs: 20 }),
+      // Another server takes the lease while the first model is being read.
+      async sourceFiles(modelId: string) {
+        if (first) {
+          first = false;
+          await env.db.deleteFrom("upgradeLeases").execute();
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+        return repo.sourceFiles(modelId);
+      },
+    };
+    const run = createDescriptionReconvert({
+      store,
+      readText: storeTextReader(env.store),
+      batchSize: 1,
+      log: () => {},
+    });
+    expect(await run.run()).toBe(RECONVERT_PAUSED);
+    const counted = (await progressRow())?.result as { checked?: number } | undefined;
+    expect(counted?.checked).toBe(1);
+    expect(await run.pending()).toBe(true);
+  });
+
+  test("the lease is released when the run throws", async () => {
+    const old = await ingestMakerWorld(HTML);
+    await asBefore011(old.modelId, BY_RC);
+    const outage = new SourceOutage(new Error("the store is down"));
+    const run = createDescriptionReconvert({
+      store: descriptionsRepo(env.db),
+      readText: async () => {
+        throw outage;
+      },
+      log: () => {},
+    });
+    await expect(run.run()).rejects.toBe(outage);
+    expect(await env.db.selectFrom("upgradeLeases").selectAll().execute()).toEqual([]);
   });
 
   test("leaves a model already written by this converter out of the candidates", async () => {

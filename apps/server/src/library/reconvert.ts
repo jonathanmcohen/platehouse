@@ -165,10 +165,19 @@ export interface ReconvertResult {
 export interface ReconvertStore {
   stepFinished(name: string): Promise<boolean>;
   /**
-   * Runs fn while holding the step, so two runs never go at once. Null,
-   * without running fn, while another run holds it.
+   * Runs fn while holding the step's lease, so two runs never go at once.
+   * Null, without running fn, while another run holds it. The lease is a
+   * row that the run renews while fn goes and releases when it ends, however
+   * it ends; one a dead server left runs out by itself. The signal fn is
+   * given aborts when the lease can no longer be shown to be held (taken
+   * over, or two renewals in a row failed), and fn then stops, as it does for
+   * a stop. renewMs is for tests: how often to renew.
    */
-  exclusive<T>(name: string, fn: () => Promise<T>): Promise<T | null>;
+  exclusive<T>(
+    name: string,
+    fn: (lost: AbortSignal) => Promise<T>,
+    options?: { renewMs?: number },
+  ): Promise<T | null>;
   /** The last model counted by runs of the step cut off before it finished; null when none. */
   resumeAfter(name: string): Promise<string | null>;
   /** Adds one model's outcome to the step's counts, the model as the last counted. */
@@ -375,7 +384,7 @@ export function createDescriptionReconvert(deps: {
     },
     async run(stop = () => false, signal?: AbortSignal) {
       if (await deps.store.stepFinished(RECONVERT_STEP)) return null;
-      return deps.store.exclusive(RECONVERT_STEP, async () => {
+      return deps.store.exclusive(RECONVERT_STEP, async (lost) => {
         // Another run may have finished between the check above and taking the step.
         if (await deps.store.stepFinished(RECONVERT_STEP)) return null;
         let after = await deps.store.resumeAfter(RECONVERT_STEP);
@@ -405,6 +414,10 @@ export function createDescriptionReconvert(deps: {
             } else {
               const outcome = decision.kind === "unreadable" ? "unreadable" : "kept";
               await deps.store.count(RECONVERT_STEP, row.modelId, outcome);
+            }
+            if (lost.aborted) {
+              log("platehouse: MakerWorld description re-conversion: lost its lease; stopping");
+              return RECONVERT_PAUSED;
             }
             if (stop() || signal?.aborted) {
               log(

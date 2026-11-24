@@ -336,7 +336,7 @@ function memoryStore(rows: StoredDescription[], files: Record<string, SourceFile
       if (locked) return null;
       locked = true;
       try {
-        return await fn();
+        return await fn(new AbortController().signal);
       } finally {
         locked = false;
       }
@@ -579,6 +579,30 @@ describe("a run", () => {
     expect(readText).not.toHaveBeenCalled();
     expect(mem.finished.size).toBe(0);
     expect(mem.progress.size).toBe(0);
+    expect(await reconvert.pending()).toBe(true);
+  });
+
+  test("stops after the model it is on when it loses its lease, and goes on from there", async () => {
+    const { rows, files, texts } = library();
+    const mem = memoryStore(rows, files);
+    const lost = new AbortController();
+    const store: ReconvertStore = {
+      ...mem.store,
+      exclusive: (name, fn) => mem.store.exclusive(name, () => fn(lost.signal)),
+    };
+    const { readText } = reader(texts);
+    const logged: string[] = [];
+    const reconvert = createDescriptionReconvert({
+      store,
+      readText: async (file) => {
+        lost.abort();
+        return readText(file);
+      },
+      log: (line) => logged.push(line),
+    });
+    expect(await reconvert.run()).toBe(RECONVERT_PAUSED);
+    expect(mem.progress.get(RECONVERT_STEP)).toMatchObject({ checked: 1, after: model(1) });
+    expect(logged.join("\n")).toContain("lost its lease; stopping");
     expect(await reconvert.pending()).toBe(true);
   });
 
