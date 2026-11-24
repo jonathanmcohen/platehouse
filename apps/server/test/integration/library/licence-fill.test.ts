@@ -167,7 +167,9 @@ describe("a licence fill run", () => {
   test("a model being purged is not a candidate", async () => {
     const m = await ingest("BY-ND");
     await loseLicence(m.modelId);
-    await sql`update models set purge_started_at = now() where id = ${m.modelId}`.execute(env.db);
+    await sql`update models set trashed_at = now(), purge_started_at = now() where id = ${m.modelId}`.execute(
+      env.db,
+    );
 
     await runToEnd(licenceFill());
 
