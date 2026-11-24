@@ -27,10 +27,10 @@
 //   trash that lands while an upload is under way still wins: ingest refuses
 //   the finished upload (the result says so) and stores nothing.
 // - POST /api/v1/models takes the metadata and externalRef the importer
-//   carries. license is usually an SPDX id (any string is accepted). A taken externalRef, on a
-//   live or a trashed model, is 409 {"error":"exists","trashed":<bool>}, so
-//   a re-run import skips a model the user trashed rather than recreating it
-//   or making a duplicate.
+//   carries. license is usually an SPDX id (any string is accepted). A taken
+//   externalRef, on a live or a trashed model, is 409
+//   {"error":"exists","trashed":<bool>}, so a re-run import skips a model the
+//   user trashed rather than recreating it or making a duplicate.
 // - externalRef= finds the live model with that reference (zero or one); it
 //   is a lookup, not a filter, so it cannot be combined with the others.
 // - JSON bodies are parsed in this scope only (the root app parses none),
@@ -73,6 +73,7 @@ import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB, FileKind, ModelFile, ParseStatus, Plate } from "../db/types.js";
 import type { DisplayContext, PlateNumbers } from "../estimates/display.js";
+import { SettingsInputError } from "../input-error.js";
 import { createCollections } from "../library/collections.js";
 import { createSearch, InvalidCursor, type LibrarySearch } from "../library/search.js";
 import { createTags } from "../library/tags.js";
@@ -1427,7 +1428,7 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
         try {
           done = await run();
         } catch (error) {
-          if (error instanceof RangeError) return badRequest(reply, error.message);
+          if (error instanceof SettingsInputError) return badRequest(reply, error.message);
           throw error;
         }
         // Taking off a label the model did not have is done all the same.

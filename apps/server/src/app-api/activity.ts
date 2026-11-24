@@ -38,6 +38,7 @@ import type { DB, FileKind } from "../db/types.js";
 import { derivedParts } from "../derived/client.js";
 import { printerName } from "../estimates/display.js";
 import { isReason, reasonWords } from "../estimates/reasons.js";
+import { nothingToShow, stripFormatChars } from "../format-chars.js";
 import {
   FAILED_DIR,
   INBOX_PASS_LIMIT,
@@ -46,7 +47,6 @@ import {
   REASON_SUFFIX,
 } from "../inbox/watch.js";
 import { parseDuplicateMessage } from "../ingest/duplicates.js";
-import { stripFormatChars } from "../ingest/names.js";
 import { MAINTENANCE_TASKS, QUEUE, UPGRADE_TASKS } from "../jobs/queues.js";
 import { activityRepo, type FailedDerived, type QueueCount } from "../repos/activity.js";
 import { descriptionsRepo } from "../repos/descriptions.js";
@@ -436,13 +436,14 @@ async function readStart(
   }
 }
 
-/** What the page calls a failed file whose name is nothing but format characters. */
-const UNNAMED_FILE = "(unnamed file)";
-
-/** A failed file's name as shown: its format characters dropped (issue #473). */
+/**
+ * A failed file's name as shown: its format characters dropped (joiners
+ * stay), and empty when nothing is left to show, so the page picks its own
+ * placeholder in its own language (issue #473).
+ */
 function shownName(name: string): string {
   const clean = stripFormatChars(name);
-  return clean.trim() === "" ? UNNAMED_FILE : clean;
+  return nothingToShow(clean) ? "" : clean;
 }
 
 /**

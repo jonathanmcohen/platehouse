@@ -104,14 +104,3 @@ export function hasControlCharacter(text: string): boolean {
   }
   return false;
 }
-
-/**
- * name without its Unicode format characters (\p{Cf}: the bidirectional
- * overrides and isolates such as U+202E, zero-width characters and the like).
- * They draw nothing but reorder the text around them, so an upload's or an
- * inbox file's name is cleaned of them before it is shown (issue #473). A
- * name that is left empty is no name: callers treat it as a blank one.
- */
-export function stripFormatChars(name: string): string {
-  return name.replace(/\p{Cf}/gu, "");
-}

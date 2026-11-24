@@ -2,6 +2,7 @@
 // file name, cut at the API's 500-character name limit. Every name here is
 // made up for the test.
 import { describe, expect, test } from "vitest";
+import { nothingToShow, stripFormatChars } from "../../src/format-chars.js";
 import {
   cutName,
   fileStems,
@@ -9,7 +10,6 @@ import {
   MAX_MODEL_NAME_LENGTH,
   nameFromFile,
   newModelName,
-  stripFormatChars,
 } from "../../src/ingest/names.js";
 
 /** Non-ASCII from code points, so this file stays ASCII. */
@@ -143,9 +143,15 @@ describe("hasControlCharacter", () => {
 describe("stripFormatChars", () => {
   const RLO = String.fromCodePoint(0x202e);
   const ZWSP = String.fromCodePoint(0x200b);
+  const ZWNJ = String.fromCodePoint(0x200c);
+  const ZWJ = String.fromCodePoint(0x200d);
 
   test("removes a right-to-left override and a zero-width space", () => {
     expect(stripFormatChars(`a${RLO}b${ZWSP}c.stl`)).toBe("abc.stl");
+  });
+
+  test("keeps the zero-width non-joiner and joiner", () => {
+    expect(stripFormatChars(`a${ZWNJ}b${ZWJ}c`)).toBe(`a${ZWNJ}b${ZWJ}c`);
   });
 
   test("leaves a name with no format characters as it was", () => {
@@ -154,5 +160,11 @@ describe("stripFormatChars", () => {
 
   test("a name of only format characters becomes empty", () => {
     expect(stripFormatChars(`${RLO}${ZWSP}`)).toBe("");
+  });
+
+  test("a name of only joiners and white space has nothing to show", () => {
+    expect(nothingToShow(`${ZWNJ} ${ZWJ}`)).toBe(true);
+    expect(nothingToShow("")).toBe(true);
+    expect(nothingToShow(`a${ZWJ}`)).toBe(false);
   });
 });

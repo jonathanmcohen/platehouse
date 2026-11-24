@@ -185,7 +185,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await boss?.stop({ graceful: false });
+  // Graceful, so work in flight ends before pg-boss closes (issue #490).
+  await boss?.stop({ graceful: true, timeout: 20_000 });
   await pgc?.stop();
 });
 

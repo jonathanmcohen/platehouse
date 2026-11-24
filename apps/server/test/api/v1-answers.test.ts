@@ -23,6 +23,7 @@ import {
   registerV1,
 } from "../../src/api/v1.js";
 import type { ApiToken } from "../../src/db/types.js";
+import { SettingsInputError } from "../../src/input-error.js";
 import { InvalidCursor } from "../../src/library/search.js";
 import { BlobNotFound, StoreUnavailable } from "../../src/storage/s3.js";
 import { registerTus } from "../../src/uploads/tus.js";
@@ -647,7 +648,7 @@ describe("tags and collections", () => {
   });
 
   test("a tag the library refuses is 400 with its message", async () => {
-    behaviour.tagThrows = new RangeError("A tag is 1 to 100 characters");
+    behaviour.tagThrows = new SettingsInputError("A tag is 1 to 100 characters");
     try {
       expect(await answer("PUT", `/api/v1/models/${MODEL_ID}/tags/desk`)).toMatchInlineSnapshot(`
         {
@@ -660,6 +661,19 @@ describe("tags and collections", () => {
           "type": "application/json; charset=utf-8",
         }
       `);
+    } finally {
+      behaviour.tagThrows = undefined;
+    }
+  });
+});
+
+describe("a RangeError that is not a user's mistake", () => {
+  test("is a 500 that does not echo its message", async () => {
+    behaviour.tagThrows = new RangeError("Invalid time value");
+    try {
+      const res = await answer("PUT", `/api/v1/models/${MODEL_ID}/tags/desk`);
+      expect(res.status).toBe(500);
+      expect(res.body).not.toContain("Invalid time value");
     } finally {
       behaviour.tagThrows = undefined;
     }

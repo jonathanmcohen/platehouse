@@ -53,9 +53,10 @@
 // inbox's), ingest hashes the upload and looks it up before any byte is put,
 // and refuses a duplicate with DuplicateFile (an IngestError, code
 // duplicate), naming the models that hold it and storing nothing. Inside the
-// transaction it looks again, under pg_advisory_xact_lock on the hash (in INGEST_LOCK_NAMESPACE), so of
-// two copies sent at once one lands and the other is refused; that lock is
-// always taken before the batch lock below, so the two cannot deadlock. With
+// transaction it looks again, under pg_advisory_xact_lock on the hash (in
+// INGEST_LOCK_NAMESPACE), so of two copies sent at once one lands and the
+// other is refused; that lock is always taken before the batch lock below, so
+// the two cannot deadlock. With
 // "allow", the default, so the Public API v1 behaves as before unless a
 // client asks, the file is stored as before and the result lists the live
 // copies that were already there (IngestResult.duplicates). A file in a
@@ -64,8 +65,9 @@
 // A combined batch (target {batch, combine: true}) puts every file in one
 // model. Its id is derived from the batch (batchModelId), so every file of
 // the batch knows its key prefix before the model exists, and
-// pg_advisory_xact_lock(INGEST_LOCK_NAMESPACE, hashtext(batch)) makes concurrent finishes take turns:
-// the first creates the model and the rest join it.
+// pg_advisory_xact_lock(INGEST_LOCK_NAMESPACE, hashtext(batch)) makes
+// concurrent finishes take turns: the first creates the model and the rest
+// join it.
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
@@ -75,6 +77,7 @@ import { makerWorldDesignId, type Project, readProject } from "@platehouse/three
 import { type Kysely, sql, type Transaction } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
+import { stripFormatChars } from "../format-chars.js";
 import { convertedDescription } from "../library/converted-description.js";
 import { createRepos } from "../repos/index.js";
 import type { FoundMetadata } from "../repos/models.js";
@@ -427,7 +430,10 @@ export function createIngest(deps: IngestDeps) {
   }
 
   async function ingestOnce(input: IngestInput): Promise<IngestResult> {
-    const { tmpPath, originalName, target } = input;
+    const { tmpPath, target } = input;
+    // The name every caller sends, cleaned once: the bytes are read from
+    // tmpPath, so the raw name is needed nowhere below (issue #473).
+    const originalName = stripFormatChars(input.originalName);
     if (input.fileId !== undefined && !isUuid(input.fileId)) {
       throw new TypeError("ingestFile: fileId must be a UUID");
     }

@@ -177,7 +177,16 @@ describe("parseUploadMetadata", () => {
     );
   });
 
-  test("a name made only of format characters is refused as an empty name is", () => {
+  test("keeps the zero-width non-joiner and joiner in the name", () => {
+    const joined = `a${String.fromCodePoint(0x200c)}b${String.fromCodePoint(0x200d)}c.stl`;
+    expect(parseUploadMetadata({ filename: joined }).originalName).toBe(joined);
+  });
+
+  test("a name made only of format characters and joiners is refused as an empty name is", () => {
+    const joiners = `${String.fromCodePoint(0x200c)}${String.fromCodePoint(0x200d)}`;
+    expect(() => parseUploadMetadata({ filename: `${joiners}${RLO}` })).toThrow(
+      "Upload-Metadata must carry the file's name as filename",
+    );
     expect(() => parseUploadMetadata({ filename: `${RLO}${ZWSP}` })).toThrow(
       "Upload-Metadata must carry the file's name as filename",
     );

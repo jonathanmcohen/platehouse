@@ -606,7 +606,8 @@ export async function start(config: Config, options: StartOptions = {}): Promise
 /**
  * Listens on "::", which on a dual-stack host also answers IPv4, so an
  * IPv6-only Docker network reaches the server too (issue #473). Where the
- * host has no IPv6 it listens on 0.0.0.0 instead and logs that.
+ * host has no IPv6 (EAFNOSUPPORT, or EADDRNOTAVAIL where the kernel has IPv6
+ * switched off) it listens on 0.0.0.0 instead and logs that.
  */
 export async function listenOnAllInterfaces(
   app: {

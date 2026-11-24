@@ -312,15 +312,25 @@ describe("readInboxFailures", () => {
     expect(items[0]).toMatchObject({ name: "abc.stl" });
   });
 
-  test("a failed file named only with format characters is shown as unnamed", async () => {
+  test("keeps the joiners in a failed file's name (U+200C, U+200D)", async () => {
     const failed = join(dir, "failed");
     await mkdir(failed);
-    const name = `${String.fromCodePoint(0x202e)}${String.fromCodePoint(0x200b)}`;
+    const name = `a${String.fromCodePoint(0x200c)}b${String.fromCodePoint(0x200d)}c.stl`;
+    await writeFile(join(failed, name), "x");
+    await writeFile(join(failed, `${name}.reason.txt`), "Gone.");
+    const { items } = await readInboxFailures(dir, 10);
+    expect(items[0]).toMatchObject({ name });
+  });
+
+  test("a failed file named only with format characters and joiners has an empty name", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    const name = `${String.fromCodePoint(0x202e)}${String.fromCodePoint(0x200b)}${String.fromCodePoint(0x200c)}`;
     await writeFile(join(failed, name), "x");
     await writeFile(join(failed, `${name}.reason.txt`), "Gone.");
     const { items } = await readInboxFailures(dir, 10);
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ name: "(unnamed file)" });
+    expect(items[0]).toMatchObject({ name: "" });
   });
 
   test("lists each failed file's name and reason, newest first, with no path", async () => {

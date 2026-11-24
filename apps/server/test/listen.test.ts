@@ -31,12 +31,15 @@ describe("listenOnAllInterfaces", () => {
     expect(t.warn).not.toHaveBeenCalled();
   });
 
-  test("falls back to 0.0.0.0 and logs it when IPv6 is not available", async () => {
-    const t = target("EAFNOSUPPORT");
-    await listenOnAllInterfaces(t.app, 3000);
-    expect(t.hosts).toEqual(["::", "0.0.0.0"]);
-    expect(t.warn).toHaveBeenCalledTimes(1);
-  });
+  test.each(["EAFNOSUPPORT", "EADDRNOTAVAIL"])(
+    "falls back to 0.0.0.0 and logs it on %s",
+    async (code) => {
+      const t = target(code);
+      await listenOnAllInterfaces(t.app, 3000);
+      expect(t.hosts).toEqual(["::", "0.0.0.0"]);
+      expect(t.warn).toHaveBeenCalledTimes(1);
+    },
+  );
 
   test("any other listen failure is not retried", async () => {
     const t = target("EADDRINUSE");
