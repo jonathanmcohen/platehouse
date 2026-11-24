@@ -168,6 +168,9 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
   automatically."** (or the same for storage): an STL's or STEP file's preview picture waited over
   2 hours, or could not be queued. Nothing to do once the slicer or storage is back: the background
   job tries it again. With a slicer image older than the app, update the slicer image.
+- **"The preview picture could not be queued. It will be tried again automatically."**: the job
+  for an STL's or STEP file's preview picture could not be queued, for example while the database
+  was down. Nothing to do: the background job queues it again.
 - **"Platehouse could not write a temporary file; it will be tried again automatically."**: an STL's
   or STEP file's preview picture could not be written to the app's temp folder (`TMP_DIR`) on every
   try, usually because the disk is full or the folder is read-only or missing. Free space or fix

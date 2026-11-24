@@ -83,7 +83,7 @@ export function stlProblem(dir: string): string | null {
     const head = Buffer.alloc(Math.min(size, STL_HEAD_BYTES));
     const read = readSync(fd, head, 0, head.length, 0);
     const text = head.subarray(0, read).toString("latin1");
-    if (/^\s*solid\b/.test(text) && /\bfacet\b/.test(text)) return null;
+    if (/^\s*solid/.test(text) && /\bfacet\b/.test(text)) return null;
     if (size > 84 && (size - 84) % 50 === 0) return null;
     return NOT_AN_STL;
   } finally {

@@ -184,6 +184,46 @@ describe("the preview backfill (issue #316)", () => {
     for (const id of ours) expect(await previewJobs(id)).toHaveLength(1);
   });
 
+  test("two runs at once queue at most one batch between them", async () => {
+    // Jobs held an hour, so the first batch stays queued while the second run looks.
+    const send: PgBoss["send"] = async (...args: unknown[]) => {
+      const [name, data, options] = args as [string, object, Record<string, unknown>];
+      return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
+        ...options,
+        startAfter: 3600,
+      });
+    };
+    const queue: DerivedDeps["queue"] = { send, findJobs: env.boss.findJobs.bind(env.boss) };
+    const batched = createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue,
+      retryDelaySeconds: 1,
+      backfillBatch: 2,
+    });
+    const files = [
+      await legacyStl("Lock one"),
+      await legacyStl("Lock two"),
+      await legacyStl("Lock three"),
+    ];
+    const ours = files.map((f) => f.fileId);
+
+    const [a, b] = await Promise.all([
+      batched.backfillPreviews(later()),
+      batched.backfillPreviews(later()),
+    ]);
+    const queued = [...a.queued, ...b.queued].filter((id) => ours.includes(id));
+    expect(queued).toHaveLength(2);
+    expect(new Set(queued).size).toBe(2);
+
+    for (const f of files) {
+      for (const job of await previewJobs(f.fileId)) {
+        await env.boss.cancel(QUEUE.slicer, job.id);
+      }
+    }
+  });
+
   test("it queues one batch at a time, the next only once none of the last is still waiting", async () => {
     // Jobs held an hour, so the batch stays queued until the test cancels it.
     const send: PgBoss["send"] = async (...args: unknown[]) => {

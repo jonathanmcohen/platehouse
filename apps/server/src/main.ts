@@ -86,6 +86,7 @@ import { createDb } from "./db/kysely.js";
 import { migrate } from "./db/migrate.js";
 import { createDeliveryLibrary } from "./delivery/download.js";
 import { createDerived, derivedJobHandlers } from "./derived/derived.js";
+import { sweepWorkingCopies } from "./derived/working-copies.js";
 import { createSlicerClient } from "./estimates/client.js";
 import { plateNumbers } from "./estimates/display.js";
 import { createEstimates } from "./estimates/service.js";
@@ -420,6 +421,8 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       afterCommit: (stored) => derived.afterUpload(stored),
     });
     await prepareUploads(config.tmpDir);
+    const swept = await sweepWorkingCopies(config.tmpDir);
+    if (swept > 0) console.info(`start-up: removed ${swept} working copy folder(s) a crash left`);
     const uploads = createUploads({
       tmpDir: config.tmpDir,
       queue: bossUploadQueue(startedBoss),

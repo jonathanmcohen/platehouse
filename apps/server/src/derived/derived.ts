@@ -407,10 +407,17 @@ const TOO_LARGE_MESSAGE: Readonly<Record<"scad" | "step", string>> = {
  * still a whole STL with a 3D view, so a replacement over it is taken and
  * only its preview fails (DERIVED_MESSAGES.stlTooLarge).
  */
-const BODY_LIMIT: Readonly<Partial<Record<DerivableKind, number>>> = {
+const BODY_LIMIT: Partial<Record<DerivableKind, number>> = {
   scad: LIMITS.scadBodyBytes,
   step: LIMITS.stepBodyBytes,
 };
+
+/**
+ * The advisory lock a preview backfill run holds from its check for waiting
+ * jobs until its batch is queued, so a second run at the same moment waits
+ * and then sees the first run's jobs queued (backfillPreviews).
+ */
+const BACKFILL_LOCK_KEY = 4_280_316;
 
 /**
  * How many previews one backfill run queues at most (issue #316). A run
@@ -992,8 +999,12 @@ export function createDerived(deps: DerivedDeps) {
     // One the renderer would refuse could never render, so it is refused
     // here, before anything is stored. An STL has no such limit (BODY_LIMIT).
     const limit = BODY_LIMIT[kind];
-    if (limit !== undefined && size > limit && kind !== "stl") {
-      throw new DerivedError("too_large", TOO_LARGE_MESSAGE[kind]);
+    if (limit !== undefined && size > limit) {
+      // BODY_LIMIT and TOO_LARGE_MESSAGE have the same two kinds.
+      throw new DerivedError(
+        "too_large",
+        TOO_LARGE_MESSAGE[kind as keyof typeof TOO_LARGE_MESSAGE],
+      );
     }
 
     const blobId = uuidv7();
@@ -2429,6 +2440,17 @@ export function createDerived(deps: DerivedDeps) {
    * A file that fails is logged and left for the next run; the others go on.
    */
   async function backfillPreviews(now: Date): Promise<BackfillResult> {
+    // The lock is held by this transaction until the batch is queued (each
+    // file's own transaction commits before it ends), and is released when
+    // it ends, so a run at the same moment waits here and then finds the
+    // first run's jobs waiting.
+    return db.transaction().execute(async (lock) => {
+      await sql`select pg_advisory_xact_lock(${BACKFILL_LOCK_KEY}::bigint)`.execute(lock);
+      return backfillBatchLocked(now);
+    });
+  }
+
+  async function backfillBatchLocked(now: Date): Promise<BackfillResult> {
     const result: BackfillResult = { queued: [] };
     const waiting = await deps.queue.findJobs<DerivedJob>(QUEUE.slicer, {
       data: { backfill: true },
