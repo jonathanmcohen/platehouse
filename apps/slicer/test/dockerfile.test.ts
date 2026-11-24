@@ -5,6 +5,7 @@
 // Dockerfile is checked the same way in tools/slicing-gate/test/dockerfile.test.mjs.
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
+import { LANDRUN_STRICT_ABI, LANDRUN_VERSION } from "../src/sandbox.js";
 
 const DOCKERFILE = new URL("../Dockerfile", import.meta.url);
 
@@ -100,4 +101,18 @@ test("the Orca step fails the build when the AppImage bundles its own WebKitGTK"
     expect(orca).toContain(`need ! -e /opt/orca/lib/${lib}`);
   }
   expect(orca).toContain("need -d /opt/orca/lib/orca-runtime");
+});
+
+describe("apps/slicer/Dockerfile landrun pin", () => {
+  // The strict ABI is what landrun asks the kernel for when it does not run
+  // best effort, and it is a property of one landrun release. Bumping the pin
+  // fails here until LANDRUN_VERSION and LANDRUN_STRICT_ABI are revisited.
+  test("the Dockerfile pins the landrun version sandbox.ts has the ABI for", () => {
+    const url = lines()
+      .map((l) => /^ARG LANDRUN_URL=(\S+)/.exec(l)?.[1])
+      .find((u) => u !== undefined);
+    expect(url, "an ARG LANDRUN_URL").toBeDefined();
+    expect(url).toContain(`/download/v${LANDRUN_VERSION}/`);
+    expect(LANDRUN_STRICT_ABI).toBe(9);
+  });
 });

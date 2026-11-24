@@ -1,5 +1,6 @@
 // Slicer HTTP contract v2: the zod schemas the slicer
-// server answers with and the app's slicer client (apps/server/src/estimates/client.ts) reads with. The
+// server answers with and the app's slicer clients (apps/server/src/estimates/client.ts and
+// apps/server/src/derived/client.ts) read with. The
 // slicer is on the internal network only, has no auth and holds no secrets.
 //
 //   GET  /v1/health                         -> health
