@@ -132,6 +132,10 @@ export interface ActivityView {
     busy: boolean | null;
     orca: string | null;
     openscad: string | null;
+    /** The slicer's sandbox; null when it did not answer. */
+    sandbox: "checking" | "on" | "off" | null;
+    sandboxReason: "old_kernel" | "check_failed" | null;
+    unsandboxed: boolean | null;
     /** The default printer of My printers, and its full name. */
     printerId: string;
     printerName: string;
@@ -474,6 +478,18 @@ function Slicer({ slicer }: { slicer: ActivityView["slicer"] }) {
     : slicer.busy
       ? t("activity.slicer.busy")
       : t("activity.slicer.idle");
+  const sandbox =
+    slicer.sandbox === "on"
+      ? t("activity.slicer.sandboxOn")
+      : slicer.sandbox === "checking"
+        ? t("activity.slicer.sandboxChecking")
+        : slicer.sandbox === "off"
+          ? t(
+              slicer.sandboxReason === "old_kernel"
+                ? "activity.slicer.sandboxOffKernel"
+                : "activity.slicer.sandboxOffCheck",
+            )
+          : null;
   return (
     <Section title={t("model.numbers.slicer")}>
       {slicer.reachable ? null : (
@@ -489,6 +505,8 @@ function Slicer({ slicer }: { slicer: ActivityView["slicer"] }) {
         <dt>{t("activity.slicer.defaultPrinter")}</dt>
         <dd>{printerNameIn(i18n, slicer.printerName)}</dd>
       </dl>
+      {sandbox === null ? null : <p>{sandbox}</p>}
+      {slicer.unsandboxed ? <p>{t("activity.slicer.sandboxUnsandboxed")}</p> : null}
     </Section>
   );
 }
