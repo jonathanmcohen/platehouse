@@ -89,6 +89,8 @@ test("release.yml runs on ubuntu-24.04, never ubuntu-latest, at every job and bu
 test("the app image carries the LICENSE and test-app-image.sh checks it (#473)", () => {
   assert.match(read("docker/app.Dockerfile"), /^COPY LICENSE \/app\/LICENSE$/m);
   assert.match(read("docker/test-app-image.sh"), /test -s \/app\/LICENSE/);
+  // The build context starts with "*", so the file has to be let in by name.
+  assert.match(read("docker/app.Dockerfile.dockerignore"), /^!LICENSE$/m);
 });
 
 test("tools/brand is typechecked through the root tsconfig (#473)", () => {
