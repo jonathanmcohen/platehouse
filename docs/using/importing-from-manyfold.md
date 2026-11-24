@@ -18,7 +18,8 @@ happy with the result.
   fetched with no token at all).
 - A Manyfold OAuth application that allows the client credentials grant with the `read` scope. Its
   client id and client secret are what the importer signs in with. The importer stops before reading
-  anything if Manyfold grants it more than `read`.
+  anything if Manyfold grants it more than `read`. The token is renewed during a long import, shortly
+  before it expires and once after Manyfold refuses it, and a renewal must also be `read` only.
 - A Platehouse API token, made in **Settings > API tokens**. It is shown once; keep it in your
   password manager.
 
@@ -92,5 +93,5 @@ through a filter that removes them.
 | Code | Meaning                                                                                                                                                                                                |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 0    | Every model was handled.                                                                                                                                                                               |
-| 1    | At least one model failed; the report says which and why. Running again finishes what is missing.                                                                                                      |
+| 1    | At least one model failed; the report says which and why. Running again finishes what is missing. Also the exit when Manyfold refuses to renew the token mid-run, which stops the import.              |
 | 2    | The run could not start: a bad argument or address, missing credentials, either server refusing the token or not answering, Manyfold granting more than `read`, or Manyfold's lists could not be read. |

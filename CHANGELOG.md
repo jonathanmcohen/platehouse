@@ -30,6 +30,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Fixed
 
+- The Manyfold importer renews its token before it expires and once after Manyfold refuses it, so an import longer than two hours carries on instead of failing every model left ([#444](https://github.com/jonathanmcohen/platehouse/issues/444)).
 - On the first start of 0.1.1, models imported with a MakerWorld licence Platehouse did not recognise (including CC BY-ND) get their licence or licence note back from their .3mf, in the background. A licence or note already set is never changed ([#445](https://github.com/jonathanmcohen/platehouse/issues/445)).
 - MakerWorld's CC BY-ND licence is recognised, and a licence Platehouse does not know is kept as a licence note on the model, `License on MakerWorld: <value>`, instead of being dropped ([#445](https://github.com/jonathanmcohen/platehouse/issues/445)).
 - The preview backfill for older files sends its next batch as soon as one finishes, instead of making at most 10 pictures every 5 minutes ([#417](https://github.com/jonathanmcohen/platehouse/issues/417)).

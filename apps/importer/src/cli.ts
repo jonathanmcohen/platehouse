@@ -65,6 +65,7 @@ import {
   DEFAULT_DOWNLOAD_IDLE_MS,
   type Manyfold,
   type ManyfoldModel,
+  TokenRenewalError,
 } from "./manyfold.js";
 import { externalRefFor, type ModelPlan, planModel, type SourceModel } from "./plan.js";
 import {
@@ -160,6 +161,8 @@ export interface RunOptions {
   stderr: (line: string) => void;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  /** The clock the Manyfold token's expiry is read from, in ms; for tests. */
+  now?: () => number;
   /**
    * The redactor every line goes through; the command passes the one its
    * process-level handlers use (onFatal), so they know the credentials too.
@@ -309,6 +312,7 @@ async function importModel(
     source = await sourceOf(ctx.manyfold, model, ctx.nameOf);
     existing = await ctx.platehouse.findByExternalRef(externalRefFor(source.id));
   } catch (error) {
+    if (error instanceof TokenRenewalError) throw error;
     return { ...fallback, outcome: "failed", reason: message(error) };
   }
   if (source.name.trim() === "") {
@@ -398,6 +402,7 @@ async function importModel(
       // A SizeMismatch's message starts with SIZE_MISMATCH.
       bytes = await ctx.manyfold.download(f.file.contentUrl, contentSize);
     } catch (error) {
+      if (error instanceof TokenRenewalError) throw error;
       files.push(row(filename, contentSize, "failed", { reason: message(error) }));
       continue;
     }
@@ -567,6 +572,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
       clientId,
       clientKey,
       sensitive: (value) => redactor.add(value),
+      ...(options.now === undefined ? {} : { now: options.now }),
       downloadTimeoutMs,
     });
     const platehouse = createPlatehouse({
@@ -607,6 +613,9 @@ export async function run(options: RunOptions): Promise<RunResult> {
       try {
         result = await importModel(ctx, entry);
       } catch (error) {
+        // A token that cannot be renewed ends the run: every model left
+        // would fail the same way. The outer catch prints it, exit 1.
+        if (error instanceof TokenRenewalError) throw error;
         result = {
           manyfoldId: entry.id,
           name: entry.name,
