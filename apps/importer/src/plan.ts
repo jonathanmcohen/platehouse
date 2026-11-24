@@ -337,8 +337,12 @@ function newModel(
 function planFiles(files: SourceFile[], stored: PlatehouseFile[]): FilePlan[] {
   const unmatched = [...stored];
   return files.map((file): FilePlan => {
-    // Platehouse stores a name without its format characters.
+    // 0.1.0 stored a name as it came, format characters included; later
+    // releases store it without them. A stored file is the same file under
+    // either form.
     const storedName = stripFormatChars(file.filename);
+    const isStored = (s: PlatehouseFile) =>
+      s.originalName === storedName || s.originalName === file.filename;
     if (typeof file.problem === "string") return { action: "fail", file, reason: file.problem };
     if (!importable(file.filename)) {
       const ext = extensionOf(file.filename);
@@ -361,14 +365,12 @@ function planFiles(files: SourceFile[], stored: PlatehouseFile[]): FilePlan[] {
           `of ${MAX_UPLOAD_BYTES} bytes (512 MiB); not downloaded`,
       };
     }
-    const at = unmatched.findIndex(
-      (s) => s.originalName === storedName && s.size === file.contentSize,
-    );
+    const at = unmatched.findIndex((s) => isStored(s) && s.size === file.contentSize);
     if (at !== -1) {
       const [match] = unmatched.splice(at, 1);
       if (match !== undefined) return { action: "present", file, stored: match };
     }
-    const sameName = unmatched.find((s) => s.originalName === storedName);
+    const sameName = unmatched.find(isStored);
     if (sameName !== undefined) {
       return {
         action: "fail",

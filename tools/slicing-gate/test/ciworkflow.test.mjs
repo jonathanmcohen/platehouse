@@ -22,10 +22,10 @@ const onBlock = (t) => t.slice(t.indexOf("\non:\n")).split(/\n(?=[a-z])/)[1];
 
 // The release gate needs a successful push run for the tagged commit, so a
 // newer push to main or a release branch must not cancel a running one.
-test("ci: only a pull request run is cancelled by a newer one, never a push run", () => {
+test("ci: only a pull request run is cancelled by a newer one, and push runs are grouped by commit", () => {
   assert.match(
     text(),
-    /\nconcurrency:\n {2}group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n/,
+    /\nconcurrency:\n {2}group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.event_name == 'pull_request' && github\.ref \|\| github\.sha \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n/,
   );
 });
 

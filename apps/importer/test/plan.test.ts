@@ -195,6 +195,16 @@ describe("a model Platehouse already has", () => {
     expect(plan.files.map((f) => f.action)).toEqual(["present"]);
   });
 
+  it("counts a file present when it was stored under its raw name, format characters included (0.1.0)", () => {
+    const lrm = String.fromCodePoint(0x200e);
+    const raw = `be${lrm}nchy.3mf`;
+    const plan = planModel(
+      source({ files: [{ url: "u1", filename: raw, contentUrl: "c1", contentSize: 3000 }] }),
+      existing({ files: [stored(raw, 3000)] }),
+    );
+    expect(plan.files.map((f) => f.action)).toEqual(["present"]);
+  });
+
   it("fails, rather than duplicates, a file whose name is there with another size", () => {
     const plan = planModel(source(), existing({ files: [stored("stand.stl", 999)] }));
     const stand = plan.files.find((f) => f.file.filename === "stand.stl");
