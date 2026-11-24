@@ -14,6 +14,7 @@ import type { SandboxState } from "@platehouse/slicer-contract";
 import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import type { PreviewFailureReason } from "../../../src/db/types.js";
 import { PREVIOUS_RENDERS_SENTENCE, TempFileError } from "../../../src/derived/client.js";
 import {
   BACKFILL_LOCK_KEY,
@@ -295,7 +296,7 @@ describe("the preview backfill (issue #316)", () => {
       .where("id", "=", trashed.modelId)
       .execute();
     const failed = await legacyStl("Failed bracket");
-    await failedAttempt(failed.fileId, "The slicer could not render this file.");
+    await failedAttempt(failed.fileId, "render_failed", "The slicer could not render this file.");
     env.stub.renders.queue("/v1/step/glb", { kind: "failed", message: "no shapes" });
     const unconverted = await env.ingestDerived.ingestFile({
       tmpPath: await writeUpload(env, uniqueStep("Unconverted housing")),
@@ -443,6 +444,7 @@ describe("the preview backfill (issue #316)", () => {
    */
   async function failedAttempt(
     fileId: string,
+    reason: PreviewFailureReason,
     message: string,
     times: { createdAt?: Date; updatedAt?: Date } = {},
   ) {
@@ -451,6 +453,7 @@ describe("the preview backfill (issue #316)", () => {
       .set((eb) => ({
         previewFailureSourceBlobId: eb.ref("blobId"),
         previewFailureMessage: message,
+        previewFailureReason: reason,
         previewStatus: "failed",
         previewMessage: message,
         ...times,
@@ -468,12 +471,12 @@ describe("the preview backfill (issue #316)", () => {
     const slicerDown = await legacyStl("Slicer down bracket");
     const queueFailed = await legacyStl("Queue failed bracket");
     const storeDown = await legacyStep("Store down housing");
-    const outages: [string, string][] = [
-      [slicerDown.fileId, DERIVED_MESSAGES.previewSlicerDown],
-      [queueFailed.fileId, DERIVED_MESSAGES.previewQueueFailed],
-      [storeDown.fileId, DERIVED_MESSAGES.previewStoreDown],
+    const outages: [string, PreviewFailureReason, string][] = [
+      [slicerDown.fileId, "slicer_down", DERIVED_MESSAGES.previewSlicerDown],
+      [queueFailed.fileId, "queue_failed", DERIVED_MESSAGES.previewQueueFailed],
+      [storeDown.fileId, "store_down", DERIVED_MESSAGES.previewStoreDown],
     ];
-    for (const [id, message] of outages) await failedAttempt(id, message);
+    for (const [id, reason, message] of outages) await failedAttempt(id, reason, message);
     env.stub.renders.reset();
 
     const result = await env.derived.backfillPreviews(later());
@@ -538,6 +541,7 @@ describe("the preview backfill (issue #316)", () => {
       expect(await env.repos.files.get(fileId)).toMatchObject({
         previewStatus: "failed",
         previewMessage: DERIVED_MESSAGES.previewTempFailed,
+        previewFailureReason: "temp_failed",
         renderPngBlobId: null,
       });
     }
@@ -554,11 +558,40 @@ describe("the preview backfill (issue #316)", () => {
     expect(env.stub.renders.callsTo("/v1/step/glb")).toHaveLength(0);
   });
 
+  test("an outage failure is retried by its code, whatever its stored wording", async () => {
+    // A failure stored by an older version holds an older sentence; the
+    // code, not the text, says it is an outage.
+    const stl = await legacyStl("Reworded outage bracket");
+    const old = new Date(Date.now() - 2 * RENDER_CHECK_GRACE_MS);
+    await failedAttempt(stl.fileId, "slicer_down", "an older wording of the outage sentence", {
+      createdAt: old,
+      updatedAt: old,
+    });
+    env.stub.renders.reset();
+
+    const run = await env.derived.backfillPreviews(later());
+    expect(run.queued).toContain(stl.fileId);
+    expect(await settledFile(env, stl.fileId)).toMatchObject({ previewStatus: "ok" });
+  });
+
+  test("a render failure is not retried even when its text reads like an outage", async () => {
+    const stl = await legacyStl("Look-alike bracket");
+    const old = new Date(Date.now() - 2 * RENDER_CHECK_GRACE_MS);
+    await failedAttempt(stl.fileId, "render_failed", DERIVED_MESSAGES.previewSlicerDown, {
+      createdAt: old,
+      updatedAt: old,
+    });
+
+    const run = await env.derived.backfillPreviews(later());
+    expect(run.queued).not.toContain(stl.fileId);
+    expect(await previewJobs(stl.fileId)).toHaveLength(0);
+  });
+
   test("an outage failure waits out the grace period before it is tried again", async () => {
     const stl = await legacyStl("Just failed bracket");
     const old = new Date(Date.now() - 2 * RENDER_CHECK_GRACE_MS);
     // Stored long ago, failed just now.
-    await failedAttempt(stl.fileId, DERIVED_MESSAGES.previewSlicerDown, {
+    await failedAttempt(stl.fileId, "slicer_down", DERIVED_MESSAGES.previewSlicerDown, {
       createdAt: old,
       updatedAt: new Date(),
     });
@@ -584,16 +617,16 @@ describe("the preview backfill (issue #316)", () => {
     const lost = await legacyStl("Lost bracket");
     const refused = await legacyStl("Refused bracket");
     const stepRejected = await legacyStep("Rejected housing");
-    const kept: [string, string][] = [
-      [rejected.fileId, `${DERIVED_MESSAGES.previewRejected} bad mesh`],
-      [lost.fileId, DERIVED_MESSAGES.renderLost],
-      [refused.fileId, DERIVED_MESSAGES.storeRefused],
-      [stepRejected.fileId, `${DERIVED_MESSAGES.previewRejected} bad mesh`],
+    const kept: [string, PreviewFailureReason, string][] = [
+      [rejected.fileId, "render_failed", `${DERIVED_MESSAGES.previewRejected} bad mesh`],
+      [lost.fileId, "lost", DERIVED_MESSAGES.renderLost],
+      [refused.fileId, "render_failed", DERIVED_MESSAGES.storeRefused],
+      [stepRejected.fileId, "render_failed", `${DERIVED_MESSAGES.previewRejected} bad mesh`],
     ];
-    for (const [id, message] of kept) await failedAttempt(id, message);
+    for (const [id, reason, message] of kept) await failedAttempt(id, reason, message);
 
     const run = await env.derived.backfillPreviews(later());
-    for (const [id, message] of kept) {
+    for (const [id, , message] of kept) {
       expect(run.queued).not.toContain(id);
       expect(await previewJobs(id)).toHaveLength(0);
       expect(await env.repos.files.get(id)).toMatchObject({
@@ -659,6 +692,7 @@ describe("files a slicer with its sandbox off refused", () => {
       .set((eb) => ({
         previewFailureSourceBlobId: eb.ref("blobId"),
         previewFailureMessage: DERIVED_MESSAGES.sandboxOffKernel,
+        previewFailureReason: "sandbox_off_kernel",
         previewStatus: "failed",
         previewMessage: DERIVED_MESSAGES.sandboxOffKernel,
         createdAt: old,
@@ -682,7 +716,10 @@ describe("files a slicer with its sandbox off refused", () => {
       () => env.repos.files.get(stl.fileId),
       (f) => f?.previewStatus === "failed" && f.updatedAt.getTime() > old.getTime(),
     );
-    expect(again).toMatchObject({ previewMessage: DERIVED_MESSAGES.sandboxOffKernel });
+    expect(again).toMatchObject({
+      previewMessage: DERIVED_MESSAGES.sandboxOffKernel,
+      previewFailureReason: "sandbox_off_kernel",
+    });
     // The handler writes the row before pg-boss completes its job, and a file
     // with a live job is never queued, so wait for the job too: the next two
     // passes then test the grace period, not the job (CI run 45323577150).

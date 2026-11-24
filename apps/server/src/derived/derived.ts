@@ -54,7 +54,8 @@
 // kept, and the program's message goes into files.derived_message exactly as
 // written (after a sentence saying the renders shown are the previous
 // version's, when they are; see replaceFile below), or, for a preview
-// picture, into files.preview_failure_message, from which recomputePreview
+// picture, into files.preview_failure_message (with its reason code in
+// preview_failure_reason, which the backfill retries by), from which recomputePreview
 // fills preview_message. It is text, for the page to show as text, never
 // HTML.
 //
@@ -199,7 +200,7 @@ import { LIMITS, type SlicerTimeouts } from "@platehouse/slicer-contract";
 import { CompiledQuery, type Kysely, sql, type Transaction } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { isUuid, uuidv7 } from "../db/ids.js";
-import type { Blob, DB, FileKind, ModelFile } from "../db/types.js";
+import type { Blob, DB, FileKind, ModelFile, PreviewFailureReason } from "../db/types.js";
 import {
   convertExpireSeconds,
   SLICER_MARGIN_SECONDS,
@@ -659,6 +660,8 @@ const OUTAGES: Readonly<
     Outage,
     {
       reason: "slicer_down" | "store_down";
+      /** The code a picture's outage failure is stored with (files.preview_failure_reason). */
+      previewReason: "slicer_down" | "store_down";
       message: string;
       replaceMessage: string;
       previewMessage: string;
@@ -667,6 +670,7 @@ const OUTAGES: Readonly<
 > = {
   slicer: {
     reason: "slicer_down",
+    previewReason: "slicer_down",
     message: DERIVED_MESSAGES.slicerDown,
     replaceMessage: DERIVED_MESSAGES.replaceSlicerDown,
     // A picture's outage is tried again by the preview backfill, so it says
@@ -675,6 +679,7 @@ const OUTAGES: Readonly<
   },
   store: {
     reason: "store_down",
+    previewReason: "store_down",
     message: DERIVED_MESSAGES.storeDown,
     replaceMessage: DERIVED_MESSAGES.replaceStoreDown,
     previewMessage: DERIVED_MESSAGES.previewStoreDown,
@@ -811,7 +816,7 @@ export function createDerived(deps: DerivedDeps) {
         .updateTable("files")
         .set({
           ...(isPreviewKind(jobKind)
-            ? pictureFailure(row.blobId, DERIVED_MESSAGES.previewQueueFailed)
+            ? pictureFailure(row.blobId, "queue_failed", DERIVED_MESSAGES.previewQueueFailed)
             : stateSet(
                 STATUS_OF[jobKind],
                 "failed",
@@ -1257,7 +1262,11 @@ export function createDerived(deps: DerivedDeps) {
       ? {
           previewSourceBlobId: derived.renderPngBlobId ? source.id : null,
           ...(isPreviewKind(jobKind)
-            ? { previewFailureSourceBlobId: null, previewFailureMessage: null }
+            ? {
+                previewFailureSourceBlobId: null,
+                previewFailureMessage: null,
+                previewFailureReason: null,
+              }
             : {}),
         }
       : {};
@@ -1528,8 +1537,12 @@ export function createDerived(deps: DerivedDeps) {
   }
 
   /** The set() that records a failed picture attempt for a source (a fact; issue #389). */
-  function pictureFailure(sourceBlobId: string, message: string) {
-    return { previewFailureSourceBlobId: sourceBlobId, previewFailureMessage: message };
+  function pictureFailure(sourceBlobId: string, reason: PreviewFailureReason, message: string) {
+    return {
+      previewFailureSourceBlobId: sourceBlobId,
+      previewFailureReason: reason,
+      previewFailureMessage: message,
+    };
   }
 
   /** The file row's source and render columns, locked for the pending write that follows. */
@@ -1605,7 +1618,7 @@ export function createDerived(deps: DerivedDeps) {
           // file's, when it was a replacement) and its status follows from
           // that (issue #389); a render or a mesh writes its own status.
           ...(isPreviewKind(jobKind)
-            ? pictureFailure(source.id, message)
+            ? pictureFailure(source.id, "render_failed", message)
             : stateSet(STATUS_OF[jobKind], outcome.status, outcome.message)),
           updatedAt: sql<Date>`now()`,
         })
@@ -1645,6 +1658,7 @@ export function createDerived(deps: DerivedDeps) {
     source: Blob,
     replacing: boolean,
     message: string,
+    reason: PreviewFailureReason,
     selfJobId?: string,
   ): Promise<void> {
     await db.transaction().execute(async (trx) => {
@@ -1671,7 +1685,7 @@ export function createDerived(deps: DerivedDeps) {
         if (!replacing) {
           await trx
             .updateTable("files")
-            .set({ ...pictureFailure(source.id, message), updatedAt: sql<Date>`now()` })
+            .set({ ...pictureFailure(source.id, reason, message), updatedAt: sql<Date>`now()` })
             .where("id", "=", row.id)
             .execute();
         }
@@ -1913,6 +1927,7 @@ export function createDerived(deps: DerivedDeps) {
           source,
           replacing,
           sandboxMessage(SANDBOX_KIND[job.kind], error.reason),
+          error.reason === "old_kernel" ? "sandbox_off_kernel" : "sandbox_off_check",
           selfJobId,
         );
         console.error(`derived: file ${file.id} ended with sandbox_off: ${describe(error)}`);
@@ -1921,13 +1936,14 @@ export function createDerived(deps: DerivedDeps) {
       const outage = outageOf(error);
       if (outage !== null) {
         if (!pastDeadline(job)) return waitOut(job, attempt, outage, error);
-        const { reason, message, replaceMessage, previewMessage } = OUTAGES[outage];
+        const { reason, previewReason, message, replaceMessage, previewMessage } = OUTAGES[outage];
         await commitSlicerError(
           job.kind,
           file,
           source,
           replacing,
           isPreviewKind(job.kind) ? previewMessage : replacing ? replaceMessage : message,
+          previewReason,
           selfJobId,
         );
         console.error(
@@ -1969,6 +1985,7 @@ export function createDerived(deps: DerivedDeps) {
           source,
           replacing,
           replacing ? DERIVED_MESSAGES.replaceStoreRefused : DERIVED_MESSAGES.storeRefused,
+          "render_failed",
           selfJobId,
         );
         console.error(`derived: file ${file.id} ended with store_refused: ${describe(error)}`);
@@ -1989,6 +2006,7 @@ export function createDerived(deps: DerivedDeps) {
           source,
           replacing,
           DERIVED_MESSAGES.previewTempFailed,
+          "temp_failed",
           selfJobId,
         );
         console.error(`derived: file ${file.id} ended with temp_failed: ${describe(error)}`);
@@ -2010,6 +2028,7 @@ export function createDerived(deps: DerivedDeps) {
         source,
         replacing,
         replacing ? DERIVED_MESSAGES.replaceFailed : DERIVED_MESSAGES.slicerError,
+        "render_failed",
         selfJobId,
       );
       console.error(`derived: file ${file.id} ended with slicer_error: ${describe(error)}`);
@@ -2163,7 +2182,7 @@ export function createDerived(deps: DerivedDeps) {
         await trx
           .updateTable("files")
           .set({
-            ...pictureFailure(row.blobId, DERIVED_MESSAGES.renderLost),
+            ...pictureFailure(row.blobId, "lost", DERIVED_MESSAGES.renderLost),
             updatedAt: sql<Date>`now()`,
           })
           .where("id", "=", row.id)
@@ -2338,7 +2357,7 @@ export function createDerived(deps: DerivedDeps) {
    * refuse the file for its live job anyway. Each in a
    * live model, written before cutoff (so an upload's own afterUpload has had
    * its turn). An STL or such a STEP file whose preview failed with one of
-   * the PREVIEW_RETRIED sentences (a slicer or a store that stayed down, or a
+   * a PREVIEW_RETRIED reason code (a slicer or a store that stayed down, or a
    * job that could not be queued) is taken again too, once that failure was
    * written before cutoff, so an outage, or a slicer image older than the
    * app, does not leave it with no picture for good. A picture the slicer
@@ -2357,7 +2376,7 @@ export function createDerived(deps: DerivedDeps) {
     // failed after a dropped replacement); the EXISTS test, not the status,
     // is what says the mesh is of the current source.
     const retried = sql`(f.preview_status = 'failed'
-           and f.preview_message in (${sql.join(sandboxOn ? [...PREVIEW_RETRIED, ...PREVIEW_SANDBOX_OFF] : PREVIEW_RETRIED)})
+           and f.preview_failure_reason = any(${sandboxOn ? [...PREVIEW_RETRIED, ...PREVIEW_SANDBOX_OFF] : PREVIEW_RETRIED}::text[])
            and f.updated_at < ${cutoff})`;
     const noPicture = sql`(f.preview_status is null or ${retried})`;
     return sql`
@@ -2436,7 +2455,7 @@ export function createDerived(deps: DerivedDeps) {
    * slice waits behind at most one batch. It is safe to run twice, at once
    * or later: each file is queued in a transaction holding its row, only
    * while it has no status (an STL) or no preview (a STEP file), or a
-   * preview that failed with a PREVIEW_RETRIED sentence, and no job, and a
+   * preview that failed with a PREVIEW_RETRIED reason code, and no job, and a
    * queued file is 'pending' from then on. Once every file has a preview or
    * a failure that is not retried, a run finds nothing and queues nothing.
    * A file that fails is logged and left for the next run; the others go on.

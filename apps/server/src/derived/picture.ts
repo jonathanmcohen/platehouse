@@ -14,14 +14,14 @@
 // - whether a picture job (render-stl or preview-step) for the current
 //   source is queued or running, read from the queue;
 // - the source the newest failed picture attempt was for, and why
-//   (preview_failure_source_blob_id, preview_failure_message).
+//   (preview_failure_source_blob_id, preview_failure_message), with a
+//   reason code (preview_failure_reason) the backfill retries by.
 //
 // A replacement that is not saved never changes the facts about the current
 // source, so it never changes the picture's status. The library card
 // (app-api/library.ts) and the model page (app-api/model.ts) show a stored
 // picture only when the status is ok.
-import type { FileKind } from "../db/types.js";
-import { DERIVED_MESSAGES } from "./client.js";
+import type { FileKind, PreviewFailureReason } from "../db/types.js";
 
 /** The file kinds that get a preview picture of their own: STL and STEP. */
 export function hasPreviewPicture(kind: FileKind): boolean {
@@ -39,7 +39,9 @@ export function isPictureShown(previewStatus: string | null): boolean {
 }
 
 /**
- * The failures of a picture the preview backfill queues again by itself:
+ * The failures of a picture the preview backfill queues again by itself,
+ * named by their reason code (preview_failure_reason, issue #418), never by
+ * the message text, which may be reworded:
  * the slicer or storage stayed down past the 2-hour wait (a slicer image
  * older than the app, which answers the preview route 404, ends this way
  * too), a job that could not be queued, and a job whose last attempt could
@@ -49,11 +51,11 @@ export function isPictureShown(previewStatus: string | null): boolean {
  * render that did not finish), or a store refusal that a retry does not
  * cure, and is not queued again (issue #90).
  */
-export const PREVIEW_RETRIED: readonly string[] = [
-  DERIVED_MESSAGES.previewSlicerDown,
-  DERIVED_MESSAGES.previewStoreDown,
-  DERIVED_MESSAGES.previewQueueFailed,
-  DERIVED_MESSAGES.previewTempFailed,
+export const PREVIEW_RETRIED: readonly PreviewFailureReason[] = [
+  "slicer_down",
+  "store_down",
+  "queue_failed",
+  "temp_failed",
 ];
 
 /**
@@ -63,9 +65,9 @@ export const PREVIEW_RETRIED: readonly string[] = [
  * (backfillCandidates in derived.ts), and a picture refused again then is
  * written again and waits out the grace period like any other.
  */
-export const PREVIEW_SANDBOX_OFF: readonly string[] = [
-  DERIVED_MESSAGES.sandboxOffKernel,
-  DERIVED_MESSAGES.sandboxOffCheck,
+export const PREVIEW_SANDBOX_OFF: readonly PreviewFailureReason[] = [
+  "sandbox_off_kernel",
+  "sandbox_off_check",
 ];
 
 /** The stored facts a file's picture status is worked out from. */

@@ -125,6 +125,7 @@ describe("STL previews (issue #316)", () => {
     expect(file).toMatchObject({
       previewStatus: "failed",
       previewMessage: `${PREVIEW_REJECTED} ${message}`,
+      previewFailureReason: "render_failed",
       renderPngBlobId: null,
     });
     const blobs = await blobsOf(env, modelId);
@@ -154,9 +155,10 @@ describe("STL previews (issue #316)", () => {
     expect(file).toMatchObject({
       previewStatus: "failed",
       previewMessage: DERIVED_MESSAGES.sandboxOffKernel,
+      previewFailureReason: "sandbox_off_kernel",
       renderPngBlobId: null,
     });
-    expect(PREVIEW_RETRIED).not.toContain(DERIVED_MESSAGES.sandboxOffKernel);
+    expect(PREVIEW_RETRIED).not.toContain("sandbox_off_kernel");
     expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
     // No wait and no retry: one call, one job, that ended failed.
     expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(1);
@@ -173,6 +175,7 @@ describe("STL previews (issue #316)", () => {
     expect(file).toMatchObject({
       previewStatus: "failed",
       previewMessage: DERIVED_MESSAGES.slicerError,
+      previewFailureReason: "render_failed",
       renderPngBlobId: null,
     });
     expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
@@ -357,6 +360,7 @@ describe("a picture that failed because the slicer stayed down says it will be t
 
     const file = await env.repos.files.get(stored.fileId);
     expect(file?.previewStatus).toBe("failed");
+    expect(file?.previewFailureReason).toBe("slicer_down");
     expect(file?.previewMessage).toMatch(/tried again automatically/i);
     expect(file?.previewMessage).not.toMatch(/started again/i);
     const run = await env.derived.backfillPreviews(
