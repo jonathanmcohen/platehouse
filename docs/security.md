@@ -20,20 +20,47 @@ only your own address ranges get through, for example your LAN and your VPN's ra
   on it most.
 
 An allowlist is only as good as the address your proxy sees for each visitor, so check it after
-setup:
+setup. Open the site from a device outside your allowlisted networks, such as a phone off your
+Wi-Fi, and look at the client address the proxy logs for that request. It must be the device's
+public address, and the device must get `403`. Any address of your own (router, `127.0.0.1` or
+`::1`, Docker) means the allowlist is not seeing visitors. When the proxy runs in Docker:
 
-- Open the site from a device outside your allowlisted networks, such as a phone off your Wi-Fi,
-  and look at the client address the proxy logs for that request. It must be the visitor's real
-  address, IPv6 included, not a Docker address. The device should get `403`.
-- When the proxy runs in Docker, never allow Docker's bridge subnets (`172.16.0.0/12` and the like).
-  Docker can rewrite a visitor's address to a bridge address, so allowing those ranges lets
-  everyone in. Allow only your own networks, for example `192.168.1.0/24` for the LAN and
-  `10.8.0.0/24` for the VPN (placeholders: use yours).
-- Where Docker's userland proxy applies, it can replace a visitor's address with the bridge
-  gateway's, most often for IPv6. Set `"userland-proxy": false` in `/etc/docker/daemon.json`, turn
-  on Docker's IPv6 support (`"ipv6": true` and `"ip6tables": true`), restart Docker and check
-  again. The [proxy checklist](./reverse-proxy/checklist.md#7-the-proxy-sees-each-visitors-real-address)
-  has the same check.
+- **Let the proxy see real addresses.** If the proxy runs in Docker and you use an allowlist, prefer
+  `network_mode: host` (Docker Engine on Linux), or run it on the host. If every visitor, LAN and
+  outside, shows the same address, do not add the allowlist: it cannot work on this setup. That is
+  the case on Docker Desktop (macOS and Windows), with rootless Docker's builtin port driver, with
+  rootless Podman and with Swarm ingress. Run the proxy on the host, or with `network_mode: host`.
+  For rootless Docker set `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns` (or `pasta`). For
+  Swarm publish with `mode: host`. On Docker Desktop use a VPN rather than an allowlist.
+- **Do not allow Docker's networks.** Never allow `172.16.0.0/12`, `192.168.0.0/16` or `10.0.0.0/8`
+  whole: Docker's default pools lie inside them (Docker Desktop uses `192.168.65.0/24`). For IPv6
+  never allow `fc00::/7` or `fd00::/8`; allow only your LAN's own /64. Allow only your own networks,
+  such as `192.168.1.0/24` for a home network and `10.8.0.0/24` for a VPN (placeholders: use yours).
+  Check that no entry overlaps a Docker network:
+
+  ```bash
+  docker network inspect $(docker network ls -q) -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{.Gateway}} {{end}}'
+  ```
+- **Test IPv6 from the host's addresses, not from DNS.** On the host, run `ip -6 addr show scope
+  global`. If it lists an address, test from outside even with no AAAA record:
+
+  ```bash
+  curl -6 -sI --resolve platehouse.example.com:443:[<host IPv6>] https://platehouse.example.com/
+  ```
+
+  Expect `403` or no connection.
+- **Docker's userland proxy.** Where it applies, it can replace a visitor's address with the bridge
+  gateway's: for IPv6 visitors when the proxy's Docker network has no IPv6, and for connections from
+  the host itself. Set `"userland-proxy": false` in `/etc/docker/daemon.json`. That needs Docker
+  Engine 27 or newer, where `ip6tables` is already on by default; upgrade an older engine first.
+  Restart Docker, then recreate the proxy container (`docker compose up -d --force-recreate`, then
+  the proxy's service name). The example Compose file's `proxy` network is IPv4 only: recreate it
+  with `docker network create --ipv6 proxy` (or `enable_ipv6: true` in Compose) and reconnect the
+  containers. A refused IPv6 connection after `"userland-proxy": false` without that step is
+  expected and safe; it is not a reason to undo the change.
+
+The [proxy checklist](./reverse-proxy/checklist.md#7-the-proxy-sees-each-visitors-real-address)
+has the same check.
 
 ## Sign-in
 
@@ -159,6 +186,10 @@ entry). How to fix that depends on what kind of device it is:
   proxy's address in the entrypoint's `forwardedHeaders.trustedIPs` (Traefik drops forwarded
   headers from any other address), then give the rate limit's `sourceCriterion.ipStrategy` and
   the allowlist's `ipStrategy` a `depth` of `1`, so they use the address the front proxy saw.
+- **Never trust a Docker gateway or bridge address as the front device's address**, for example
+  `172.18.0.1`. Through the userland proxy it also makes you trust every IPv6 visitor, and they can
+  then forge `X-Forwarded-For`. Put the front device on the proxy's Docker network so it has its
+  own container address, or run both with host networking, and set `"userland-proxy": false`.
 - **A TCP (layer 4) load balancer or tunnel.** It passes each request on unchanged, so an
   `X-Forwarded-For` header arriving through it is the client's own, and a client can claim any
   address in it, an address inside your allowlist included. Never trust the header behind such a
@@ -193,7 +224,14 @@ Then check that visitors' own addresses are seen:
    The header must change nothing: the device that got `429` in step 1 still gets `429` within the
    same minute, and the device outside the allowlist still gets `403`. If the header changes the
    answer, your proxy trusts `X-Forwarded-For` from anyone; trust it only from the front proxy's
-   own address, as above.
+   own address, as above. Also test straight to the host's IPv6 address, which skips the front
+   device:
+
+   ```sh
+   curl -6 -sI --resolve platehouse.example.com:443:[<host IPv6>] -H 'X-Forwarded-For: 192.168.1.10' https://platehouse.example.com/
+   ```
+
+   Expect `403`.
 
 ## Slicer links
 

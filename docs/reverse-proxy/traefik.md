@@ -88,20 +88,44 @@ set. Keep it that way unless another proxy sits in front of Traefik; if one does
 
 :::warning The allowlist only works on the address Traefik really sees
 
-- **Do not allow Docker's networks.** When Traefik runs in Docker, never put Docker's bridge
-  subnets (`172.16.0.0/12` and the like) in the allowlist. A visitor whose connection Docker has
-  rewritten shows up from a bridge address, so allowing those ranges lets everyone in. The ranges
-  in this guide, `192.168.1.0/24` for a home network and `10.8.0.0/24` for a VPN, are placeholders:
-  use your own.
-- **Check the client address after setup.** Turn on Traefik's access log and look at the `ClientHost` field of a request from outside. The address must be the visitor's real one,
-  IPv6 included, not a Docker address. Test from a device outside your networks, such as a phone
-  off your Wi-Fi, over IPv4 and over IPv6 if you have it. If the log shows a Docker address, the
-  allowlist is not seeing your visitors. Fix that before relying on it.
-- **Docker's userland proxy.** Where it applies (a container with published ports, on a host that
-  has not turned it off), Docker's userland proxy can replace a visitor's address with the bridge
-  gateway's, most often for IPv6. Set `"userland-proxy": false` in `/etc/docker/daemon.json`,
-  turn on Docker's IPv6 support (`"ipv6": true` and `"ip6tables": true`), restart Docker and check
-  again.
+- **Let the proxy see real addresses.** If the proxy runs in Docker and you use an allowlist, prefer
+  `network_mode: host` (Docker Engine on Linux), or run it on the host. If every visitor, LAN and
+  outside, shows the same address, do not add the allowlist: it cannot work on this setup. That is
+  the case on Docker Desktop (macOS and Windows), with rootless Docker's builtin port driver, with
+  rootless Podman and with Swarm ingress. Run the proxy on the host, or with `network_mode: host`.
+  For rootless Docker set `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns` (or `pasta`). For
+  Swarm publish with `mode: host`. On Docker Desktop use a VPN rather than an allowlist.
+- **Do not allow Docker's networks.** Never allow `172.16.0.0/12`, `192.168.0.0/16` or `10.0.0.0/8`
+  whole: Docker's default pools lie inside them (Docker Desktop uses `192.168.65.0/24`). For IPv6
+  never allow `fc00::/7` or `fd00::/8`; allow only your LAN's own /64. Allow only your own networks,
+  such as `192.168.1.0/24` for a home network and `10.8.0.0/24` for a VPN (placeholders: use yours).
+  Check that no entry overlaps a Docker network:
+
+  ```bash
+  docker network inspect $(docker network ls -q) -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{.Gateway}} {{end}}'
+  ```
+- **Check the client address after setup.** Set `accessLog.format: json` and read `ClientAddr` (the
+  connection's own address and port). `ClientHost` shows `X-Forwarded-For` when that header is
+  present. The address must be the device's public address, and the device must get `403`. Any
+  address of your own (router, `127.0.0.1` or `::1`, Docker) means the allowlist is not seeing
+  visitors. Test from a device outside your networks, such as a phone off your Wi-Fi.
+- **Test IPv6 from the host's addresses, not from DNS.** On the host, run `ip -6 addr show scope
+  global`. If it lists an address, test from outside even with no AAAA record:
+
+  ```bash
+  curl -6 -sI --resolve platehouse.example.com:443:[<host IPv6>] https://platehouse.example.com/
+  ```
+
+  Expect `403` or no connection.
+- **Docker's userland proxy.** Where it applies, it can replace a visitor's address with the bridge
+  gateway's: for IPv6 visitors when the proxy's Docker network has no IPv6, and for connections from
+  the host itself. Set `"userland-proxy": false` in `/etc/docker/daemon.json`. That needs Docker
+  Engine 27 or newer, where `ip6tables` is already on by default; upgrade an older engine first.
+  Restart Docker, then recreate the proxy container (`docker compose up -d --force-recreate`, then
+  the proxy's service name). The example Compose file's `proxy` network is IPv4 only: recreate it
+  with `docker network create --ipv6 proxy` (or `enable_ipv6: true` in Compose) and reconnect the
+  containers. A refused IPv6 connection after `"userland-proxy": false` without that step is
+  expected and safe; it is not a reason to undo the change.
 
 :::
 
@@ -124,9 +148,8 @@ set. Keep it that way unless another proxy sits in front of Traefik; if one does
 - **`sanitizePath` and `allowEncodedSlash`** are both set explicitly in this configuration, so it
   does not depend on Traefik's own defaults (check Traefik's documentation for your version before
   leaving either out). Path cleaning stays on, and an encoded slash in an API path reaches the app.
-  If you have set
-  `allowEncodedSlash: false` on the entrypoint, tags and collections with a `/` in their name
-  cannot be changed through the API.
+  If you have set `allowEncodedSlash: false` on the entrypoint, tags and collections with a `/` in
+  their name cannot be changed through the API.
 - **Forwarded headers.** Traefik sets `X-Forwarded-Proto`, `X-Forwarded-Host` and
   `X-Forwarded-For` itself, and sends the app origin-form request targets. Platehouse uses the
   headers only in its log; every link comes from `PUBLIC_ORIGIN`.
@@ -144,9 +167,13 @@ http:
       entryPoints: [websecure]
       tls:
         certResolver: letsencrypt
-      middlewares: [platehouse-headers]
+      # Optional: leave platehouse-allowlist out if you use no allowlist.
+      middlewares: [platehouse-allowlist, platehouse-headers]
       service: platehouse
   middlewares:
+    platehouse-allowlist:
+      ipAllowList:
+        sourceRange: ["192.168.1.0/24", "10.8.0.0/24"]
     platehouse-headers:
       headers:
         stsSeconds: 31536000 # HSTS only; the app sends the other headers
