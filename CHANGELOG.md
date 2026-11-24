@@ -30,6 +30,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Fixed
 
+- Library reloads keep keyboard focus and the grid, a finished upload refreshes the library quietly, and an expired session shows that you are signed out instead of "could not be loaded" ([#470](https://github.com/jonathanmcohen/platehouse/issues/470)).
 - The library shows the 30 most-used tags first, with a More tags button for the rest, instead of every tag above the grid ([#458](https://github.com/jonathanmcohen/platehouse/issues/458)).
 - The trash is shown 100 models at a time, with pages, instead of all at once ([#458](https://github.com/jonathanmcohen/platehouse/issues/458)).
 - Pressing Escape in the search box no longer ends Select mode or clears the selection ([#446](https://github.com/jonathanmcohen/platehouse/issues/446)).

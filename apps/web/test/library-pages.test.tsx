@@ -582,3 +582,97 @@ describe("library.css", () => {
     expect(css).toMatch(/@media \(max-width: 480px\)/);
   });
 });
+
+describe("reloads keep focus and place", () => {
+  function buttonNamed(name: RegExp): HTMLButtonElement | undefined {
+    return [...container.querySelectorAll("button")].find((b) => name.test(b.textContent ?? ""));
+  }
+
+  test("clicking View all keeps focus on the count after the reload", async () => {
+    stubServer(cards(171));
+    await render(libraryAt("/"));
+    const viewAll = linkNamed("View all");
+    viewAll?.focus();
+    await click(viewAll);
+    expect(lastLibraryQuery().get("limit")).toBe("200");
+    expect(document.activeElement?.id).toBe("ph-library-count");
+  });
+
+  test("clicking Pages keeps focus on the count after the reload", async () => {
+    stubServer(cards(171));
+    await render(libraryAt("/?view=all"));
+    await click(linkNamed("Pages"));
+    expect(lastLibraryQuery().get("limit")).toBe("48");
+    expect(document.activeElement?.id).toBe("ph-library-count");
+  });
+
+  test("clicking Show all models keeps focus on the count after the reload", async () => {
+    stubServer(cards(10));
+    await render(libraryAt("/?q=nomatch"));
+    await click(linkNamed("Show all models"));
+    expect(lastLibraryQuery().has("q")).toBe(false);
+    expect(document.activeElement?.id).toBe("ph-library-count");
+  });
+
+  test("after a failed load, focus is on Try again, and the count gets it after a good retry", async () => {
+    stubServer(cards(10));
+    failPages = new Set([1]);
+    await render(libraryAt("/"));
+    const retry = buttonNamed(/try again/i);
+    expect(retry).toBeDefined();
+    expect(document.activeElement).toBe(retry);
+
+    failPages = new Set();
+    await click(retry);
+    expect(cardNames()).toHaveLength(10);
+    expect(document.activeElement?.id).toBe("ph-library-count");
+  });
+
+  test("an upload finishing reloads the grid without Loading", async () => {
+    stubServer(cards(10));
+    const answer = globalThis.fetch;
+    let release: () => void = () => {};
+    let gate: Promise<void> = Promise.resolve();
+    vi.stubGlobal("fetch", (...args: Parameters<typeof fetch>) => gate.then(() => answer(...args)));
+    const at = (refreshKey: number) => (
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route path="/" element={<LibraryPage refreshKey={refreshKey} />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    await render(at(0));
+    expect(cardNames()).toHaveLength(10);
+
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const before = libraryQueries().length;
+    await act(async () => root.render(at(1)));
+    // The reload is asked for and still waiting: the cards stay, with no Loading.
+    expect(cardNames()).toHaveLength(10);
+    expect(container.textContent).not.toMatch(/loading/i);
+    release();
+    await settle();
+    expect(libraryQueries().length).toBe(before + 1);
+    expect(cardNames()).toHaveLength(10);
+  });
+
+  test("a 401 shows signed out, with no Try again", async () => {
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "https://platehouse.test");
+      if (url.pathname === "/app/api/library/tags") return json({ tags: [] });
+      return json({ error: "unauthorized" }, 401);
+    });
+    await render(libraryAt("/"));
+    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/signed out/i);
+    expect(container.textContent).not.toMatch(/could not be loaded/i);
+    expect(buttonNamed(/try again/i)).toBeUndefined();
+  });
+
+  test("a long q is sent trimmed to 200 characters", async () => {
+    stubServer(cards(10));
+    await render(libraryAt(`/?q=${"a".repeat(300)}`));
+    expect(lastLibraryQuery().get("q")).toBe("a".repeat(200));
+  });
+});

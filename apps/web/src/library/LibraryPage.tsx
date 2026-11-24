@@ -59,15 +59,17 @@
 //   opens the upload dialog. refreshKey reloads the grid (after an upload).
 // - Loading, an empty library, no results and a failed load each say so in
 //   words, and a failed load can be tried again.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useI18n } from "../i18n/I18n";
+import { AppApiError, appApi } from "../settings/api";
 import { type PrinterChoice, PrinterSwitch, usePrinterChoice } from "../settings/PrinterSwitch";
 import { menuIsOpen } from "../shell/MenuButton";
+import { MAX_QUERY } from "../shell/TopBar";
 import { DropZone } from "../upload/DropZone";
 import { Filters } from "./Filters";
 import { type LibraryCard, ModelCard } from "./ModelCard";
-import { Pager } from "./Pager";
+import { isPlainClick, Pager } from "./Pager";
 import {
   defaultSort,
   isViewAll,
@@ -150,7 +152,7 @@ interface Ready extends Answer {
   changed: number;
 }
 
-type Load = { state: "loading" } | { state: "failed" } | Ready;
+type Load = { state: "loading" } | { state: "failed"; signedOut: boolean } | Ready;
 
 /**
  * Where the check of the selection against the view stands: nothing to
@@ -171,24 +173,12 @@ function chunkAfter(chunk: number, answer: Answer, shown: number): number | null
   return chunk < answer.pageCount && shown < VIEW_ALL_MAX ? chunk + 1 : null;
 }
 
-async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, {
-    headers: { accept: "application/json" },
-    ...(signal === undefined ? {} : { signal }),
-  });
-  if (!res.ok) throw new Error(`${url} answered ${res.status}`);
-  return (await res.json()) as T;
+function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+  return appApi<T>("GET", path, undefined, signal === undefined ? {} : { signal });
 }
 
-async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify(body),
-    ...(signal === undefined ? {} : { signal }),
-  });
-  if (!res.ok) throw new Error(`${url} answered ${res.status}`);
-  return (await res.json()) as T;
+function postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return appApi<T>("POST", path, body, signal === undefined ? {} : { signal });
 }
 
 /**
@@ -201,11 +191,7 @@ async function stillShown(ids: string[], matchKey: string, signal: AbortSignal) 
   const found: string[] = [];
   for (let at = 0; at < ids.length; at += MAX_SELECTED) {
     const chunk = ids.slice(at, at + MAX_SELECTED);
-    const answer = await postJson<{ ids: string[] }>(
-      "/app/api/bulk/in-view",
-      { ids: chunk, view },
-      signal,
-    );
+    const answer = await postJson<{ ids: string[] }>("/bulk/in-view", { ids: chunk, view }, signal);
     found.push(...answer.ids);
   }
   return found;
@@ -245,6 +231,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   /** A pager link was followed: focus the count once the new page is in. */
   const focusCount = useRef(false);
   const count = useRef<HTMLParagraphElement>(null);
+  /** The failed block's Try again: focus lands here when a load fails. */
+  const tryAgain = useRef<HTMLButtonElement>(null);
   /** The header's printer switch: whose times and weights the cards show. */
   const printer = usePrinterChoice();
   const { choice, settle: settlePrinter } = printer;
@@ -257,7 +245,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
    */
   const matching = useCallback(() => {
     const search = new URLSearchParams();
-    if (q !== "") search.set("q", q);
+    if (q !== "") search.set("q", q.slice(0, MAX_QUERY));
     if (tag !== "") search.set("tag", tag);
     if (creator !== "") search.set("creator", creator);
     if (collection !== "") search.set("collection", collection);
@@ -320,7 +308,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       const search = matching();
       search.set("page", String(at));
       search.set("limit", String(limit));
-      return `/app/api/library?${search}`;
+      return `/library?${search}`;
     },
     [matching],
   );
@@ -360,10 +348,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     }
     const controller = new AbortController();
     setCheck({ state: "checking" });
-    getJson<{ ids: string[]; capped?: boolean }>(
-      `/app/api/library/ids?${matchKey}`,
-      controller.signal,
-    )
+    getJson<{ ids: string[]; capped?: boolean }>(`/library/ids?${matchKey}`, controller.signal)
       .then(async (answer) => {
         if (controller.signal.aborted) return;
         const shown = new Set(answer.ids);
@@ -551,7 +536,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     const mine = ++generation.current;
     const first = viewAll ? 1 : page;
     const url = query(first, viewAll ? VIEW_ALL_CHUNK : PAGE_SIZE);
-    const asked = `${viewAll}|${refreshKey}|${attempt}|${url}`;
+    const asked = `${viewAll}|${attempt}|${url}`;
     const quiet = asked === loadedFor.current;
     loadedFor.current = asked;
     if (!quiet) setLoad({ state: "loading" });
@@ -585,8 +570,12 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         });
         settlePrinter(answer.printer);
       })
-      .catch(() => {
-        if (!controller.signal.aborted && mine === generation.current) setLoad({ state: "failed" });
+      .catch((error: unknown) => {
+        if (controller.signal.aborted || mine !== generation.current) return;
+        setLoad({
+          state: "failed",
+          signedOut: error instanceof AppApiError && error.status === 401,
+        });
       });
     return () => controller.abort();
   }, [query, page, viewAll, loadRest, refreshKey, attempt, changedKey]);
@@ -597,10 +586,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey and tagsKey only trigger a reload.
   useEffect(() => {
     const controller = new AbortController();
-    getJson<{ tags: Array<{ name: string; models: number }> }>(
-      "/app/api/library/tags",
-      controller.signal,
-    )
+    getJson<{ tags: Array<{ name: string; models: number }> }>("/library/tags", controller.signal)
       .then((answer) => {
         setTags(answer.tags);
         setTagsState("ready");
@@ -616,10 +602,17 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
 
   // Focus follows a pager link to the new page's count, once it is in.
   useEffect(() => {
+    // A failed load puts focus on Try again, so a keyboard user is not left on nothing.
+    if (load.state === "failed") tryAgain.current?.focus();
     if (load.state === "loading" || !focusCount.current) return;
     focusCount.current = false;
     if (load.state === "ready") count.current?.focus();
   }, [load]);
+
+  /** A link that reloads the grid in this tab: focus goes to the count once it is in. */
+  function keepFocusOnCount(event: MouseEvent<HTMLAnchorElement>) {
+    if (isPlainClick(event)) focusCount.current = true;
+  }
 
   function retryRest() {
     const controller = loading.current;
@@ -761,14 +754,20 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         {load.state === "loading" ? <p className="studio-muted">{t("library.loading")}</p> : null}
         {load.state === "failed" ? (
           <div className="studio-alert studio-alert-alert" role="alert">
-            <p>{t("library.failed")}</p>
-            <button
-              type="button"
-              className="studio-button"
-              onClick={() => setAttempt((n) => n + 1)}
-            >
-              {t("common.tryAgain")}
-            </button>
+            <p>{load.signedOut ? t("common.signedOut") : t("library.failed")}</p>
+            {load.signedOut ? null : (
+              <button
+                type="button"
+                className="studio-button"
+                ref={tryAgain}
+                onClick={() => {
+                  focusCount.current = true;
+                  setAttempt((n) => n + 1);
+                }}
+              >
+                {t("common.tryAgain")}
+              </button>
+            )}
           </div>
         ) : null}
         {ready !== null && ready.models.length === 0 ? (
@@ -777,7 +776,9 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
             {filtered ? (
               <>
                 {" "}
-                <Link to={allModels()}>{t("library.empty.showAll")}</Link>
+                <Link to={allModels()} onClick={keepFocusOnCount}>
+                  {t("library.empty.showAll")}
+                </Link>
               </>
             ) : null}
           </p>
@@ -800,6 +801,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
                 <li>
                   <Link
                     to={pageHref(params, 1)}
+                    onClick={keepFocusOnCount}
                     className="studio-chip"
                     {...(viewAll ? {} : { "aria-current": "true" as const })}
                   >
@@ -812,6 +814,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
                       next.delete("page");
                       next.set("view", "all");
                     })}
+                    onClick={keepFocusOnCount}
                     className="studio-chip"
                     {...(viewAll ? { "aria-current": "true" as const } : {})}
                   >
