@@ -1,6 +1,6 @@
 // Plain words for why a plate could not be sliced, so the plate shows the
 // slicer's reason rather than a code. The reason itself comes from the slicer's reason map (Slicer HTTP
-// contract v1): Orca's return code mapped to one of the contract's reasons,
+// contract 2): Orca's return code mapped to one of the contract's reasons,
 // with every code the map does not name reported as slicer_error. The app
 // never re-maps a reason; it only puts it in words.
 //

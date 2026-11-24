@@ -1174,21 +1174,31 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
    * version, at most SANDBOX_REQUEUE_LIMIT a poll. The poll calls it only
    * when the sandbox is on, or off with the slicer allowed to run
    * unsandboxed. Each goes through retryEstimate, which makes it pending
-   * first, so the next poll finds it no longer failed.
+   * first, so the next poll finds it no longer failed. Only estimates whose
+   * plate retryEstimate can still queue are read (its file's model neither
+   * in the trash nor being purged, as liveTarget joins it), so estimates
+   * left failed in the trash never fill the batch.
    */
   async function requeueSandboxOffFailures(orca: string): Promise<void> {
     const { myPrinters } = await repos.settings.get();
     const failed = await db
       .selectFrom("estimates")
-      .select("id")
-      .where("source", "=", "platehouse")
-      .where("status", "=", "failed")
-      .where("failureCode", "is", null)
-      .where("failureReason", "=", "slicer_error")
-      .where("failureDetail", "in", SANDBOX_OFF_DETAILS)
-      .where("printerId", "in", myPrinters)
-      .where("slicerVersion", "=", orca)
-      .orderBy("createdAt")
+      .innerJoin("plates", "plates.id", "estimates.plateId")
+      .innerJoin("files", "files.id", "plates.fileId")
+      .innerJoin("models", "models.id", "files.modelId")
+      .innerJoin("blobs", "blobs.id", "files.blobId")
+      .select("estimates.id")
+      .where("estimates.source", "=", "platehouse")
+      .where("estimates.status", "=", "failed")
+      .where("estimates.failureCode", "is", null)
+      .where("estimates.failureReason", "=", "slicer_error")
+      .where("estimates.failureDetail", "in", SANDBOX_OFF_DETAILS)
+      .where("estimates.printerId", "in", myPrinters)
+      .where("estimates.slicerVersion", "=", orca)
+      .where("models.trashedAt", "is", null)
+      .where("models.purgeStartedAt", "is", null)
+      .orderBy("estimates.createdAt")
+      .orderBy("estimates.id")
       .limit(SANDBOX_REQUEUE_LIMIT)
       .execute();
     let queued = 0;

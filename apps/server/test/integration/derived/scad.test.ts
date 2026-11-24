@@ -1267,6 +1267,26 @@ describe("replacing a .scad", () => {
     });
   });
 
+  // The slicer starts OpenSCAD's own words with "OpenSCAD said: ", which the
+  // previous-renders sentence already ends with: the stored message says it once.
+  test("a rejected replacement's message names OpenSCAD once after the previous-renders sentence", async () => {
+    const { fileId } = await uploadScad(unique("lead-in, before"));
+    const before = await settledFile(env, fileId);
+    expect(before.renderStlBlobId).not.toBeNull();
+    env.stub.renders.reset();
+
+    env.stub.renders.queue("/v1/scad/stl", {
+      kind: "failed",
+      message: "OpenSCAD said: ERROR: Parser error in file input.scad, line 2",
+    });
+    await env.derived.replaceFile(fileId, await writeUpload(env, unique("lead-in, replacement")));
+    expect(await settledFile(env, fileId)).toMatchObject({
+      renderStlBlobId: before.renderStlBlobId,
+      derivedStatus: "failed",
+      derivedMessage: `${PREVIOUS_RENDERS_SCAD} ERROR: Parser error in file input.scad, line 2`,
+    });
+  });
+
   test("a rejected replacement of a file that never rendered becomes its source with OpenSCAD's message alone", async () => {
     // With no STL or preview from an earlier source, there is nothing to say
     // about a previous version: the message is OpenSCAD's own, as for an upload.

@@ -27,7 +27,7 @@
 // Each filament line names the preset that produced its grams and where the
 // preset came from: "bambu" (Bambu's own preset for the printer), "generic"
 // (Orca's Generic preset) or "file" (the file's own filament was kept).
-// Slicer contract v1 reports the preset name per slot but not its source, so
+// Slicer contract 2 reports the preset name per slot but not its source, so
 // the source is read from the name by the slicer's own rule
 // (apps/slicer/src/profiles.ts pickFilament): it only ever picks a preset
 // named "Bambu ..." or "Generic ...", and reports null where it kept the

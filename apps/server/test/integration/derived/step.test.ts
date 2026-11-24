@@ -283,6 +283,29 @@ describe("STEP meshes", () => {
     expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(0);
   });
 
+  // The slicer starts the converter's own words with "The converter said: ",
+  // which the previous-mesh sentence already ends with: it is said once.
+  test("a rejected replacement's message names the converter once after the previous-mesh sentence", async () => {
+    const { fileId } = await uploadStep(uniqueStep("lead-in, before"));
+    const before = await settledFile(env, fileId);
+    expect(before.meshBlobId).not.toBeNull();
+    env.stub.renders.reset();
+
+    env.stub.renders.queue("/v1/step/glb", {
+      kind: "failed",
+      message: "The converter said: STEP import failed: no shapes found",
+    });
+    await env.derived.replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStep("lead-in, replacement")),
+    );
+    expect(await settledFile(env, fileId)).toMatchObject({
+      meshBlobId: before.meshBlobId,
+      derivedStatus: "failed",
+      derivedMessage: `${PREVIOUS_MESH} STEP import failed: no shapes found`,
+    });
+  });
+
   test("a replacement the converter rejects, staged before the original's first mesh finished, still says the mesh is the previous version's", async () => {
     // The original's mesh commits after the replacement is staged, so its
     // row is written later than the replacement's source row; it is still

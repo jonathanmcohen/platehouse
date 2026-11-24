@@ -46,6 +46,7 @@ import { pipeline } from "node:stream/promises";
 import { LIMITS } from "@platehouse/slicer-contract";
 import {
   AnswerTooLarge,
+  afterSentence,
   DERIVED_MESSAGES,
   postRender,
   RenderFailed,
@@ -103,7 +104,7 @@ async function postPreview(
         error.message === SLICER_NOT_AN_STL || error instanceof AnswerTooLarge
           ? DERIVED_MESSAGES.previewFailed
           : DERIVED_MESSAGES.previewRejected;
-      throw new RenderFailed(`${lead} ${error.message}`);
+      throw new RenderFailed(afterSentence(lead, error.message));
     }
     throw error;
   }

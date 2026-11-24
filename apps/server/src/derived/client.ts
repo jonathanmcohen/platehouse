@@ -1,4 +1,4 @@
-// The app's side of the slicer's render routes (Slicer HTTP contract v1):
+// The app's side of the slicer's render routes (Slicer HTTP contract 2):
 // POST /v1/scad/stl, /v1/scad/png, /v1/step/glb and, for STL and STEP
 // preview pictures (issue #316), /v1/stl/png. One request per call and
 // no retry here: what went wrong is reported as one of the errors below, and
@@ -141,6 +141,21 @@ export const DERIVED_MESSAGES = {
   stlTooLarge:
     "This STL file is larger than the 256 MiB the preview renderer takes, so it has no preview picture.",
 } as const;
+
+/** The lead-ins the slicer starts a program's own words with, and the sentences above end with. */
+const LEAD_INS = ["OpenSCAD said:", "The converter said:"] as const;
+
+/**
+ * sentence, then a program's message after a space. When the sentence ends
+ * with a lead-in (previousRendersScad, previousRendersStep, previewRejected)
+ * and the message starts with the same one, as the slicer writes it, the
+ * message's copy is left out, so the lead-in is said once. Any other message
+ * is kept whole.
+ */
+export function afterSentence(sentence: string, message: string): string {
+  const lead = LEAD_INS.find((l) => sentence.endsWith(l) && message.startsWith(`${l} `));
+  return `${sentence} ${lead === undefined ? message : message.slice(lead.length + 1)}`;
+}
 
 /**
  * Every sentence Platehouse writes into files.derived_message, by the code

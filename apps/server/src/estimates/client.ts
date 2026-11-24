@@ -1,9 +1,9 @@
-// The app's client for slicer contract v1 (packages/slicer-contract). The slicer is
+// The app's client for slicer contract 2 (packages/slicer-contract). The slicer is
 // on the internal network only, has no auth and holds no secrets; nothing the
 // app sends it is secret either (a printer name, a plate number, the .3mf).
 //
 // Every answer is read with the contract's own zod schemas
-// (packages/slicer-contract), so an answer outside contract v1 is a refusal,
+// (packages/slicer-contract), so an answer outside contract 2 is a refusal,
 // never a result. Errors come in four kinds, because the slice job treats
 // them differently:
 // - SlicerBusy: 409 busy, the slicer is running another heavy job;
@@ -28,6 +28,7 @@ import { type ClientRequest, request as httpRequest, type IncomingMessage } from
 import { request as httpsRequest } from "node:https";
 import type { Readable } from "node:stream";
 import {
+  CONTRACT_VERSION,
   type Health,
   type Profiles,
   type SandboxOffBody,
@@ -309,7 +310,7 @@ function parsed<T extends z.ZodType>(answer: Answer, schema: T): z.infer<T> {
   if (!result.success) {
     throw new SlicerRefused(
       answer.status,
-      "The slicer's answer is not one slicer contract v1 allows",
+      `The slicer's answer is not one slicer contract ${CONTRACT_VERSION} allows`,
     );
   }
   return result.data;

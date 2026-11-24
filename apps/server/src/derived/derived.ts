@@ -218,6 +218,7 @@ import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
 import {
+  afterSentence,
   CONVERT_EXPIRE_SECONDS,
   DERIVED_MESSAGES,
   isRetryable,
@@ -1575,7 +1576,8 @@ export function createDerived(deps: DerivedDeps) {
       // its kept renders stay as they are.
       const predate = await rendersPredate(trx, row, jobKind, source.id, replacing);
       const lead = PREVIOUS_RENDERS[jobKind];
-      const message = predate && lead !== null ? `${lead} ${programMessage}` : programMessage;
+      const message =
+        predate && lead !== null ? afterSentence(lead, programMessage) : programMessage;
       const dropped = await earlierPreviews(trx, row, jobKind, source.id, replacing);
       const outcome = await settledOutcome(
         trx,

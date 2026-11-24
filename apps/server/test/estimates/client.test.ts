@@ -314,7 +314,11 @@ describe("slicer client", () => {
         url: `http://127.0.0.1:${address.port}`,
         plateSeconds: 5,
       });
-      await expect(client.health()).rejects.toBeInstanceOf(SlicerRefused);
+      const refused = client.health();
+      await expect(refused).rejects.toBeInstanceOf(SlicerRefused);
+      await expect(refused).rejects.toMatchObject({
+        message: "The slicer's answer is not one slicer contract 2 allows",
+      });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
