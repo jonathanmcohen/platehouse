@@ -90,7 +90,7 @@
 # orca-X.Y.Z with the same imagetools command.
 #
 # The image is amd64 only (OpenSCAD has no current arm64 build).
-# Actions are pinned to the exact tags release.yml uses. Every job after detect
+# Actions are pinned to full commit SHAs, with the release tag as a comment (#420). Every job after detect
 # carries an explicit !cancelled() condition, because a skip propagates down a
 # needs chain unless a job says otherwise. Buildx provenance is off (no build
 # attestation, by the release rules). Each job gets only the permissions it uses;
@@ -672,6 +672,7 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
           RUN_NUMBER: ${{ github.run_number }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          MOVE_STABLE: ${{ needs.detect.outputs.stable }}
           MOVE_ORCA: ${{ needs.detect.outputs.orca }}
           RELEASE: ${{ needs.detect.outputs.release }}
         run: |
@@ -690,6 +691,12 @@ jobs:
             # leaving the first attempt's tag on the image it named.
             run_tag="orca-${VERSION}-r${RUN_NUMBER}"
             if [ "$RUN_ATTEMPT" -gt 1 ]; then run_tag="${run_tag}.${RUN_ATTEMPT}"; fi
+            # The stable job runs only on "true"; an empty or odd decision would
+            # skip it silently, so it fails here, before any tag.
+            if [ "$MOVE_STABLE" != "true" ] && [ "$MOVE_STABLE" != "false" ]; then
+              echo "::error::detect gave no stable decision ('${MOVE_STABLE}'); nothing is tagged"
+              exit 1
+            fi
             if [ "$MOVE_ORCA" != "true" ] && [ "$MOVE_ORCA" != "false" ]; then
               echo "::error::detect gave no orca decision ('${MOVE_ORCA}'); nothing is tagged"
               exit 1
@@ -811,7 +818,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      contents: read
       packages: write
     concurrency:
       group: slicer-image-stable
@@ -838,20 +844,46 @@ jobs:
           DIGEST: ${{ needs.build.outputs.digest }}
           BUILD_TAGGED: ${{ needs.build.outputs.tagged }}
         run: |
-          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::the build returned no digest (${DIGEST:-none}); stable is not moved"
-            exit 1
-          fi
-          src="${IMAGE}@${DIGEST}"
-          echo "tagged=${BUILD_TAGGED}, stable" >>"$GITHUB_OUTPUT"
-          docker buildx imagetools create --prefer-index=false -t "${IMAGE}:stable" "$src"
-          got="$(docker buildx imagetools inspect "${IMAGE}:stable" --format '{{.Manifest.Digest}}')"
-          if [ "$got" != "$DIGEST" ]; then
-            echo "::error::${IMAGE}:stable is ${got}, not ${DIGEST}"
-            exit 1
-          fi
-          echo "- stable now points at \`${DIGEST}\`" >>"$GITHUB_STEP_SUMMARY"
-          echo "stable now points at ${DIGEST}"
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::the build returned no digest (${DIGEST:-none}); stable is not moved"
+              exit 1
+            fi
+            src="${IMAGE}@${DIGEST}"
+            echo "tagged=${BUILD_TAGGED}, stable" >>"$GITHUB_OUTPUT"
+            docker buildx imagetools create --prefer-index=false -t "${IMAGE}:stable" "$src"
+            got="$(docker buildx imagetools inspect "${IMAGE}:stable" --format '{{.Manifest.Digest}}')"
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::${IMAGE}:stable is ${got}, not ${DIGEST}"
+              exit 1
+            fi
+            echo "- stable now points at \`${DIGEST}\`" >>"$GITHUB_STEP_SUMMARY"
+            echo "stable now points at ${DIGEST}"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/move.log"
+
+      - name: Keep the failing step's log tail
+        if: ${{ failure() }}
+        run: |
+          mkdir -p failure
+          {
+            echo "step: Move stable"
+            if [ -s "$RUNNER_TEMP/logs/move.log" ]; then
+              tail -n 80 "$RUNNER_TEMP/logs/move.log"
+            else
+              echo "(no log was kept for this step; see the run's log)"
+            fi
+          } >failure/stable.txt
+          cat failure/stable.txt
+
+      - name: Upload the log tail
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: failure-stable
+          path: failure/stable.txt
+          if-no-files-found: ignore
+          retention-days: 7
 
   # Opens an issue when a job failed, and, on a push (a release tag), when one
   # was cancelled: a tag run whose build or stable move was cancelled left the
@@ -896,7 +928,7 @@ jobs:
           if [ -z "$version" ]; then version="(version not found)"; fi
           title="Slicer image failed for OrcaSlicer ${version}"
           tail=""
-          for f in failure/detect.txt failure/build.txt; do
+          for f in failure/detect.txt failure/build.txt failure/stable.txt; do
             if [ -s "$f" ]; then tail="$(cat "$f")"; fi
           done
           if [ -z "$tail" ]; then

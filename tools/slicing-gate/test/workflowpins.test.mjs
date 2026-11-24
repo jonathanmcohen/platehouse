@@ -19,23 +19,47 @@ const read = (rel) => readFileSync(resolve(ROOT, rel), "utf8");
 const workflows = () => readdirSync(resolve(ROOT, ".github/workflows")).filter((f) => /\.ya?ml$/.test(f));
 const workflow = (f) => read(`.github/workflows/${f}`);
 
-// A uses: line is "owner/repo(/path)?@<40 hex> # vX.Y.Z", the tag it was
-// resolved from, so a moved tag cannot change what a job runs.
+// A uses: value is "owner/repo(/path)?@<40 hex> # vX.Y.Z", the tag it was
+// resolved from, so a moved tag cannot change what a job runs. A local action
+// (./path) is in the repository and needs no pin.
 const PINNED = /^[\w.-]+\/[\w.-]+(\/[\w./-]+)?@[0-9a-f]{40} # v\d+\.\d+\.\d+$/;
+
+// Every uses key, however it is written: plain, quoted, or in a flow mapping
+// ("- { uses: x@v7 }"). The value runs to the end of the line, so the tag
+// comment is part of it, and the closing brace or quote of a flow form is not.
+const USES = /["']?\buses["']?\s*:\s*["']?([^"'\n}]*?)["']?\s*(?:[,}]|$)/gm;
+const unpinned = (text) =>
+  [...text.matchAll(USES)].map((m) => m[1].trim()).filter((v) => !v.startsWith("./") && !PINNED.test(v));
+
+test("the pin scan catches quoted keys, flow mappings and tag-only pins", () => {
+  const bad = [
+    "      - uses: actions/checkout@v7",
+    '      - "uses": actions/checkout@v7',
+    "      - 'uses': actions/checkout@v7.0.1",
+    "      - { uses: actions/checkout@v7 }",
+    '      - { name: x, "uses": "actions/checkout@v7" }',
+    "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b # v7.0.1",
+  ];
+  for (const line of bad) assert.equal(unpinned(line).length, 1, line);
+  const good = [
+    "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+    "      - uses: ./.github/actions/local",
+    "      - { uses: ./local }",
+  ];
+  for (const line of good) assert.deepEqual(unpinned(line), [], line);
+});
 
 test("every uses: in every workflow is a full commit SHA with its tag as a comment", () => {
   const files = workflows();
   assert.ok(files.length >= 6, files.join(", "));
   let seen = 0;
   for (const f of files) {
-    for (const line of workflow(f).split("\n")) {
-      const m = line.match(/^\s*(?:- )?uses: (.*)$/);
-      if (!m) continue;
-      seen++;
-      assert.match(m[1], PINNED, `${f}: ${line.trim()}`);
-    }
+    const t = workflow(f);
+    seen += [...t.matchAll(USES)].length;
+    assert.deepEqual(unpinned(t), [], `${f} has an action that is not pinned to a SHA with its tag`);
   }
-  assert.ok(seen >= 60, `uses: lines found: ${seen}`);
+  assert.ok(seen >= 60, `uses: entries found: ${seen}`);
 });
 
 test("one action is pinned to one SHA and one tag across all workflows", () => {

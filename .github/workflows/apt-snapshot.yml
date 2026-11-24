@@ -61,8 +61,7 @@
 #
 # Permissions: contents: read at the top; refresh alone holds contents: write
 # (the push) and pull-requests: write, and dispatch-ci alone actions: write
-# (starting ci.yml). Actions are pinned to the exact tags the other workflows
-# use. The checkout keeps no token on disk; the push, and the fetch before
+# (starting ci.yml). Actions are pinned to full commit SHAs, with the release tag as a comment (#420). The checkout keeps no token on disk; the push, and the fetch before
 # it, pass the job token to git in the environment of that one command.
 name: apt-snapshot
 

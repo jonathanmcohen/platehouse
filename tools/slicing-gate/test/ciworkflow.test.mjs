@@ -1567,7 +1567,7 @@ test("slicer-image: each job holds only the permissions it uses, within those th
   };
   assert.deepEqual(perms("detect"), { contents: "read", packages: "read" });
   assert.deepEqual(perms("build"), { contents: "read", packages: "write" });
-  assert.deepEqual(perms("stable"), { contents: "read", packages: "write" });
+  assert.deepEqual(perms("stable"), { packages: "write" });
   assert.deepEqual(perms("report-failure"), { issues: "write" });
   const jobs = [...t.slice(t.indexOf("\njobs:\n")).matchAll(/\n {2}([\w-]+):\n/g)].map((m) => m[1]);
   assert.deepEqual(jobs, ["detect", "build", "stable", "report-failure"]);
@@ -1893,8 +1893,10 @@ test("slicer-image: detect logs in to GHCR on daily runs only, and hands its sta
   assert.ok(detect.includes("\n      stable: ${{ steps.pick.outputs.stable }}\n"), "detect outputs stable");
   const stable = jobBlock(slicerText(), "stable");
   assert.ok(stable.includes("needs.detect.outputs.stable == 'true'"), "the stable job runs on detect's decision");
-  assert.doesNotMatch(stepBlock(jobBlock(slicerText(), "build"), "Tag the image"), /MOVE_STABLE/, "the tag step never moves stable");
   const tag = stepBlock(jobBlock(slicerText(), "build"), "Tag the image");
+  // The tag step checks the decision, so an empty one fails the build instead of skipping stable silently.
+  assert.match(tag, /\n {10}MOVE_STABLE: \$\{\{ needs\.detect\.outputs\.stable \}\}\n/);
+  assert.doesNotMatch(tag, /:stable/, "the tag step never moves stable");
   assert.ok(detect.includes("\n      release: ${{ steps.pick.outputs.release }}\n"), "detect outputs release");
   assert.match(tag, /\n {10}RELEASE: \$\{\{ needs\.detect\.outputs\.release \}\}\n/);
 });
@@ -2194,7 +2196,7 @@ const DIGEST = `sha256:${sha("d")}`;
 const tagRun = (env) =>
   runSlicerStep("build", "Tag the image", {
     stubs: DOCKER_TAG_STUB,
-    env: { VERSION: "2.5.1", RUN_NUMBER: "42", RUN_ATTEMPT: "1", MOVE_ORCA: "true", RELEASE: "", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_RELEASE: DIGEST, ...env },
+    env: { VERSION: "2.5.1", RUN_NUMBER: "42", RUN_ATTEMPT: "1", MOVE_ORCA: "true", MOVE_STABLE: "true", RELEASE: "", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_RELEASE: DIGEST, ...env },
   });
 
 // Issue #221: a re-run keeps github.run_number, so attempt 1 keeps
@@ -2346,6 +2348,7 @@ for (const [name, env, want] of [
   ["a prerelease run records the run tag and the release version", { MOVE_ORCA: "false", RELEASE: "0.2.0-rc.1" }, "orca-2.5.1-r42, 0.2.0-rc.1"],
   ["a version tag read back wrong records the two version tags", { D_ORCA: `sha256:${sha("e")}` }, "orca-2.5.1, orca-2.5.1-r42"],
   ["no digest records nothing", { DIGEST: "" }, undefined],
+  ["no stable decision records nothing", { MOVE_STABLE: "" }, undefined],
 ]) {
   test(`slicer-image tag records what it tagged: ${name}`, () => {
     const r = tagRun(env);
@@ -2373,6 +2376,8 @@ for (const [name, env, want] of [
   ["a run tag read back at another digest leaves stable alone", { D_RUN: `sha256:${sha("e")}` }, { stable: false }],
   ["no digest fails before any tag", { DIGEST: "" }, { stable: false, noCall: true }],
   ["a malformed version fails before any tag", { VERSION: "2.5.1-beta" }, { stable: false, noCall: true }],
+  ["no stable decision from detect fails before any tag", { MOVE_STABLE: "" }, { stable: false, noCall: true }],
+  ["a stable decision that is not true or false fails before any tag", { MOVE_STABLE: "yes" }, { stable: false, noCall: true }],
 ]) {
   test(`slicer-image tag: ${name}`, () => {
     const r = tagRun(env);
@@ -2398,6 +2403,11 @@ test("slicer-image: the stable job runs after a successful build that detect sai
   assert.ok(stepIds(stable).indexOf("login") < stepIds(stable).indexOf("move"), "log in before the move");
   assert.equal((stable.match(/docker buildx imagetools create/g) ?? []).length, 1, "one create, for stable");
   assert.doesNotMatch(move, /\n {8}(if|continue-on-error):/, "nothing softens the move");
+  // A failed move keeps its log tail for the issue, as the build does.
+  assert.match(stepBlock(stable, "Keep the failing step's log tail"), /failure\/stable\.txt/);
+  assert.match(stepBlock(stable, "Upload the log tail"), /\n {10}name: failure-stable\n {10}path: failure\/stable\.txt\n/);
+  const issue = stepBlock(jobBlock(slicerText(), "report-failure"), "Open or update the issue");
+  assert.ok(issue.includes("failure/detect.txt failure/build.txt failure/stable.txt"), "the issue reads the stable tail");
 });
 
 const stableRun = (env) =>

@@ -4,7 +4,8 @@
 # docs/. The ci workflow's "Docs build" job stays the pull-request check; this
 # workflow only publishes what has landed on main. It runs on a push to main
 # that changes docs/, apps/docs/, apps/web/public/ (the icons the site
-# serves from it), the lockfile or this file, and by hand
+# serves from it), package.json, pnpm-workspace.yaml, the lockfile,
+# .node-version or this file, and by hand
 # (Actions, docs-pages, Run workflow) from main only: a run started on any
 # other branch skips both jobs.
 #

@@ -51,7 +51,7 @@
 # (or an rc tag that did not exist before cannot be removed again) can they
 # differ, and the run's error says so. Either way rc fixes itself on the next
 # successful run of release or slicer-image, or when this workflow is run by
-# hand. Actions are pinned to the exact tags release.yml uses.
+# hand. Actions are pinned to full commit SHAs, with the release tag as a comment (#420).
 name: rc-tag
 
 on:
