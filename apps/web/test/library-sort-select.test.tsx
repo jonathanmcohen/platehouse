@@ -22,7 +22,9 @@
 //   Clear selection. Escape leaves Select mode and clears the selection,
 //   unless another overlay that takes Escape is open: the upload dialog
 //   (mounted beside the library) or the narrow-screen menu. Escape closes
-//   that overlay only (PR #246 review).
+//   that overlay only (PR #246 review). Escape in a text field (the search
+//   box, a textarea, a select, a contenteditable element) is the field's:
+//   Select mode and the selection stay (issue #446).
 // - The selection holds only models the search and filters show (0.1.0-rc.2
 //   live check): a new search, filter or sort, or an action that takes a
 //   model out of the view, takes it out of the selection and says how many
@@ -593,6 +595,62 @@ describe("Select mode", () => {
     expect(document.activeElement).toBe(button("Select"));
     await selectMode();
     expect(statusText()).toBe("No models selected");
+  });
+
+  describe("Escape in a text field is the field's, not Select mode's (issue #446)", () => {
+    const fields: Array<[string, () => HTMLElement]> = [
+      [
+        "the top bar's search box",
+        () => {
+          const input = document.createElement("input");
+          input.type = "search";
+          input.id = "ph-q";
+          return input;
+        },
+      ],
+      ["a textarea", () => document.createElement("textarea")],
+      ["a select", () => document.createElement("select")],
+      [
+        "a contenteditable element",
+        () => {
+          const div = document.createElement("div");
+          div.setAttribute("contenteditable", "true");
+          return div;
+        },
+      ],
+    ];
+    test.each(fields)("Escape in %s keeps Select mode and the selection", async (_name, make) => {
+      stubServer(cards(3));
+      await render("/");
+      await selectMode();
+      await click(checkbox("Model 001"));
+      await click(checkbox("Model 002"));
+      const field = make();
+      document.body.appendChild(field);
+      try {
+        await key(field, "Escape");
+      } finally {
+        field.remove();
+      }
+      expect(button("Select").getAttribute("aria-pressed")).toBe("true");
+      expect(statusText()).toBe("2 models selected");
+    });
+
+    test('contenteditable="false" is not a text field: Escape there leaves Select mode', async () => {
+      stubServer(cards(3));
+      await render("/");
+      await selectMode();
+      await click(checkbox("Model 001"));
+      const div = document.createElement("div");
+      div.setAttribute("contenteditable", "false");
+      document.body.appendChild(div);
+      try {
+        await key(div, "Escape");
+      } finally {
+        div.remove();
+      }
+      expect(button("Select").getAttribute("aria-pressed")).toBe("false");
+    });
   });
 
   describe("with another overlay open, Escape is that overlay's (PR #246 review)", () => {

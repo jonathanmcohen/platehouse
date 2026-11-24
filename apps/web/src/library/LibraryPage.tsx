@@ -445,6 +445,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     if (!selecting || dialogOpen) return;
     function onKey(event: KeyboardEvent) {
       if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Escape in a text field is the field's (it clears the search box).
+      if (isEditable(event.target)) return;
       if (otherOverlayOpen(event)) return;
       stopSelecting();
     }
@@ -858,6 +860,28 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       ) : null}
     </DropZone>
   );
+}
+
+/** Inputs that take no typed text: a card's checkbox is one, and Escape there is Select mode's. */
+const NON_TEXT_INPUTS = new Set([
+  "checkbox",
+  "radio",
+  "button",
+  "submit",
+  "reset",
+  "image",
+  "file",
+  "range",
+  "color",
+]);
+
+/** A field the person types in or picks from: Escape there belongs to the field. */
+function isEditable(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target instanceof HTMLInputElement) return !NON_TEXT_INPUTS.has(target.type);
+  if (target.closest("textarea, select") !== null) return true;
+  const editable = target.closest("[contenteditable]");
+  return editable !== null && editable.getAttribute("contenteditable") !== "false";
 }
 
 /**
