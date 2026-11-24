@@ -548,12 +548,13 @@ describe("a description found unproven", () => {
 
   test("is not read again by the next converter's step", async () => {
     const m = await foundUnproven();
+    const others = await descriptionsRepo(env.db).candidates(null, 10_000);
+    expect(others.map((c) => c.modelId)).not.toContain(m.modelId);
     const second = recordingRun();
     const result = await runToEnd(second.run);
     expect(second.read).not.toContain(m.fileId);
-    expect(result).not.toBeNull();
-    const ids = (await descriptionsRepo(env.db).candidates(null, 10_000)).map((c) => c.modelId);
-    expect(ids).not.toContain(m.modelId);
+    // Counted nowhere: the run checked exactly the other candidates.
+    expect(result?.checked).toBe(others.length);
     expect((await row(m.modelId)).descriptionMd).toBe(BY_HAND);
   });
 
@@ -580,6 +581,21 @@ describe("a description found unproven", () => {
     const second = recordingRun();
     await runToEnd(second.run);
     expect(second.read).toContain(m.fileId);
+  });
+
+  test("is a candidate again when it has no stored .3mf left", async () => {
+    const m = await foundUnproven();
+    await env.db
+      .updateTable("blobs")
+      .set({ state: "deleting" })
+      .where(
+        "id",
+        "in",
+        env.db.selectFrom("files").select("blobId").where("id", "=", m.fileId),
+      )
+      .execute();
+    const ids = (await descriptionsRepo(env.db).candidates(null, 10_000)).map((c) => c.modelId);
+    expect(ids).toContain(m.modelId);
   });
 
   test("is not marked when its file could not be read, and is checked again", async () => {

@@ -230,12 +230,14 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
         .where("descriptionMd", "<>", "")
         .where("purgeStartedAt", "is", null)
         // Not one already found unproven against its newest .3mf with this
-        // very text; a new .3mf or an edit makes it a candidate again.
+        // very text; a new .3mf or an edit makes it a candidate again. A
+        // model with no stored .3mf left has no newest file, which is not the
+        // marked one, so it stays a candidate (is not distinct from, not =).
         .where(
           sql<boolean>`not (
             description_unproven_file_id is not null
             and description_unproven_sha256 = encode(sha256(convert_to(description_md, 'UTF8')), 'hex')
-            and description_unproven_file_id = (
+            and description_unproven_file_id is not distinct from (
               select f.id from files f
               join blobs b on b.id = f.blob_id
               where f.model_id = models.id and f.kind = '3mf' and b.state = 'stored'
