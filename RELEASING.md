@@ -3,8 +3,9 @@
 This page is for maintainers. Pushing a `v*` tag releases Platehouse: `v0.1.1` is a release,
 `v0.2.0-rc.1` a release candidate. For each tag, `release.yml` publishes the app image
 (`ghcr.io/jonathanmcohen/platehouse`), `slicer-image.yml` publishes the slicer image
-(`ghcr.io/jonathanmcohen/platehouse-slicer`), and `rc-tag.yml` then moves the `rc` tags. All three
-are in `.github/workflows/`.
+(`ghcr.io/jonathanmcohen/platehouse-slicer`), and `rc-tag.yml` then moves the `rc` tags. Once
+both images of a release are out, `release-notes.yml` opens a draft GitHub Release. All four are
+in `.github/workflows/`.
 
 ## Cutting a release
 
@@ -17,10 +18,26 @@ are in `.github/workflows/`.
    git push origin vX.Y.Z
    ```
 
-3. Wait for the release, slicer-image and rc-tag runs to succeed.
+3. Wait for the release, slicer-image and rc-tag runs to succeed. For a release (not a
+   candidate), once both images are out, release-notes opens a draft Release, "Platehouse X.Y.Z",
+   with the images, their digests and the changelog links filled in. If no draft appears, run
+   release-notes by hand from main with the tag (Actions, release-notes, Run workflow).
 4. Publish any security advisories the release fixes, with `X.Y.Z` as the patched version, once
    both images are out.
-5. Check that the issues the release fixes are closed.
+5. Open the draft. Write Summary, What's new and Known issues, check Before you upgrade, fill in
+   Security from the advisories you just published, and remove every TODO comment. Then publish
+   it:
+
+   ```sh
+   latest="$(gh api --paginate repos/jonathanmcohen/platehouse/git/matching-refs/tags/v --jq '.[].ref' | sed -n 's#^refs/tags/##p' | node .github/scripts/release-gate.mjs latest vX.Y.Z)"
+   gh release edit vX.Y.Z --draft=false --latest="$latest"
+   ```
+
+   `latest` is true only for the highest release. A backport gets a page too, published with
+   `--latest=false`. Because the page is published after the advisories, a public page never
+   names an unpublished advisory.
+
+6. Check that the issues the release fixes are closed.
 
 ## The release gate
 

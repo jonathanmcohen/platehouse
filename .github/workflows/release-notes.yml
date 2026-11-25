@@ -1,0 +1,259 @@
+# Release notes workflow (#496): opens a draft GitHub Release, "Platehouse
+# X.Y.Z", once both images of a plain vX.Y.Z release tag are published.
+#
+# The draft holds the images, their digests and platforms, the OrcaSlicer
+# version, the CHANGELOG's Before you upgrade list and the changelog links,
+# from .github/scripts/release-notes.mjs and .github/release-notes-template.md.
+# The sections only the maintainer can write are TODO comments. Nothing here
+# publishes the Release: the maintainer completes it and publishes it, as
+# RELEASING.md, "Cutting a release", says.
+#
+# How. Every run works the answer out again from durable state, never from the
+# run that triggered it or its result:
+#   - the tag: a plain vX.Y.Z (not an rc, not a throwaway tag) that is pushed,
+#     under refs/tags/v in the repository;
+#   - no Release for it yet: the Releases list, which holds drafts too,
+#     because the job token can push. An existing Release is left alone;
+#   - both images published: platehouse:X.Y.Z and platehouse-slicer:X.Y.Z
+#     exist in the registry. "not found" is the only answer that means a tag
+#     does not exist, as in rc-tag.yml; any other error fails the run.
+# So whichever of release and slicer-image finishes last opens the draft, a
+# failed run opens nothing, and the runs after it find the Release and stop.
+#
+# When it runs: after every run of release or slicer-image finishes, whatever
+# its result, and by hand from main with the tag (workflow_dispatch). Runs for
+# the same tag go one at a time and are never cancelled part way, so two runs
+# finishing together cannot open two drafts. GitHub runs workflow_run only for
+# a workflow file on the default branch, so this does nothing until it
+# reaches main.
+#
+# Safety. It checks out main, never the triggering run's commit, and refuses a
+# run by hand from any other branch, so only reviewed code runs with
+# contents: write. The tag, typed by hand or from the triggering run, is
+# checked to be vX.Y.Z before anything else uses it, and no expression is
+# expanded inside a script: values reach the scripts through env.
+#
+# Advisories. The draft is opened before any advisory the release fixes is
+# published, and its Security section is a TODO comment. The maintainer
+# publishes the advisories first, then fills in Security and publishes the
+# Release, so a public Release never names an unpublished advisory.
+# Actions are pinned to full commit SHAs, with the release tag as a comment
+# (#420), the same pins as rc-tag.yml.
+name: release-notes
+
+on:
+  workflow_run:
+    workflows: [release, slicer-image]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to open a draft Release for, such as v0.1.2
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One run at a time for each tag; a run in progress is never cancelled.
+concurrency:
+  group: release-notes-${{ github.event.workflow_run.head_branch || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  APP_IMAGE: ghcr.io/jonathanmcohen/platehouse
+  SLICER_IMAGE: ghcr.io/jonathanmcohen/platehouse-slicer
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  draft:
+    name: Open a draft Release once both images are out
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      # A workflow_run run's ref is the default branch. A run by hand from
+      # any other branch would run unreviewed code with contents: write.
+      - name: Run only from main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::${REF} is not main; release-notes runs only from main, so no draft Release is opened"
+            exit 1
+          fi
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The tag: the input on a run by hand, else the triggering run's branch,
+      # which is the tag for a tag push. Only a pushed vX.Y.Z with no Release
+      # yet goes on. The tag is checked before anything else reads it.
+      - name: Which tag
+        id: tag
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          # encode: $1 as workflow-command text (% CR LF encoded).
+          encode() {
+            local s="${1//%/%25}"
+            s="${s//$'\r'/%0D}"
+            printf '%s' "${s//$'\n'/%0A}"
+          }
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="$RUN_BRANCH"
+          fi
+          if [ "$(node .github/scripts/release-notes.mjs is-release-tag "$tag")" != "true" ]; then
+            echo "::notice::$(encode "$tag") is not a vX.Y.Z release tag, so no draft Release is opened (daily slicer runs, rc tags and throwaway tags stop here)"
+            echo "go=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          refs="$(gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" --jq '.[].ref')"
+          if ! grep -qxF "refs/tags/${tag}" <<<"$refs"; then
+            echo "::notice::${tag} is not a pushed tag, so no draft Release is opened"
+            echo "go=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          releases="$(gh api --paginate "repos/${REPO}/releases?per_page=100" --jq '.[].tag_name')"
+          if grep -qxF "$tag" <<<"$releases"; then
+            echo "::notice::A Release for ${tag} exists already (a draft counts); it is left alone"
+            echo "go=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "go=true"
+            echo "tag=${tag}"
+            echo "version=${tag#v}"
+          } >>"$GITHUB_OUTPUT"
+          echo "${tag}: a pushed release tag with no Release yet"
+
+      # Both version tags must be in the registry. The run of whichever
+      # workflow finishes last finds both and goes on.
+      - name: Are both images out
+        id: images
+        if: ${{ steps.tag.outputs.go == 'true' }}
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          # check: sets found, and digest to $1's manifest digest when found.
+          # Sets variables rather than printing, so an error exits the step.
+          check() {
+            local out status=0
+            out="$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}' 2>&1)" || status=$?
+            if [ "$status" -eq 0 ] && [[ "$out" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              found=true
+              digest="$out"
+            elif [ "$status" -ne 0 ] && grep -q ': not found' <<<"$out"; then
+              found=false
+              digest=""
+            else
+              printf '%s\n' "$out"
+              echo "::error::could not tell whether $1 exists (exit ${status}); no draft Release is opened"
+              exit 1
+            fi
+          }
+          check "${APP_IMAGE}:${VERSION}"
+          app_found="$found"
+          app_digest="$digest"
+          check "${SLICER_IMAGE}:${VERSION}"
+          slicer_found="$found"
+          slicer_digest="$digest"
+          if [ "$app_found" != true ]; then
+            echo "::notice::${APP_IMAGE}:${VERSION} is not published yet; the draft waits for the release run, which runs this workflow again when it finishes"
+          fi
+          if [ "$slicer_found" != true ]; then
+            echo "::notice::${SLICER_IMAGE}:${VERSION} is not published yet; the draft waits for the slicer-image run, which runs this workflow again when it finishes"
+          fi
+          if [ "$app_found" != true ] || [ "$slicer_found" != true ]; then
+            echo "go=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "go=true"
+            echo "app_digest=${app_digest}"
+            echo "slicer_digest=${slicer_digest}"
+          } >>"$GITHUB_OUTPUT"
+          echo "${APP_IMAGE}:${VERSION} is ${app_digest}"
+          echo "${SLICER_IMAGE}:${VERSION} is ${slicer_digest}"
+
+      # The body from the images, the tags and CHANGELOG.md at the tag; then
+      # the draft. The app row lists latest only when latest is this build.
+      - name: Write the draft
+        id: draft
+        if: ${{ steps.images.outputs.go == 'true' }}
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          APP_DIGEST: ${{ steps.images.outputs.app_digest }}
+          SLICER_DIGEST: ${{ steps.images.outputs.slicer_digest }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          app_json="${RUNNER_TEMP}/app-image.json"
+          slicer_json="${RUNNER_TEMP}/slicer-image.json"
+          changelog="${RUNNER_TEMP}/CHANGELOG.md"
+          notes="${RUNNER_TEMP}/release-notes.md"
+          docker buildx imagetools inspect "${APP_IMAGE}:${VERSION}" --format '{{json .Image}}' >"$app_json"
+          docker buildx imagetools inspect "${SLICER_IMAGE}:${VERSION}" --format '{{json .Image}}' >"$slicer_json"
+          status=0
+          out="$(docker buildx imagetools inspect "${APP_IMAGE}:latest" --format '{{.Manifest.Digest}}' 2>&1)" || status=$?
+          if [ "$status" -eq 0 ] && [[ "$out" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            if [ "$out" = "$APP_DIGEST" ]; then app_latest=true; else app_latest=false; fi
+          elif [ "$status" -ne 0 ] && grep -q ': not found' <<<"$out"; then
+            app_latest=false
+          else
+            printf '%s\n' "$out"
+            echo "::error::could not read ${APP_IMAGE}:latest (exit ${status}); no draft Release is opened"
+            exit 1
+          fi
+          refs="$(gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" --jq '.[].ref')"
+          tags="$(printf '%s\n' "$refs" | sed -n 's#^refs/tags/##p')"
+          previous="$(printf '%s\n' "$tags" | node .github/scripts/release-notes.mjs previous "$TAG")"
+          gh api -H 'Accept: application/vnd.github.raw' "repos/${REPO}/contents/CHANGELOG.md?ref=${TAG}" >"$changelog"
+          PREVIOUS="$previous" REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" APP_LATEST="$app_latest" \
+            node .github/scripts/release-notes.mjs body .github/release-notes-template.md \
+            "$changelog" "$app_json" "$slicer_json" >"$notes"
+          gh release create "$TAG" --repo "$REPO" --draft --verify-tag --title "Platehouse ${VERSION}" --notes-file "$notes"
+          highest="$(printf '%s\n' "$tags" | node .github/scripts/release-gate.mjs latest "$TAG")"
+          if [ "$highest" = true ]; then
+            publish="${TAG} is the highest release: publish with \`--latest=true\`."
+          else
+            publish="${TAG} is not the highest release (a backport): publish with \`--latest=false\`."
+          fi
+          {
+            echo "### Draft Release: Platehouse ${VERSION}"
+            echo ""
+            echo "- ${APP_IMAGE}:${VERSION}: \`${APP_DIGEST}\`"
+            echo "- ${SLICER_IMAGE}:${VERSION}: \`${SLICER_DIGEST}\`"
+            echo ""
+            echo "${publish} Complete the draft and publish it as RELEASING.md, \"Cutting a release\", says."
+          } >>"$GITHUB_STEP_SUMMARY"
