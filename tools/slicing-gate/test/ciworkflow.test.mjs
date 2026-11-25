@@ -1530,7 +1530,9 @@ function workflowEnv(t) {
 // the step kept in $RUNNER_TEMP/logs and the named files from its directory.
 // runRcStep runs a step of rc-tag.yml the same way.
 const runSlicerStep = (job, stepName, opts) => runWorkflowStep(SLICER, job, stepName, opts);
-function runWorkflowStep(workflow, job, stepName, { env = {}, stubs = [], cwd, setup, files = [] } = {}) {
+// A workflow with no top-level env: block, as docs-pages.yml, opts out with
+// noWorkflowEnv; for every other workflow a missing env: block fails here.
+function runWorkflowStep(workflow, job, stepName, { env = {}, stubs = [], cwd, setup, files = [], noWorkflowEnv = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "workflow-step-"));
   try {
     const work = cwd ?? join(dir, "work");
@@ -1547,8 +1549,7 @@ function runWorkflowStep(workflow, job, stepName, { env = {}, stubs = [], cwd, s
       encoding: "utf8",
       env: {
         PATH: process.env.PATH,
-        // docs-pages.yml has no top-level env: block.
-        ...(t.includes("\nenv:\n") ? workflowEnv(t) : {}),
+        ...(noWorkflowEnv ? {} : workflowEnv(t)),
         RUNNER_TEMP: dir,
         GITHUB_OUTPUT: out,
         GITHUB_STEP_SUMMARY: summary,
@@ -3848,6 +3849,7 @@ const DOCS_SHA = "a".repeat(40);
 // The step reads the root package.json's version, from VERSION.
 const runDocsStep = (env) =>
   runWorkflowStep(DOCS_PAGES, "build", "Which ref to publish", {
+    noWorkflowEnv: true,
     stubs: [...DOCS_GH_STUB, ...DOCS_GIT_STUB],
     setup: (work) => {
       withGateScripts(work);
@@ -3887,6 +3889,19 @@ test("docs-pages: the deploy job runs only when the build decided to publish", (
   assert.match(stepBlock(build, "Which ref to publish"), /\n {8}id: ref\n/);
 });
 
+// Each ref builds in its own group, so a later rc or throwaway tag's run never
+// drops a release tag's waiting run; deploys go one at a time and are never
+// cancelled.
+test("docs-pages: builds are grouped by ref, and deploys share one group that is never cancelled", () => {
+  const t = docsText();
+  assert.doesNotMatch(t, /^concurrency:/m, "no workflow-level group");
+  assert.ok(jobBlock(t, "build").includes("\n    concurrency:\n      group: docs-pages-build-${{ github.ref }}\n"), jobBlock(t, "build"));
+  assert.ok(
+    jobBlock(t, "deploy").includes("\n    concurrency:\n      group: docs-pages-deploy\n      cancel-in-progress: false\n"),
+    jobBlock(t, "deploy"),
+  );
+});
+
 // A run that publishes nothing skips Install, so the pnpm store is never on
 // disk, and setup-node's post step fails the job on a cache miss.
 test("docs-pages: Set up Node keeps no cache, so a run that publishes nothing stays green", () => {
@@ -3912,9 +3927,8 @@ for (const [name, env] of [
   test(`docs-pages which ref: ${name} publishes`, () => {
     const r = runDocsStep(env);
     assert.equal(r.status, 0, r.log);
-    assert.equal(r.outputs.publish, "true");
-    assert.ok(r.outputs.ref, "says what it publishes");
-    assert.notEqual(r.summary.trim(), "");
+    assert.deepEqual(r.outputs, { publish: "true" }, "publish is the one output, and the deploy job reads it");
+    assert.ok(r.summary.includes(env.REF), r.summary);
   });
 }
 
@@ -3935,8 +3949,34 @@ for (const [name, tag] of [
 test("docs-pages which ref: a run by hand from main ahead of the highest release refuses, naming both", () => {
   const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: "0.1.2" });
   assert.equal(r.status, 1, r.log);
-  assert.match(r.log, /::error::.*0\.1\.2.*v0\.1\.1/);
+  assert.match(r.log, /::error::.*0\.1\.2.*ahead of the highest release \(v0\.1\.1\)/);
+  assert.doesNotMatch(r.log, /behind/);
   assert.notEqual(r.outputs.publish, "true");
+});
+
+// A release can be tagged on a release/** branch before it merges to main,
+// and then main is behind it, not ahead.
+for (const [name, version, tags] of [
+  ["a release tagged before it reached main", "0.1.0", ["v0.1.0", "v0.1.1"]],
+  ["a version that never had a tag", "0.0.9", ["v0.1.0", "v0.1.1"]],
+]) {
+  test(`docs-pages which ref: a run by hand from main behind the highest release refuses and says behind: ${name}`, () => {
+    const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: version, REFS: refs(...tags) });
+    assert.equal(r.status, 1, r.log);
+    assert.match(r.log, new RegExp(`::error::.*${version.replaceAll(".", "\\.")}.*behind the highest release \\(v0\\.1\\.1\\)`));
+    assert.doesNotMatch(r.log, /ahead/);
+    assert.notEqual(r.outputs.publish, "true");
+  });
+}
+
+test("docs-pages which ref: a run by hand from main with no release yet says main is ahead", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: "0.1.0", REFS: refs("v0.1.0-rc.1") });
+  assert.equal(r.status, 1, r.log);
+  assert.match(r.log, /::error::.*0\.1\.0.*ahead of the highest release \(none\)/);
+});
+
+test("the step harness refuses a workflow without an env: block unless the caller opts out", () => {
+  assert.throws(() => runWorkflowStep(DOCS_PAGES, "build", "Which ref to publish", {}), /a top-level env: block/);
 });
 
 test("docs-pages which ref: a run by hand from main with a version that is not X.Y.Z refuses", () => {

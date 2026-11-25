@@ -51,14 +51,6 @@ on:
 permissions:
   contents: read
 
-# One publish at a time, and a deploy in progress is never cancelled. A run
-# that starts while another is going waits for it; if a third starts in the
-# meantime, GitHub drops the waiting one in favour of the newest, which
-# decides again from its own ref.
-concurrency:
-  group: docs-pages
-  cancel-in-progress: false
-
 defaults:
   run:
     shell: bash
@@ -71,6 +63,11 @@ jobs:
     permissions:
       contents: read
       pages: read
+    # One build at a time for each ref. A run of another ref, such as an rc
+    # or throwaway tag pushed just after a release tag, never drops the
+    # release tag's waiting run.
+    concurrency:
+      group: docs-pages-build-${{ github.ref }}
     outputs:
       publish: ${{ steps.ref.outputs.publish }}
     steps:
@@ -132,7 +129,12 @@ jobs:
           highest="$(printf '%s\n' "$tags" | node .github/scripts/release-gate.mjs highest)"
           if [ "$latest" != "true" ]; then
             if [ "$REF" = "refs/heads/main" ]; then
-              echo "::error::main's package.json says ${version}, but the highest release is ${highest:-none}: main is ahead of the release, so nothing is published. Publish a release's docs from its tag."
+              # Ahead when main's version would be the highest release,
+              # behind when a higher release exists (one tagged on a
+              # release/** branch before it reached main).
+              with_main="$(printf '%s\n' "$tags" "$tag" | node .github/scripts/release-gate.mjs highest)"
+              if [ "$with_main" = "$tag" ]; then where="ahead of"; else where="behind"; fi
+              echo "::error::main's package.json says ${version}, which is ${where} the highest release (${highest:-none}), so nothing is published. Publish a release's docs from its tag."
               exit 1
             fi
             if [ "$EVENT" = "push" ]; then
@@ -151,10 +153,7 @@ jobs:
               exit 1
             fi
           fi
-          {
-            echo "publish=true"
-            echo "ref=${REF}"
-          } >>"$GITHUB_OUTPUT"
+          echo "publish=true" >>"$GITHUB_OUTPUT"
           echo "Publishing the docs site from ${REF} (${tag}, the highest release)." >>"$GITHUB_STEP_SUMMARY"
           echo "${REF}: publishing ${tag}"
       - name: Configure Pages
@@ -189,6 +188,12 @@ jobs:
     permissions:
       pages: write
       id-token: write
+    # One deploy at a time, and a deploy in progress is never cancelled. A
+    # waiting deploy can be replaced only by a newer run's deploy, which
+    # publishes too.
+    concurrency:
+      group: docs-pages-deploy
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
