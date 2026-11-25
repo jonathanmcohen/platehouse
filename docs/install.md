@@ -21,10 +21,13 @@ This page walks through a first install with the example files in the repository
   sandbox, which needs it. The slicer checks the sandbox when it starts and refuses that work when
   the kernel is too old; the files then keep their icon, and say why. The slicer still reports
   itself healthy, so `docker compose ps` does not show this: check the sandbox on the Activity page
-  after the first start (see [7. Sign in](#7-sign-in)). Setting `SLICER_ALLOW_UNSANDBOXED=true` on
-  the slicer lets estimates and STEP conversions run without the sandbox on an older kernel. It
-  never covers pictures or OpenSCAD renders, which need the sandbox. When the kernel is upgraded
-  and the slicer restarts, the files it refused are picked up again by themselves.
+  after the first start (see [7. Sign in](#7-sign-in)). The fix is a newer kernel. Setting
+  `SLICER_ALLOW_UNSANDBOXED=true` on the slicer lets estimates and STEP conversions run without the
+  sandbox on an older kernel, which means slicing and converting untrusted files with no sandbox
+  around OrcaSlicer and the STEP converter; read
+  [Security](./security.md#the-slicer-sandbox) first. It never covers pictures or OpenSCAD renders,
+  which need the sandbox. When the kernel is upgraded and the slicer restarts, the files it refused
+  are picked up again by themselves.
 - **An S3-compatible bucket** with an access key that can read, write and delete in it. See
   [Storage](./storage.md).
 - **An OpenID Connect provider** with a client for Platehouse and a group for the people who

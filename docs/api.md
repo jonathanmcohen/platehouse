@@ -55,7 +55,8 @@ The list shows each token's name, its first 8 characters, who made it and when i
 Tokens are made and revoked in Settings only, never through the API. Making a token needs a
 sign-in from the last 5 minutes, and so does revoking a token someone else made; Settings asks you
 to sign in again first. One session may make at most 10 tokens in any 10 minutes. A token made
-with Platehouse 0.1.0 shows "Made by an unknown user". See
+with Platehouse 0.1.0 shows
+"Made by an unknown user (before Platehouse recorded who made each token)". See
 [Security](./security.md#api-tokens) and [Rate limits](./security.md#rate-limits).
 
 Send the token on every request in the `Authorization` header, after the word `Bearer`:

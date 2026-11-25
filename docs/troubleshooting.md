@@ -61,8 +61,11 @@ and never logs a secret, token or slicer link.
   still to receive, so a 507 can come while the disk still shows room. Nothing was saved.
   The server logs each refusal with the session or token it was for:
   - For `UPLOAD_TEMP_MAX_BYTES`, the line also names the three users holding the most bytes.
-    Free space on that disk or raise `UPLOAD_TEMP_MAX_BYTES` in `.env`, or wait for their uploads to finish
-    or be removed.
+    Free space on that disk or raise `UPLOAD_TEMP_MAX_BYTES` in `.env`, or wait for their uploads
+    to finish or be removed. A `docker-compose.yml` copied before the example passed this setting
+    on, such as the one shipped with 0.1.1, ignores it in `.env`: add
+    `UPLOAD_TEMP_MAX_BYTES: ${UPLOAD_TEMP_MAX_BYTES:-4294967296}` under the `platehouse` service's
+    `environment:` first (see [Configuration](./configuration.md)).
   - For the 10,000 uploads, it names the three users holding the most uploads. Finished uploads
     are kept for a day after their import, so this clears as they age out.
   - For the free space or inodes, it names no one: free space on the disk under `TMP_DIR`.
@@ -118,13 +121,22 @@ inbox waits and tries again, and the log says an outage started and ended.
   default printer or the order of My printers starts no slicing.
 - **"The slicer could not slice this plate."** after several tries: the app could not reach the
   slicer, or the slice was lost. Check the slicer, then press **Retry**.
-- **"The slicer could not slice this plate."** with **"The slicer's answer is not one slicer
-  contract 2 allows"** under **Details**: the slicer image is older than the app, for example a
-  0.1.0 slicer with a 0.1.1 app. Set both image tags in `docker-compose.yml` to the same version,
-  then pull and recreate both, as [Upgrading](./backups-and-upgrades.md#upgrading) shows.
+- **The slicer image is older than the app**, for example a 0.1.0 slicer with a 0.1.1 app. The app
+  cannot read the slicer's answers, so:
+  - new files get no estimates, and the app's log has a line such as
+    `queues: after ingesting file <id>: The slicer's answer is not one slicer contract 2 allows`;
+  - the **Slicer** section of the [Activity](./using/activity.md#the-slicer-section) page says
+    **Not reachable**, with no sandbox line, and **My printers** in Settings says "The slicer
+    cannot be reached, so no printer can be added right now.";
+  - a plate that was already waiting for an estimate fails with "The slicer could not slice this
+    plate.", with "The slicer's answer is not one slicer contract 2 allows" under **Details**.
+
+  Set both image tags in `docker-compose.yml` to the same version, then pull and recreate both, as
+  [Upgrading](./backups-and-upgrades.md#upgrading) shows.
 - **The slicer is unreachable.** Check that the app and the slicer share the `platehouse-slicer`
   network and that `SLICER_URL` names the slicer's container and port
-  (`http://platehouse-slicer:8080` in the example).
+  (`http://platehouse-slicer:8080` in the example), or the slicer image may be older than the app
+  (see above).
 - **"Estimates are off on this server: its kernel is older than Linux 6.12."** or **"Estimates are
   off on this server: its sandbox check failed."**: the slicer's sandbox is off, so it refused to
   slice. The plate is recorded as failed once, with that sentence under **Details**, and is not
@@ -166,12 +178,15 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
   settings; the files are picked up again once the check passes.
 - **"STEP previews are off on this server: its kernel is older than Linux 6.12."**: the same
   kernel limit, for converting a STEP file to the mesh its 3D preview and picture are made from.
-  Upgrade the kernel, or set
-  `SLICER_ALLOW_UNSANDBOXED=true` on the slicer to convert STEP files without the sandbox. The
-  files are picked up again once conversions can run.
+  Upgrade the host's kernel to Linux 6.12 or newer, or, if you accept converting STEP files
+  without the sandbox, set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer (see
+  [Security](./security.md#the-slicer-sandbox) for what that gives up). The files are picked up
+  again once conversions can run.
 - **"STEP previews are off on this server: its sandbox check failed."**: the same as the sandbox
-  check above, for a STEP file. Fix the slicer's settings, or set `SLICER_ALLOW_UNSANDBOXED=true`
-  on the slicer to convert STEP files without the sandbox.
+  check above, for a STEP file. First check you kept the example's hardening settings for the
+  slicer, and restore them. Only if you accept converting STEP files without the sandbox, set
+  `SLICER_ALLOW_UNSANDBOXED=true` on the slicer (see
+  [Security](./security.md#the-slicer-sandbox)).
 - **"The slicer is not answering. The render will need to be started again."**: the slicer was down
   for over 2 hours. Bring it back and upload the file again.
 - **"The slicer is not answering, so the preview picture could not be made. It will be tried again

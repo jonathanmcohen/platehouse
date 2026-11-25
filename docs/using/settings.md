@@ -59,7 +59,8 @@ See [Printers and estimates](./printers-and-estimates.md#my-printers).
 ## API tokens
 
 Create, name and revoke API tokens. A new token is shown once, in a dialog with **Copy**. Each
-token says who made it; a token made with Platehouse 0.1.0 says "Made by an unknown user".
+token says who made it; a token made with Platehouse 0.1.0 says
+"Made by an unknown user (before Platehouse recorded who made each token)".
 Creating one needs a sign-in from the last 5 minutes, and so does revoking a token someone else
 made, or one made by an unknown user. If yours is older, the page says so, and **Sign in again**
 brings you back here after the sign-in. Revoking a token you made needs only a live session. See
@@ -73,9 +74,13 @@ and can revoke the tokens they made. Use it when someone should no longer have a
 made, with how many of each.
 
 1. Press **Sign out** beside the person.
-2. The **Sign out everywhere?** dialog asks first. To revoke their tokens too, tick **Also revoke
-   the API tokens they made** (the box gives their number).
+2. The **Sign out everywhere?** dialog asks first. To revoke their tokens too, tick its box that
+   reads "Also revoke the N API tokens they made" (N is how many they made).
 3. Press **Sign out everywhere**.
+
+Tokens made with 0.1.0 have no recorded maker, so Sign out everywhere never revokes them; revoke
+those by hand in the token list (see [Sign-in](../sign-in.md#the-allowed-group), step 3 of
+cutting someone off).
 
 Signing someone else out needs a sign-in from the last 5 minutes. If yours is older, the section
 says so, and **Sign in again** brings you back here after the sign-in. Signing yourself out needs

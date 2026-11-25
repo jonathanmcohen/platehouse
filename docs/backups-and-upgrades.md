@@ -154,15 +154,23 @@ location if it is off. After you go back, upload those files again. The warning 
 Before and after the steps above, when you go from 0.1.0 to 0.1.1:
 
 - **Change both image tags together**, to `platehouse:0.1.1` and `platehouse-slicer:0.1.1`. The
-  0.1.1 app refuses an older slicer: estimates fail with "The slicer's answer is not one slicer
-  contract 2 allows" (see [Troubleshooting](./troubleshooting.md#estimates)), and preview
-  pictures wait for the slicer for up to 2 hours.
+  0.1.1 app cannot read an older slicer's answers: new files get no estimates, the Activity page
+  shows the slicer as **Not reachable**, and preview pictures wait for the slicer for up to 2
+  hours (see [Troubleshooting](./troubleshooting.md#estimates)).
 - **Check the host's kernel** with `uname -r` before you upgrade. 0.1.1 runs estimates and STEP
   conversions inside the slicer's sandbox too, which needs Linux 6.12 or newer. On an older
   kernel, pictures and OpenSCAD renders are off, and estimates and STEP conversions stop unless
   `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer (see [Security](./security.md#the-slicer-sandbox)
-  for what that gives up). The 0.1.1 example Compose file passes that setting on from `.env`. After
-  the upgrade, check the **Sandbox** line in the **Slicer** section of the
+  for what that gives up). The example Compose file shipped with 0.1.1 has that line commented
+  out, so to set it, add this line under the `platehouse-slicer` service's `environment:` in
+  `docker-compose.yml` (in place of the commented one) and set `SLICER_ALLOW_UNSANDBOXED=true` in
+  `.env`:
+
+  ```yaml
+  SLICER_ALLOW_UNSANDBOXED: ${SLICER_ALLOW_UNSANDBOXED:-false}
+  ```
+
+  After the upgrade, check the **Sandbox** line in the **Slicer** section of the
   [Activity](./using/activity.md#the-slicer-section) page.
 - **Expect a slower first start.** Before it answers, the first start of 0.1.1 builds new
   database indexes (migration 0016), which takes longer on a large library. It can take longer
@@ -173,7 +181,10 @@ Before and after the steps above, when you go from 0.1.0 to 0.1.1:
   `sub` claim) is longer than 255 characters, since such an account can no longer sign in (see
   [Sign-in](./sign-in.md#what-platehouse-asks-of-the-provider)). Every other session carries on.
 - **Older tokens have no maker.** Settings now shows who made each API token. Tokens made with
-  0.1.0 show "Made by an unknown user"; they keep working.
+  0.1.0 show "Made by an unknown user (before Platehouse recorded who made each token)"; they keep
+  working. Sign out everywhere never revokes a token with no recorded maker, so after the upgrade
+  check the token list in Settings and revoke any such token you cannot account for (see
+  [Sign-in](./sign-in.md#the-allowed-group), step 3 of cutting someone off).
 - **Background work after the first start.** Older STL and STEP files get their preview pictures
   in the background ("Preview pictures for older STL and STEP files" under **Scheduled jobs** on
   the Activity page). MakerWorld descriptions imported before 0.1.1 are converted again from their

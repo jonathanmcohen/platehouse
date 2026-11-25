@@ -80,7 +80,7 @@ can make one.
 Removing someone does not revoke API tokens. A token never expires and is not checked against
 the group, so a token they made or had a copy of keeps reading, uploading and tagging after they
 are removed, until it is revoked. Settings shows who made each token. A token made with
-Platehouse 0.1.0, before it recorded that, shows "Made by an unknown user".
+Platehouse 0.1.0 shows "Made by an unknown user (before Platehouse recorded who made each token)".
 
 To cut someone off completely:
 
@@ -88,8 +88,9 @@ To cut someone off completely:
    and a refusal ends at most the session of the browser they tried from (see
    [What a refused sign-in ends](#the-allowed-group) above). Their other sessions carry on until
    the next step.
-2. In **Settings**, under **Sign out everywhere**, press **Sign out** beside their name, tick
-   **Also revoke the API tokens they made** in the dialog, and press **Sign out everywhere**
+2. In **Settings**, under **Sign out everywhere**, press **Sign out** beside their name, tick the
+   dialog's box that reads "Also revoke the N API tokens they made" (N is how many they made),
+   and press **Sign out everywhere**
    (see [Settings](./using/settings.md#sign-out-everywhere)). Every session
    they have ends at once, and every token they made stops working, including one they were
    making at that moment: a token being made waits for Sign out everywhere, or Sign out

@@ -28,8 +28,9 @@ new indexes. See [Upgrading to 0.1.1](../backups-and-upgrades.md#upgrading-to-01
 - **Who made each token, and Sign out everywhere.** Settings shows who made each API token, and
   **Sign out everywhere** ends every session of one person and can revoke the tokens they made.
   Making a token, signing someone else out and revoking someone else's token need a sign-in from
-  the last 5 minutes. See [Settings](./settings.md#api-tokens) and
-  [Sign-in](../sign-in.md#the-allowed-group).
+  the last 5 minutes. Tokens made with 0.1.0 have no recorded maker, so Sign out everywhere never
+  revokes them; revoke those by hand in the token list. See [Settings](./settings.md#api-tokens)
+  and [Sign-in](../sign-in.md#the-allowed-group).
 - **Clearer slicing failures.** A plate whose objects do not fit the printer's bed says "The
   plate is too big for this printer's bed." instead of a general slicer error, and a plate the
   slicer refused because its sandbox is off says so. See

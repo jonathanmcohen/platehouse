@@ -27,6 +27,14 @@ rebuilding anything: put translation files in a folder and set `LOCALES_DIR`.
    LOCALES_DIR=/data/locales
    ```
 
+   A `docker-compose.yml` copied before the example passed it on, such as the one shipped with
+   0.1.1, ignores it in `.env`. Add this line under the `platehouse` service's `environment:`
+   first:
+
+   ```yaml
+   LOCALES_DIR: ${LOCALES_DIR:-}
+   ```
+
    `LOCALES_DIR` must be an absolute path. Left unset or empty, Platehouse offers its built-in
    languages only.
 3. Put a file in the folder for each language, named for its code: `de.json`, `it.json`,

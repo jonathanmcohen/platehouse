@@ -31,7 +31,7 @@ on each run's deploy job.
 
 ## The site's address
 
-The site's configuration does not hard-code the repository's address. When the workflow builds
+The site's configuration does not hard-code the site's own address. When the workflow builds
 it, the Pages setup
 supplies the address through two environment variables that `docusaurus.config.mjs` reads:
 
@@ -51,8 +51,10 @@ DOCS_SITE_URL=https://owner.github.io DOCS_BASE_PATH=/repo pnpm --filter @plateh
 
 A `DOCS_SITE_URL` that is set but empty or malformed, or a malformed `DOCS_BASE_PATH`, fails the
 build, so a broken Pages setup cannot publish a site whose links point at the placeholder. An empty
-`DOCS_BASE_PATH` means the site root, as a user site or a custom domain needs. A renamed repository or a custom domain set
-in the Pages settings needs no change here.
+`DOCS_BASE_PATH` means the site root, as a user site or a custom domain needs. A custom domain set
+in the Pages settings needs no change here. The repository's address is written in
+`docusaurus.config.mjs` (`REPO_URL`) for the Edit this page links and the GitHub links in the
+navbar and footer, so a renamed repository needs that one line changed.
 
 ## Icons and images
 
