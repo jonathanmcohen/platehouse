@@ -136,12 +136,14 @@ inbox waits and tries again, and the log says an outage started and ended.
   (`http://platehouse-slicer:8080` in the example), or the slicer image may be older than the app
   (see above).
 - **"Estimates are off on this server: its kernel is older than Linux 6.12."** or **"Estimates are
-  off on this server: its sandbox check failed."**: the slicer's sandbox is off, so it refused to
-  slice. The plate is recorded as failed once, with that sentence under **Details**, and is not
-  tried again while the sandbox stays off. Upgrade the host's kernel to Linux 6.12 or newer, or, if
-  you accept slicing without the sandbox, set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer. Once
-  the slicer reports its sandbox on (or allowed without it), the plates it refused are estimated
-  again automatically, at most 50 on each Orca version check; no need to press **Retry**. On Linux 6.12 or newer, see [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel).
+  off on this server: its sandbox check failed."**: If the host already runs Linux 6.12 or newer,
+  see [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel) first. The
+  slicer's sandbox is off, so it refused to slice. The plate is recorded as failed once, with that
+  sentence under **Details**, and is not tried again while the sandbox stays off. Otherwise,
+  upgrade the host's kernel to Linux 6.12 or newer, or, if you accept slicing without the sandbox,
+  set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer. Once the slicer reports its sandbox on (or
+  allowed without it), the plates it refused are estimated again automatically, at most 50 on each
+  Orca version check; no need to press **Retry**.
 
 OrcaSlicer refusals, shown on the plate with OrcaSlicer's own message behind **Details**:
 
@@ -164,24 +166,26 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
 ## Renders and STEP files
 
 - **"Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12."**:
-  the slicer's sandbox is off because the slicer found no Landlock ABI 6 or newer, on an old kernel
-  or for one of the reasons in
-  [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel), so the slicer refuses
-  STL pictures, STEP files' preview pictures and OpenSCAD renders, and the files keep their icon.
-  Upgrade the host to Linux 6.12 or newer and restart the slicer. The files are picked up again by
-  themselves once the slicer reports its sandbox on. `SLICER_ALLOW_UNSANDBOXED` does not cover
-  these. On Linux 6.12 or newer, see the same section.
+  If the host already runs Linux 6.12 or newer, see
+  [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel) first. The slicer's
+  sandbox is off because the slicer found no Landlock ABI 6 or newer, on an old kernel or for one
+  of the reasons in that section, so the slicer refuses STL pictures, STEP files' preview pictures
+  and OpenSCAD renders, and the files keep their icon. Otherwise, upgrade the host to Linux 6.12 or
+  newer and restart the slicer. The files are picked up again by themselves once the slicer
+  reports its sandbox on. `SLICER_ALLOW_UNSANDBOXED` does not cover these.
 - **"Pictures and OpenSCAD renders are off on this server: its sandbox check failed."**: the
   kernel is new enough, but the slicer's check of its sandbox failed, for example because the
   slicer's container settings were changed from the example. The slicer's log says what failed,
   and it checks again by itself, after a minute at first and then less often. Restore the example's
   settings; the files are picked up again once the check passes.
-- **"STEP previews are off on this server: its kernel is older than Linux 6.12."**: the same
-  kernel limit, for converting a STEP file to the mesh its 3D preview and picture are made from.
-  Upgrade the host's kernel to Linux 6.12 or newer, or, if you accept converting STEP files
-  without the sandbox, set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer (see
+- **"STEP previews are off on this server: its kernel is older than Linux 6.12."**: If the host
+  already runs Linux 6.12 or newer, see
+  [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel) first. The same kernel
+  limit, for converting a STEP file to the mesh its 3D preview and picture are made from.
+  Otherwise, upgrade the host's kernel to Linux 6.12 or newer, or, if you accept converting STEP
+  files without the sandbox, set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer (see
   [Security](./security.md#the-slicer-sandbox) for what that gives up). The files are picked up
-  again once conversions can run. On Linux 6.12 or newer, see [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel).
+  again once conversions can run.
 - **"STEP previews are off on this server: its sandbox check failed."**: the same as the sandbox
   check above, for a STEP file. First check you kept the example's hardening settings for the
   slicer, and restore them. Only if you accept converting STEP files without the sandbox, set
@@ -226,7 +230,10 @@ modules already listed, and reboot. Or use a kernel that turns it on. When it wo
 
 Docker Engine older than 20.10.18 has a default seccomp profile that blocks the three Landlock
 calls, and so does a custom seccomp profile that leaves them out. Upgrade Docker, or fix the
-profile. The example Compose file sets no seccomp option, so remove one you added.
+profile. The example Compose file sets no seccomp option, so remove one you added. Do not use
+`seccomp=unconfined` or `privileged` to get around it: add the three `landlock_*` calls
+(`landlock_create_ruleset`, `landlock_add_rule` and `landlock_restrict_self`) to your seccomp
+profile, or remove the custom profile.
 
 ### A kernel without the 2025 Landlock fix
 
