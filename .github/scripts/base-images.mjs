@@ -443,7 +443,9 @@ export function verifySignedShasums({
     }
     if (r.status !== 0) {
       const last = (r.stderr ?? "").trim().split("\n").slice(-3).join(" | ");
-      throw new Error(`SHASUMS256.txt.asc does not verify (gpgv exit ${r.status ?? r.signal}): ${last}`);
+      throw new Error(
+        `SHASUMS256.txt.asc does not verify (gpgv exit ${r.status ?? r.signal}): ${last}`,
+      );
     }
     const refused = [...new Set(status.map((s) => s[0]).filter((k) => REFUSED_STATUS.includes(k)))];
     if (refused.length > 0) {
