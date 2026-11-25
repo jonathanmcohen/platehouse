@@ -1,5 +1,4 @@
-// Keeping keyboard focus when the focused control goes away (build plan Task
-// 21), shared by every list on the settings, trash and organising pages. A
+// Keeping keyboard focus when the focused control goes away, shared by every list on the settings, trash and organising pages. A
 // browser puts focus on the page body when the focused element is removed
 // (a row or chip whose change worked) or disabled, and a keyboard user then
 // has to Tab back through the whole shell. So no control that may hold

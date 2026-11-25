@@ -209,8 +209,11 @@ describe("LOCALES_DIR", () => {
     const logged = JSON.stringify(warnings);
     expect(logged).toContain("not.a.key");
     expect(logged).toContain("shell.nav.library");
+    expect(logged).toContain("shell.nav.trash");
     expect(logged).not.toContain("geheim-wert");
     expect(logged).not.toContain("Bibliothek");
+    expect(logged).not.toContain("Papierkorb");
+    expect(logged).not.toContain("{evil}");
   });
 
   test.each<[string, (d: string) => Promise<void>]>([

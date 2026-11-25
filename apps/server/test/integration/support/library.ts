@@ -1,5 +1,5 @@
 // A migrated Postgres 17 and a bucket on the S3 test server, for the library
-// tests (build plan Task 14). Every model, file and byte here is synthetic.
+// tests. Every model, file and byte here is synthetic.
 import { createHash, randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { CreateBucketCommand, PutObjectCommand } from "@aws-sdk/client-s3";

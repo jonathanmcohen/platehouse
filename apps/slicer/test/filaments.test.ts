@@ -1,5 +1,4 @@
-// The default filament per type for a printer (build plan Task 11 Decisions,
-// the maintainer, 2026-11-08: "I use mostly Bambu Filaments"): Bambu's own preset for
+// The default filament per type for a printer (the maintainer, 2026-11-08: "I use mostly Bambu Filaments"): Bambu's own preset for
 // that printer where Orca has one, then the Generic preset for that printer,
 // then the file's own filament (no pick). The first block runs over a digest
 // of the real Orca 2.5.0 BBL profiles (test/fixtures/orca-filaments.json,
@@ -9,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { BAMBU_FILAMENTS, type FilamentCandidate, pickFilament } from "../src/profiles.js";
 import { digestCandidates, type FilamentDigest } from "./support/filament-digest.js";
+import { dockerfileOrcaVersion } from "./support/orca-version.js";
 
 const digest = JSON.parse(
   readFileSync(new URL("./fixtures/orca-filaments.json", import.meta.url), "utf8"),
@@ -72,6 +72,13 @@ describe("over the real Orca 2.5.0 BBL profiles", () => {
     const expected = MODELS.flatMap((m) => NOZZLES.map((n) => printer(m, n))).sort();
     expect([...digest.printers].sort()).toEqual(expected);
     expect(digest.printers).toHaveLength(56);
+  });
+
+  // The container test that compares the image's default filaments with this
+  // digest runs only on an image at the digest's version, so the digest must
+  // follow the Dockerfile's pin, which ci.yml builds.
+  test("the digest is at the Orca version the Dockerfile pins", () => {
+    expect(digest.orca).toBe(dockerfileOrcaVersion());
   });
 
   test("the P1S 0.4 gets Bambu's own preset for all five types", () => {

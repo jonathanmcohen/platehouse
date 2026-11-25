@@ -1,8 +1,8 @@
-// Build plan Task 30: the Fastify app buildApp(deps) returns. GET /healthz is
+// The Fastify app buildApp(deps) returns. GET /healthz is
 // 200 only when the database answers and pg-boss is started, else 503 with
 // no detail in the body. The tus upload handler is mounted at /app/uploads
-// behind the session check (Task 15) and at /api/v1/uploads behind the
-// bearer check (Task 16, app.ts apiUploadHook), so no upload route is open
+// behind the session check and at /api/v1/uploads behind the
+// bearer check (app.ts apiUploadHook), so no upload route is open
 // without a session or a valid token. A state-changing request to
 // /app/uploads also needs
 // Origin to equal PUBLIC_ORIGIN (the gate's Origin check), so the tests that

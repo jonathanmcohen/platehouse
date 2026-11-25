@@ -26,7 +26,7 @@ A pick applies at once, with no reload, and is kept in this browser only, in a c
 browser or device can have its own. If a language cannot be loaded, the page says so and stays as
 it was.
 
-Spanish and French are machine translations in 0.1.0 that nobody fluent has reviewed yet, so the
+Spanish and French are currently machine translations that nobody fluent has reviewed yet, so the
 list shows "machine translation, not yet reviewed" beside their names. A language your server adds
 that covers only part of the app shows "partly translated, the rest in English", and the rest of
 the app shows in English. To add a language, or to review one, see
@@ -54,8 +54,14 @@ See [Printers and estimates](./printers-and-estimates.md#my-printers).
 
 ## API tokens
 
-Create, name and revoke API tokens. A new token is shown once, in a dialog with **Copy**. See
+Create, name and revoke API tokens. A new token is shown once, in a dialog with **Copy**. Each
+token says who made it. Creating one needs a sign-in from the last 5 minutes; if yours is older,
+the page asks you to sign in again and brings you back here. See
 [Security](../security.md#api-tokens).
+
+**Sign out everywhere**, below the token list, ends every session of one person and can revoke
+the tokens they made. Use it when someone should no longer have access; see
+[Sign-in](../sign-in.md#the-allowed-group).
 
 ## Model names
 

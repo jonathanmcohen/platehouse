@@ -1,18 +1,22 @@
-// The app's side of the slicer's render routes (Slicer HTTP contract v1):
-// POST /v1/scad/stl, /v1/scad/png and /v1/step/glb. One request per call and
+// The app's side of the slicer's render routes (Slicer HTTP contract 2):
+// POST /v1/scad/stl, /v1/scad/png, /v1/step/glb and, for STL and STEP
+// preview pictures (issue #316), /v1/stl/png. One request per call and
 // no retry here: what went wrong is reported as one of the errors below, and
 // the job decides (derived.ts). A 409 busy or a lost connection is
 // retryable, and pg-boss retries the job under its own settings
 // (SLICER_RETRY); a 422 is the program's own answer and final. A slicer
-// that takes no connection, or answers that OpenSCAD renders are off
-// because its sandbox self-test failed, is SlicerDown: not the file's
+// that takes no connection, or answers 404 because its image is older
+// than this app and lacks the route, is SlicerDown: not the file's
 // doing, so the job waits for the slicer without using a retry, for up to
-// 2 hours (SLICER_DOWN_LIMIT_MS in derived.ts). A streamed body that fails
+// 2 hours (SLICER_DOWN_LIMIT_MS in derived.ts). A 503 sandbox_off is
+// SandboxOff: the slicer's sandbox is off, which the job records once with
+// its reason instead of waiting. A streamed body that fails
 // partway (the store went away while a STEP file was read from it) rejects
 // with the body's own error, a StoreUnavailable for an outage or a
 // StoreError for a store that refused, never as a lost slicer connection.
+import { open, rm } from "node:fs/promises";
 import { Readable } from "node:stream";
-import { slicerContract } from "@platehouse/slicer-contract";
+import { LIMITS, type SandboxOffBody, slicerContract } from "@platehouse/slicer-contract";
 
 /**
  * The sentence that says the renders a file shows are from an earlier
@@ -30,6 +34,17 @@ export const PREVIOUS_RENDERS_SENTENCE = {
   scad: "OpenSCAD rejected the current version of this file, so the STL and preview shown are from an earlier version.",
   step: "The STEP converter rejected the current version of this file, so the mesh shown is from an earlier version.",
 } as const;
+
+/**
+ * What the slicer answers, as a 422 render_failed, for a body that is not an
+ * STL with at least one triangle (NOT_AN_STL in apps/slicer/src/scad.ts; a
+ * test pins the two together). The slicer sends it before OpenSCAD runs.
+ */
+export const SLICER_NOT_AN_STL =
+  "The file is not an STL with at least one triangle, so there is nothing to render.";
+
+/** The sentence that starts every failed preview picture's message (issue #316). */
+const PREVIEW_FAILED = "The preview picture could not be rendered.";
 
 /**
  * What files.derived_message holds when the slicer or the store, not
@@ -80,7 +95,67 @@ export const DERIVED_MESSAGES = {
   scadTooLarge: "This .scad file is larger than the 1 MiB the renderer takes.",
   /** A STEP file over the contract's 256 MiB limit is never sent. */
   stepTooLarge: "This STEP file is larger than the 256 MiB the converter takes.",
+  /**
+   * An STL's or a STEP mesh's preview picture could not be made (issue
+   * #316), followed by why: the mesh could not be read, or was too large.
+   * A STEP file keeps its mesh and 3D view.
+   */
+  previewFailed: PREVIEW_FAILED,
+  /** The same, before OpenSCAD's own message when it rejects the STL. */
+  previewRejected: `${PREVIEW_FAILED} OpenSCAD said:`,
+  /**
+   * A preview picture whose slicer stayed down past SLICER_DOWN_LIMIT_MS
+   * (issue #379): the preview backfill tries it again by itself, so it says
+   * so rather than asking for something the user cannot do.
+   */
+  previewSlicerDown:
+    "The slicer is not answering, so the preview picture could not be made. It will be tried again automatically.",
+  /** The same, for storage that stayed down. */
+  previewStoreDown:
+    "Storage is not answering, so the preview picture could not be made. It will be tried again automatically.",
+  /** A preview picture whose job could not be queued; the backfill queues it again. */
+  previewQueueFailed:
+    "The preview picture could not be queued. It will be tried again automatically.",
+  /**
+   * A preview picture whose job could not write in its own temp folder
+   * (TempFileError: a full disk, a read-only or missing TMP_DIR) on its
+   * last attempt (issue #415). The backfill queues it again.
+   */
+  previewTempFailed:
+    "Platehouse could not write a temporary file; it will be tried again automatically.",
+  /**
+   * The slicer's sandbox is off (HTTP 503 sandbox_off), so it refuses
+   * pictures and OpenSCAD renders: its kernel is too old, or its check
+   * failed. Recorded once with the real reason; the file is queued again
+   * when the slicer says the sandbox is on (requeueSandboxOff).
+   */
+  sandboxOffKernel:
+    "Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12.",
+  sandboxOffCheck:
+    "Pictures and OpenSCAD renders are off on this server: its sandbox check failed.",
+  /** The same for a STEP conversion, which can also run unsandboxed when the slicer allows it. */
+  convertSandboxOffKernel:
+    "STEP previews are off on this server: its kernel is older than Linux 6.12.",
+  convertSandboxOffCheck: "STEP previews are off on this server: its sandbox check failed.",
+  /** An STL over the contract's 256 MiB limit is never sent, and has no preview. */
+  stlTooLarge:
+    "This STL file is larger than the 256 MiB the preview renderer takes, so it has no preview picture.",
 } as const;
+
+/** The lead-ins the slicer starts a program's own words with, and the sentences above end with. */
+const LEAD_INS = ["OpenSCAD said:", "The converter said:"] as const;
+
+/**
+ * Joins a Platehouse sentence and a program's message with a space. When the
+ * sentence ends with a lead-in (previousRendersScad, previousRendersStep,
+ * previewRejected) and the message starts with the same one, as the slicer
+ * writes it, the message's copy is left out, so the lead-in is said once.
+ * Any other message is kept whole.
+ */
+export function afterSentence(sentence: string, message: string): string {
+  const lead = LEAD_INS.find((l) => sentence.endsWith(l) && message.startsWith(`${l} `));
+  return `${sentence} ${lead === undefined ? message : message.slice(lead.length + 1)}`;
+}
 
 /**
  * Every sentence Platehouse writes into files.derived_message, by the code
@@ -134,7 +209,7 @@ export function derivedParts(message: string | null): {
  * How long a render request may wait for its answer once its body is sent:
  * the slicer's own time cap for a render or a STEP conversion
  * (SCAD_TIMEOUT_SECONDS and STEP_TIMEOUT_SECONDS, both 120 s by default in
- * apps/slicer), plus 30 s, as the plan sets the app's slice timeout. Past it
+ * apps/slicer), plus 30 s, the same margin the app's slice timeout uses. Past it
  * the request counts as a lost connection.
  */
 export const RENDER_TIMEOUT_MS = (120 + 30) * 1000;
@@ -145,11 +220,21 @@ export const RENDER_TIMEOUT_MS = (120 + 30) * 1000;
  * UPLOAD_SECONDS in apps/slicer/src/server.ts. RENDER_TIMEOUT_MS starts only
  * once the body has been read to its end, so a slow bucket does not eat the
  * program's time; a body that stalls past this counts as a lost connection.
- * Both together, 750 s, fit inside pg-boss's default 15-minute job expiry. A
- * .scad body is at most 1 MiB and in memory, so it gets RENDER_TIMEOUT_MS
- * alone.
+ * Both together are 750 s. A .scad body is at most 1 MiB and in memory, so it
+ * gets RENDER_TIMEOUT_MS alone.
  */
 export const RENDER_UPLOAD_TIMEOUT_MS = 600 * 1000;
+
+/**
+ * How long a STEP conversion job may run before pg-boss expires it: the
+ * conversion's own budget (RENDER_UPLOAD_TIMEOUT_MS plus RENDER_TIMEOUT_MS,
+ * 750 s) and 300 s more to store the GLB in the bucket afterwards, 1050 s in
+ * all. Under pg-boss's default, 15 minutes, a slow bucket could have a job
+ * that had already stored its mesh expired and run again. Each conversion
+ * job is sent with it (slicerSendOptions in derived.ts), since the slicer
+ * queue's other jobs keep their own expiry.
+ */
+export const CONVERT_EXPIRE_SECONDS = (RENDER_UPLOAD_TIMEOUT_MS + RENDER_TIMEOUT_MS) / 1000 + 300;
 
 /** The slicer answered 409 busy: another heavy job holds its lock. Retryable. */
 export class SlicerBusy extends Error {
@@ -168,18 +253,44 @@ export class SlicerUnreachable extends Error {
 }
 
 /**
- * The start of the 422 render_failed message the slicer sends when its
- * OpenSCAD sandbox self-test failed (apps/slicer/src/server.ts): renders are
- * off on the slicer, which says nothing about the file. Contract v1 gives
- * it no error code of its own, so the message is matched; a test pins it to
- * the slicer's source.
+ * The slicer answered 503 sandbox_off: its sandbox is off, so it refuses
+ * this route, and says why. Says nothing about the file. Not retried and
+ * not an outage: the job records sandboxMessage once, and the file is
+ * queued again when the sandbox is on.
  */
-export const SANDBOX_OFF_PREFIX = "OpenSCAD renders are off:";
+export class SandboxOff extends Error {
+  readonly reason: SandboxOffBody["reason"];
+
+  constructor(route: string, reason: SandboxOffBody["reason"]) {
+    super(`The slicer's sandbox is off (${route}): ${reason}`);
+    this.name = "SandboxOff";
+    this.reason = reason;
+  }
+}
+
+/**
+ * The message a file shows when the sandbox is off, by the kind of job
+ * refused: a picture of an STL or STEP mesh ("preview"), an OpenSCAD render
+ * and an STL's picture share one pair, a STEP conversion has its own.
+ */
+export function sandboxMessage(
+  kind: "scad" | "step" | "stl" | "preview",
+  reason: SandboxOffBody["reason"],
+): string {
+  if (kind === "step") {
+    return reason === "old_kernel"
+      ? DERIVED_MESSAGES.convertSandboxOffKernel
+      : DERIVED_MESSAGES.convertSandboxOffCheck;
+  }
+  return reason === "old_kernel"
+    ? DERIVED_MESSAGES.sandboxOffKernel
+    : DERIVED_MESSAGES.sandboxOffCheck;
+}
 
 /**
  * The network codes that mean no connection was made at all: the slicer is
  * stopped, restarting or not on the network, and never saw the request.
- * The same set as Task 12's (estimates/client.ts).
+ * The same set the estimate client uses (estimates/client.ts).
  */
 const NO_CONNECTION_CODES: ReadonlySet<string> = new Set([
   "ECONNREFUSED",
@@ -204,8 +315,8 @@ function noConnectionCode(error: unknown): string | undefined {
 
 /**
  * The slicer cannot render right now, and the file is not why: it took no
- * connection (stopped, restarting or being re-pulled), or it answered that
- * OpenSCAD renders are off because its sandbox self-test failed. Not a
+ * connection (stopped, restarting or being re-pulled), or it has no such
+ * route (an image older than this app). Not a
  * pg-boss retry: the job waits for the slicer without using one, for up to
  * 2 hours (runJob).
  */
@@ -236,6 +347,61 @@ export class RenderFailed extends Error {
   }
 }
 
+const MIB = 1024 * 1024;
+
+/**
+ * The slicer's answer passed its route's cap (ANSWER_LIMITS) while it was
+ * streamed: it was not kept, and the job fails as for any answer the
+ * program refused (render_failed). The contract says the slicer never
+ * sends one (it refuses such an output with its own 422 first), so this is
+ * an older or misbehaving slicer.
+ */
+export class AnswerTooLarge extends RenderFailed {
+  constructor(maxBytes: number) {
+    super(
+      `The slicer's answer was over the ${Math.floor(maxBytes / MIB)} MiB limit for it, so it was not kept.`,
+    );
+    this.name = "AnswerTooLarge";
+  }
+}
+
+/**
+ * The largest answer each render route may send, from the slicer contract:
+ * the answer is streamed to a temp file and stopped as soon as it passes
+ * this, so no answer is ever held whole in the app's memory.
+ */
+export const ANSWER_LIMITS = Object.freeze({
+  "/v1/scad/stl": LIMITS.renderOutputBytes,
+  "/v1/scad/png": LIMITS.renderOutputBytes,
+  "/v1/stl/png": LIMITS.renderOutputBytes,
+  "/v1/step/glb": LIMITS.stepOutputBytes,
+});
+
+/**
+ * The most of an error answer (any status but a 200) read into memory: 64
+ * KiB. The slicer's refusals are short JSON, its 500s short text; a longer
+ * one is a fault, and the rest is never read.
+ */
+export const ERROR_ANSWER_MAX_BYTES = 64 * 1024;
+
+/**
+ * The job could not write in its own temp folder (issue #415): making the
+ * folder, writing a STEP preview's STL there, or opening or writing the
+ * slicer's answer file. cause is the file system's own error. Neither the
+ * file's fault nor the slicer's, so it is told apart from both; reading
+ * from the store is never one.
+ */
+export class TempFileError extends Error {
+  override readonly cause: NodeJS.ErrnoException;
+
+  constructor(cause: unknown) {
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    super(`A temporary file could not be written: ${error.message}`, { cause: error });
+    this.name = "TempFileError";
+    this.cause = error;
+  }
+}
+
 /** True for the errors a pg-boss retry may cure: 409 busy and a lost connection. */
 export function isRetryable(error: unknown): boolean {
   return error instanceof SlicerBusy || error instanceof SlicerUnreachable;
@@ -251,7 +417,7 @@ export interface SlicerTarget {
 }
 
 export interface RenderRequest {
-  route: "/v1/scad/stl" | "/v1/scad/png" | "/v1/step/glb";
+  route: keyof typeof ANSWER_LIMITS;
   body: Buffer | Readable;
   contentType: string;
   /** The content type a 200 must carry. */
@@ -260,6 +426,88 @@ export interface RenderRequest {
   refusal: "render" | "convert";
   /** What a 413 too_large shows. */
   tooLarge: string;
+  /**
+   * Where a 200's body is streamed (a file in the job's temp folder; it is
+   * removed if the request fails), and the most it may be: the route's
+   * ANSWER_LIMITS unless a test sets a smaller one.
+   */
+  answer: { path: string; maxBytes?: number };
+}
+
+/** A 200's body, streamed to a file. */
+export interface RenderAnswer {
+  path: string;
+  size: number;
+}
+
+/**
+ * Reads at most max bytes of an error answer into memory; a longer one is
+ * the slicer's fault, and the rest of it is never read.
+ */
+async function readSmall(
+  body: ReadableStream<Uint8Array> | null,
+  max: number,
+  route: string,
+  status: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  if (body === null) return Buffer.alloc(0);
+  for await (const chunk of body) {
+    size += chunk.byteLength;
+    if (size > max) throw new SlicerFault(route, `${status} with a body over ${max} bytes`);
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Streams a 200's body to path a chunk at a time, stopping with
+ * AnswerTooLarge as soon as it passes max; stopping cancels the body, so the
+ * rest is never read. A failure to open or write the file is a
+ * TempFileError, reported to onFileError before it is thrown, so it is told
+ * apart from the connection failing, which comes from reading the body and
+ * is thrown as it is.
+ */
+async function saveAnswer(
+  body: ReadableStream<Uint8Array> | null,
+  path: string,
+  max: number,
+  onFileError: (error: unknown) => void,
+): Promise<number> {
+  const onFile = async <T>(op: () => Promise<T>): Promise<T> => {
+    try {
+      return await op();
+    } catch (error) {
+      const failed = new TempFileError(error);
+      onFileError(failed);
+      throw failed;
+    }
+  };
+  const file = await onFile(() => open(path, "w"));
+  let size = 0;
+  try {
+    if (body !== null) {
+      for await (const chunk of body) {
+        size += chunk.byteLength;
+        if (size > max) throw new AnswerTooLarge(max);
+        // A write may take fewer bytes than it is given, so the rest of the
+        // chunk is written until none is left.
+        for (let at = 0; at < chunk.byteLength; ) {
+          const { bytesWritten } = await onFile(() => file.write(chunk, at, chunk.byteLength - at));
+          if (bytesWritten <= 0) {
+            const error = new TempFileError(new Error(`no bytes written to ${path}`));
+            onFileError(error);
+            throw error;
+          }
+          at += bytesWritten;
+        }
+      }
+    }
+  } finally {
+    await file.close().catch(() => undefined);
+  }
+  return size;
 }
 
 function mediaType(header: string | null): string {
@@ -298,12 +546,32 @@ function webBody(source: Readable, onError: (error: unknown) => void): ReadableS
 }
 
 /**
- * Posts one body to a render route and returns the bytes of a 200. A
- * streamed body that fails while it is read rejects with that failure as it
- * is (see webBody); every other failure to get an answer is SlicerDown or
- * SlicerUnreachable.
+ * Posts one body to a render route and streams a 200's body to
+ * req.answer.path, never holding it in memory, stopping with AnswerTooLarge
+ * as soon as it passes the route's cap (ANSWER_LIMITS). Any other answer is
+ * read into memory only up to ERROR_ANSWER_MAX_BYTES. A streamed request
+ * body that fails while it is read rejects with that failure as it is (see
+ * webBody), a temp file that cannot be written with TempFileError, holding
+ * the file system's own error; every other failure to get an answer is
+ * SlicerDown or SlicerUnreachable. Whenever it rejects, the answer file is
+ * removed.
  */
-export async function postRender(target: SlicerTarget, req: RenderRequest): Promise<Buffer> {
+export async function postRender(target: SlicerTarget, req: RenderRequest): Promise<RenderAnswer> {
+  const path = req.answer.path;
+  try {
+    return await postRenderTo(target, req, path);
+  } catch (error) {
+    await rm(path, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function postRenderTo(
+  target: SlicerTarget,
+  req: RenderRequest,
+  path: string,
+): Promise<RenderAnswer> {
+  const maxBytes = req.answer.maxBytes ?? ANSWER_LIMITS[req.route];
   const url = new URL(req.route, target.baseUrl);
   let bodyError: { error: unknown } | undefined;
   const body =
@@ -332,7 +600,12 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
   }
   let status: number;
   let type: string;
-  let bytes: Buffer;
+  // A 200 of the right type is streamed to the answer file (size), anything
+  // else read into memory up to ERROR_ANSWER_MAX_BYTES (bytes), or not read
+  // at all when its status says enough.
+  let size = 0;
+  let bytes: Buffer = Buffer.alloc(0);
+  let fileError: { error: unknown } | undefined;
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -343,8 +616,22 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
     });
     status = res.status;
     type = mediaType(res.headers.get("content-type"));
-    bytes = Buffer.from(await res.arrayBuffer());
+    if (status === 200 && type === req.accept) {
+      size = await saveAnswer(res.body, path, maxBytes, (error) => {
+        fileError ??= { error };
+      });
+    } else if (status === 200 || KNOWN.has(status)) {
+      // A 200 of the wrong type is a fault whatever it holds, and 409, 404
+      // and 413 say all they mean in their status: none is read.
+      await res.body?.cancel();
+    } else {
+      bytes = await readSmall(res.body, ERROR_ANSWER_MAX_BYTES, req.route, status);
+    }
   } catch (error) {
+    // Decided here, not a connection failure: an answer over its cap, an
+    // error answer over its limit, or a temp file that cannot be written.
+    if (error instanceof AnswerTooLarge || error instanceof SlicerFault) throw error;
+    if (fileError !== undefined) throw fileError.error;
     // The body failed, not the slicer: its own error, so a store outage
     // reaches the job as StoreUnavailable and the job waits for the store.
     if (bodyError !== undefined) throw bodyError.error;
@@ -362,12 +649,21 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
 
   switch (status) {
     case 200:
-      if (type !== req.accept || bytes.length === 0) {
+      if (type !== req.accept || size === 0) {
         throw new SlicerFault(req.route, `200 with ${type || "no content type"}`);
       }
-      return bytes;
+      return { path, size };
     case 409:
       throw new SlicerBusy(req.route);
+    // A slicer image older than this app has no such route (/v1/stl/png is
+    // new in contract 1 with issue #316) and answers 404 not_found. That says
+    // nothing about the file, so the job waits for the slicer as for one
+    // that is down, until the image is updated or the wait runs out.
+    case 404:
+      throw new SlicerDown(
+        req.route,
+        "the slicer has no such route; its image is older than this app",
+      );
     case 413:
       throw new RenderFailed(req.tooLarge);
     case 422: {
@@ -381,19 +677,38 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
         req.refusal === "render" ? slicerContract.renderError : slicerContract.convertError;
       const refusal = schema.safeParse(parsed);
       if (!refusal.success) throw new SlicerFault(req.route, "422 outside the contract");
-      if (req.refusal === "render" && refusal.data.message.startsWith(SANDBOX_OFF_PREFIX)) {
-        throw new SlicerDown(req.route, refusal.data.message);
-      }
       throw new RenderFailed(refusal.data.message);
+    }
+    case 503: {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(bytes.toString("utf8"));
+      } catch {
+        throw new SlicerFault(req.route, "503 with a body that is not JSON");
+      }
+      const off = slicerContract.sandboxOff.safeParse(parsed);
+      if (!off.success) throw new SlicerFault(req.route, "503 outside the contract");
+      throw new SandboxOff(req.route, off.data.reason);
     }
     default:
       throw new SlicerFault(req.route, String(status));
   }
 }
 
-/** One derived blob's bytes, before they are stored. */
+/**
+ * The statuses whose answer says enough without its body: 409 busy, 404
+ * (an older slicer image), 413 too_large. Their bodies are never read.
+ */
+const KNOWN: ReadonlySet<number> = new Set([409, 404, 413]);
+
+/**
+ * One derived blob before it is stored: the slicer's answer, in a file in
+ * the job's temp folder (postRender), stored from the file and removed with
+ * the folder when the job ends.
+ */
 export interface RenderOutput {
   kind: "render_stl" | "render_png" | "mesh_glb";
   contentType: string;
-  bytes: Buffer;
+  path: string;
+  size: number;
 }

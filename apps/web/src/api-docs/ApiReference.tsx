@@ -1,4 +1,4 @@
-// The API reference (AC-084, AC-085): the Public API v1 for a person who
+// The API reference: the Public API v1 for a person who
 // wants to script Platehouse, on the settings page at /settings?view=api,
 // linked from the API tokens section. It renders the OpenAPI document this
 // build serves (./openapi.json, see model.ts), grouped by tag: each
@@ -7,19 +7,28 @@
 //
 // - Built from the app's own pieces (studio.css and organise.css tokens and
 //   shapes, api-docs.css for the rest); nothing is fetched, from a CDN or
-//   anywhere: the document is bundled, so the page needs no token and works
-//   under the app's CSP. The settings page loads this module only when the
-//   page is opened, so the document is not in the main bundle.
+//   anywhere: the document is bundled, so the page needs no token. It works
+//   under the Content-Security-Policy the server sends on every answer
+//   (apps/server/src/web/security-headers.ts: scripts, styles and fetches
+//   from the app's own origin only, no inline style): no CDN, no inline
+//   script, no style attribute. The settings page loads this module only
+//   when the page is opened, so the document is not in the main bundle.
 // - Every operation is a details element: a keyboard opens it with Enter or
 //   Space, a screen reader announces it as expandable, and its summary holds
 //   a heading, so the page's headings list every operation. Sections use
 //   h2, operations h3, their parts h4 and each answer h5.
 // - The base URL is this page's own origin with /api/v1: the API is served
-//   from the same configured public origin as the web app (AC-091).
+//   from the same configured public origin as the web app.
 // - Nothing scrolls sideways at 375 px: paths, field names and examples
 //   wrap, and example blocks scroll inside themselves.
 // - Opened by a link (focusHeading), the page puts focus on its heading, as
 //   SettingsPage explains.
+// - Only the page's heading, back link and intro go through t(). The
+//   reference itself, its section labels and field notes included
+//   ("Parameters", "Request body", "Responses", "required" and the rest),
+//   stays English in 0.1.0 by the maintainer's decision, because the OpenAPI
+//   text it labels is English too (test/i18n-source.test.ts skips this
+//   folder for that reason).
 import { useEffect, useRef } from "react";
 import { Link } from "react-router";
 import "./api-docs.css";
@@ -43,14 +52,20 @@ import raw from "./openapi.json";
 
 const DOC = raw as unknown as ApiDocument;
 
-/** The deepest indent api-docs.css draws; deeper fields share it. No inline style (CSP). */
+/**
+ * The deepest indent api-docs.css draws; deeper fields share it. The depth is
+ * a class, not an inline style, which the server's CSP (style-src 'self')
+ * would block.
+ */
 const MAX_DEPTH = 5;
 
-function Paragraphs({ text }: { text: string }) {
+export function Paragraphs({ text }: { text: string }) {
   return (
     <>
-      {paragraphs(text).map((p) => (
-        <p key={p}>{p}</p>
+      {paragraphs(text).map((p, i) => (
+        // A description can repeat a paragraph, so the text alone is not a key.
+        // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are fixed for a build.
+        <p key={`${i}-${p}`}>{p}</p>
       ))}
     </>
   );

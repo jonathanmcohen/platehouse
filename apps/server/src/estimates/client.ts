@@ -1,9 +1,9 @@
-// The app's client for slicer contract v1 (build plan Task 12). The slicer is
+// The app's client for slicer contract 2 (packages/slicer-contract). The slicer is
 // on the internal network only, has no auth and holds no secrets; nothing the
 // app sends it is secret either (a printer name, a plate number, the .3mf).
 //
 // Every answer is read with the contract's own zod schemas
-// (packages/slicer-contract), so an answer outside contract v1 is a refusal,
+// (packages/slicer-contract), so an answer outside contract 2 is a refusal,
 // never a result. Errors come in four kinds, because the slice job treats
 // them differently:
 // - SlicerBusy: 409 busy, the slicer is running another heavy job;
@@ -21,15 +21,18 @@
 //
 // The slicer kills a plate itself at SLICE_TIMEOUT_SECONDS, --mstpp + 60 by
 // default, and the app's HTTP timeout is that plus 30 s (Slicer HTTP contract
-// v1). The request is plain node:http, as the slicer's own server is, so a
+// 2). The request is plain node:http, as the slicer's own server is, so a
 // 409 sent before the body is read is answered even while the body is still
 // going out.
 import { type ClientRequest, request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { Readable } from "node:stream";
 import {
+  CONTRACT_VERSION,
   type Health,
+  LIMITS,
   type Profiles,
+  type SandboxOffBody,
   type SliceResult,
   slicerContract,
 } from "@platehouse/slicer-contract";
@@ -42,6 +45,11 @@ export interface SliceRequest {
   body: Readable;
   /** Its exact size, sent as Content-Length. */
   size: number;
+  /**
+   * The time the body may take to send, and the wait for the answer once it
+   * has been sent. A 600 s upload and sliceTimeoutMs(plateSeconds) when left out.
+   */
+  timeouts?: { uploadMs: number; answerMs: number };
 }
 
 export interface SlicerClient {
@@ -114,7 +122,26 @@ export class SlicerRefused extends Error {
   }
 }
 
-/** The slicer's own kill time (--mstpp + 60) plus 30 s, in milliseconds. */
+/**
+ * The slicer's sandbox is off, so it did not run the slice (503 sandbox_off).
+ * Not a fault of the file and not an outage: it lasts until the kernel is
+ * upgraded or the slicer is allowed to run unsandboxed.
+ */
+export class SlicerSandboxOff extends Error {
+  readonly reason: SandboxOffBody["reason"];
+
+  constructor(reason: SandboxOffBody["reason"]) {
+    super(`The slicer's sandbox is off (${reason})`);
+    this.name = "SlicerSandboxOff";
+    this.reason = reason;
+  }
+}
+
+/**
+ * The slicer's own kill time (--mstpp + 60) plus 30 s, in milliseconds: the
+ * fallback used before health has answered (slicer-state.ts follows the
+ * slicer's own limits after that).
+ */
 export function sliceTimeoutMs(plateSeconds: number): number {
   return (plateSeconds + 60 + 30) * 1000;
 }
@@ -132,8 +159,15 @@ export interface SlicerClientOptions {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
-/** The largest answer read: contract answers are small JSON. */
-const MAX_ANSWER_BYTES = 1024 * 1024;
+/** A slice body's send time when the caller sets none: the slicer's own 600 s allowance. */
+const DEFAULT_UPLOAD_TIMEOUT_MS = 600_000;
+
+/**
+ * The largest answer read: contract answers are small JSON. It is held whole
+ * in memory, so test/compose-example.test.ts counts it in the server's
+ * allowance.
+ */
+export const MAX_ANSWER_BYTES = 1024 * 1024;
 
 /** A slicer message quoted into an error is cut to this. */
 const MESSAGE_CHARS = 300;
@@ -167,7 +201,7 @@ function send(
   base: URL,
   method: "GET" | "POST",
   path: string,
-  timeoutMs: number,
+  timeout: number | { uploadMs: number; answerMs: number },
   upload?: { body: Readable; size: number },
 ): Promise<Answer> {
   return new Promise<Answer>((resolve, reject) => {
@@ -175,6 +209,7 @@ function send(
     const request = url.protocol === "https:" ? httpsRequest : httpRequest;
     let settled = false;
     let req: ClientRequest | undefined;
+    let timer: NodeJS.Timeout | undefined;
     const finish = (outcome: { answer: Answer } | { error: Error }) => {
       if (settled) return;
       settled = true;
@@ -190,10 +225,13 @@ function send(
         reject(outcome.error);
       }
     };
-    const timer = setTimeout(
-      () => finish({ error: new SlicerUnreachable(`no answer within ${timeoutMs} ms`) }),
-      timeoutMs,
-    );
+    const arm = (ms: number, what: string): void => {
+      clearTimeout(timer);
+      timer = setTimeout(
+        () => finish({ error: new SlicerUnreachable(`${what} within ${ms} ms`) }),
+        ms,
+      );
+    };
     req = request(
       url,
       {
@@ -235,6 +273,16 @@ function send(
       if (answered) return;
       finish({ error: new SlicerUnreachable(networkReason(error)) });
     });
+    if (upload && typeof timeout !== "number") {
+      // Two timers, one after the other: the upload allowance while the body
+      // streams, then the slicer's time once it has ended.
+      arm(timeout.uploadMs, "the body was not sent");
+      upload.body.once("end", () => {
+        if (!settled) arm(timeout.answerMs, "no answer");
+      });
+    } else {
+      arm(typeof timeout === "number" ? timeout : timeout.answerMs, "no answer");
+    }
     if (upload) {
       upload.body.on("error", () => finish({ error: new SliceBodyUnreadable() }));
       upload.body.pipe(req);
@@ -263,7 +311,7 @@ function parsed<T extends z.ZodType>(answer: Answer, schema: T): z.infer<T> {
   if (!result.success) {
     throw new SlicerRefused(
       answer.status,
-      "The slicer's answer is not one slicer contract v1 allows",
+      `The slicer's answer is not one slicer contract ${CONTRACT_VERSION} allows`,
     );
   }
   return result.data;
@@ -300,12 +348,28 @@ export function createSlicerClient(opts: SlicerClientOptions): SlicerClient {
   return {
     health: () => get("/v1/health", slicerContract.health),
     profiles: () => get("/v1/profiles", slicerContract.profiles),
-    async slice({ printerId, plate, body, size }) {
+    async slice({ printerId, plate, body, size, timeouts }) {
+      // The slicer would answer 400 bad_request for this; no upload is worth it.
+      // The request never leaves the app, so the message does not say the slicer refused it.
+      if (!Number.isInteger(plate) || plate < 1 || plate > LIMITS.maxPlate) {
+        body.destroy();
+        throw new SlicerRefused(
+          400,
+          `Plate ${plate} is outside the 1 to ${LIMITS.maxPlate} plates this server can estimate.`,
+        );
+      }
       const query = new URLSearchParams({ printer: printerId, plate: String(plate) });
-      const answer = await send(base, "POST", `/v1/slice?${query.toString()}`, sliceMs, {
-        body,
-        size,
-      });
+      const answer = await send(
+        base,
+        "POST",
+        `/v1/slice?${query.toString()}`,
+        timeouts ?? { uploadMs: DEFAULT_UPLOAD_TIMEOUT_MS, answerMs: sliceMs },
+        { body, size },
+      );
+      if (answer.status === 503) {
+        const off = slicerContract.sandboxOff.safeParse(readJson(answer));
+        if (off.success) throw new SlicerSandboxOff(off.data.reason);
+      }
       if (answer.status !== 200) throw refusal(answer);
       return parsed(answer, slicerContract.sliceResult);
     },

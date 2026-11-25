@@ -1,5 +1,4 @@
-// The shape the Creators, Collections and Tags pages share (build plan Task
-// 21). Without ?name= the page lists every creator that has live models,
+// The shape the Creators, Collections and Tags pages share. Without ?name= the page lists every creator that has live models,
 // and every collection or tag but one only trashed models use, with how
 // many live models (issue #312: one no model uses shows 0). With ?name= it
 // shows that one's models, each ready to organise (ModelRows), and a link
@@ -28,10 +27,10 @@
 // list then drops that note from the history entry, so a reload does not
 // say it again. Creators cannot be deleted: a creator is read from a
 // model's details.
-import { type Ref, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type MouseEvent, type Ref, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
-import { appApi, nameQuery, useAppApi, useErrorText } from "../settings/api";
+import { AppApiError, appApi, nameQuery, useAppApi, useErrorText } from "../settings/api";
 import { ConfirmDialog } from "../settings/Dialog";
 import { focusFirst, focusLost, useRowFocus } from "../settings/focus";
 import { ModelRows, type OrganiseModel } from "./ModelRows";
@@ -100,9 +99,31 @@ interface Group {
   models: number;
 }
 
-/** Deletes a tag or collection on the server: DELETE /app/api/tags?name= or /collections?name=. */
-function deleteGroup(listPath: GroupPageProps["listPath"], name: string): Promise<void> {
-  return appApi("DELETE", `${listPath}${nameQuery(name)}`);
+/**
+ * Deletes a tag or collection on the server: DELETE /app/api/tags?name= or
+ * /collections?name=. A 404 means it is already gone (deleted in another tab),
+ * which is what the user asked for, so it counts as done.
+ */
+async function deleteGroup(listPath: GroupPageProps["listPath"], name: string): Promise<void> {
+  try {
+    await appApi("DELETE", `${listPath}${nameQuery(name)}`);
+  } catch (failure) {
+    if (!(failure instanceof AppApiError && failure.status === 404)) throw failure;
+  }
+}
+
+/**
+ * A link's click that swaps the view. A click with Ctrl, Meta or Shift, or
+ * the middle button, opens the link in the browser's own way (a new tab or
+ * window), so this view does not swap and focus is not moved for it.
+ */
+function swapOnPlainClick(onSwap: () => void) {
+  return (event: MouseEvent<HTMLAnchorElement>) => {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    onSwap();
+  };
 }
 
 function confirmText(i18n: Pick<I18n, "t">, words: DeleteWords, group: Group) {
@@ -222,7 +243,10 @@ function GroupList({
           {groups.map((group) => (
             <li key={group.name} className="studio-list-item" onFocus={focus.focusIn(group.name)}>
               <div className="studio-row">
-                <Link to={`?${new URLSearchParams({ name: group.name })}`} onClick={onSwap}>
+                <Link
+                  to={`?${new URLSearchParams({ name: group.name })}`}
+                  onClick={swapOnPlainClick(onSwap)}
+                >
                   {group.name}
                 </Link>
                 <span className="studio-muted">
@@ -366,7 +390,7 @@ function GroupModels({
     <>
       <div className="studio-page-head">
         <h1>{title}</h1>
-        <Link to="." onClick={onSwap}>
+        <Link to="." onClick={swapOnPlainClick(onSwap)}>
           {t(ALL_KEYS[filter])}
         </Link>
         {filter === "collection" ? (

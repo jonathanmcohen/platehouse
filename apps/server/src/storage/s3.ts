@@ -1,7 +1,7 @@
-// The S3 blob store (build plan Task 5; AC-010, AC-012). Every byte Platehouse
+// The S3 blob store. An outage leaves it as StoreUnavailable and is never taken for a missing file. Every byte Platehouse
 // keeps lives in the bucket under the key layout in keys.ts, and reaches a
 // browser or a slicer only through the app: there are no presigned URLs here
-// or anywhere (decision 7, AC-011).
+// or anywhere, so no bucket credential or signed query reaches a browser or a slicer.
 //
 // Failures leave this module as StoreUnavailable (the store cannot be reached
 // or timed out), BlobNotFound (only a 404 NoSuchKey on a read; any other 404,
@@ -67,6 +67,25 @@ export interface BlobStore {
    */
   getBlobStream(key: string): Promise<Readable>;
   /**
+   * The object's bytes from start up to, not including, end (an HTTP Range
+   * request), for a reader that needs only part of a large object: the
+   * description re-conversion reads a .3mf's MakerWorld text this way
+   * (#357). Errors as getBlobStream's, so a missing key is BlobNotFound and
+   * an outage StoreUnavailable, while the bytes are read too; a range the
+   * store refuses is a StoreError. A start or end that is not a whole number,
+   * or a range that is empty or runs backwards, is a RangeError, thrown
+   * before anything is sent. With a signal, an abort ends the request, and
+   * the bytes while they are read, with an AbortError (never a store error,
+   * so a stopped read never reads as an outage); a signal already aborted
+   * sends nothing (#381).
+   */
+  getBlobRange(
+    key: string,
+    start: number,
+    end: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<Readable>;
+  /**
    * Resolves when the object is in the bucket, asking with a HeadObject, which
    * sends no body, to the object's size as the store's Content-Length gave it
    * (undefined when it gave none), so a reader can refuse an object that is
@@ -90,7 +109,7 @@ export interface BlobStore {
     prefix: string,
     opts?: { token?: string | undefined; maxKeys?: number },
   ): Promise<{ objects: ListedObject[]; next: string | undefined }>;
-  /** The bucket's versioning state (AC-013). */
+  /** The bucket's versioning state, which the settings page warns about when off. */
   readVersioning(): Promise<VersioningState>;
   /**
    * Checks that the store takes a write: puts a few bytes at WRITE_CHECK_KEY,
@@ -115,7 +134,7 @@ export interface ListedObject {
 
 /**
  * The one key outside the blob layout the store writes: checkWrite's, put
- * and deleted again at once. On a bucket with versioning on (AC-013) the
+ * and deleted again at once. On a bucket with versioning on the
  * check deletes the exact version it wrote (the VersionId PutObject returns),
  * which removes it for good and leaves no delete marker, so the checks do not
  * pile up old versions for the retention period. On an unversioned bucket it
@@ -181,6 +200,13 @@ function assertBlobKey(key: string, fn: string): void {
   }
 }
 
+/** What a read stopped by its caller's signal fails with. */
+function abortError(): Error {
+  const err = new Error("The read was stopped");
+  err.name = "AbortError";
+  return err;
+}
+
 export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}): BlobStore {
   const bucket = s3.bucket;
   const client = new S3Client({
@@ -208,7 +234,7 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     } catch {
       // The caller is already failing with the reason that matters; a key
-      // left behind here is found by reconciliation (AC-010).
+      // left behind here is found by reconciling the bucket against the file rows.
     }
   }
 
@@ -290,6 +316,33 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
       }
       if (!(body instanceof Readable)) throw new StoreError("GetObject", "NoBody");
       return reportObjectSize(withStoreErrors(body, "GetObject"), length);
+    },
+
+    async getBlobRange(key, start, end, opts = {}) {
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start) {
+        throw new RangeError("getBlobRange: the range must be whole byte offsets with start < end");
+      }
+      const { signal } = opts;
+      if (signal?.aborted) throw abortError();
+      let body: unknown;
+      try {
+        const out = await client.send(
+          new GetObjectCommand({ Bucket: bucket, Key: key, Range: `bytes=${start}-${end - 1}` }),
+          signal ? { abortSignal: signal } : {},
+        );
+        body = out.Body;
+      } catch (err) {
+        if (signal?.aborted) throw abortError();
+        throw toStoreError(err, "GetObject", { notFound: true });
+      }
+      if (!(body instanceof Readable)) throw new StoreError("GetObject", "NoBody");
+      const out = withStoreErrors(body, "GetObject");
+      if (signal) {
+        const onAbort = () => out.destroy(abortError());
+        signal.addEventListener("abort", onAbort, { once: true });
+        out.once("close", () => signal.removeEventListener("abort", onAbort));
+      }
+      return out;
     },
 
     async headBlob(key) {

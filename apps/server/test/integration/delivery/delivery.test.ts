@@ -1,6 +1,8 @@
-// Build plan Task 17: file delivery and slicer links against Postgres 17 and
-// the S3 test server (AC-011, AC-012 file unavailable, AC-041, AC-040 link
-// half; Review Focus 1).
+// File delivery and slicer links against Postgres 17 and
+// the S3 test server: no bucket credential or signed URL reaches a client, a
+// store outage shows a file as unavailable without marking it lost, slicer
+// links work without a session for one file and 10 minutes, and hostile file
+// names stay safe in downloads and links.
 //
 // Everything is real but the login: files and blobs in the database, bytes
 // in the bucket, the download and blob routes and the slicer links served by
@@ -26,7 +28,7 @@ import { migrate } from "../../../src/db/migrate.js";
 import type { DB } from "../../../src/db/types.js";
 import { createDeliveryLibrary } from "../../../src/delivery/download.js";
 import { linkFileName, type SlicerLink } from "../../../src/delivery/links.js";
-import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
+import { type DisplayContext, plateNumbersMany } from "../../../src/estimates/display.js";
 import { createRepos } from "../../../src/repos/index.js";
 import { type BlobStore, createBlobStore } from "../../../src/storage/s3.js";
 import { createUploads } from "../../../src/uploads/tus.js";
@@ -53,7 +55,7 @@ const ACCENTED = String.fromCodePoint(
   0x672c,
 );
 
-/** What a link's name segment never carries (the Slicer link contract). */
+/** What a link's name segment never carries (linkSegment in delivery/links.ts). */
 const UNSAFE_IN_SEGMENT = /[/\\%?#;\p{Cc}\p{Cf}]/gu;
 /** The same, for one test (no global flag, so no state between calls). */
 const UNSAFE_CHAR = /[/\\%?#;\p{Cc}\p{Cf}]/u;
@@ -89,6 +91,9 @@ interface Answer {
 
 /** Every answer this file read, for the no-S3-detail check. */
 const answers: Answer[] = [];
+
+/** The ETag this app sends on a revalidated blob: its quoted id, a UUID. */
+const OWN_ETAG = /^"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"$/;
 
 async function call(
   method: string,
@@ -192,7 +197,7 @@ beforeAll(async () => {
         db,
         store: switching,
         displayContext: async () => CONTEXT,
-        plateNumbers: (ctx, id) => plateNumbers(db, ctx, id),
+        plateNumbersMany: (ctx, ids) => plateNumbersMany(db, ctx, ids),
       }),
       library: createDeliveryLibrary({ db, store: switching }),
       linkSecret: randomBytes(32).toString("hex"),
@@ -215,7 +220,7 @@ afterAll(async () => {
   await Promise.all([pgc?.stop(), s3?.stop()]);
 });
 
-describe("slicer links (AC-041)", () => {
+describe("slicer links", () => {
   test("link works with no session and returns the file bytes", async () => {
     const seeded = await seedStoredModel(env);
     const link = await mint(seeded.file.id);
@@ -329,12 +334,44 @@ describe("downloads and blobs", () => {
     expect(res.headers.get("content-disposition")).toMatch(/^attachment; filename="/);
   });
 
-  test("a blob is served with the immutable cache header", async () => {
+  test("a thumbnail is served with the immutable cache header", async () => {
     const seeded = await seedStoredModel(env);
     const res = await call("GET", `/blobs/${seeded.thumbnail.id}`, { session: true });
     expect(res.status).toBe(200);
     expect(res.text).toMatch(/^png /);
     expect(res.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+  });
+
+  test("a source blob is revalidated, and a matching If-None-Match is 304 without a body", async () => {
+    const seeded = await seedStoredModel(env);
+    const path = `/blobs/${seeded.source.id}`;
+    const etag = `"${seeded.source.id}"`;
+    const plain = await call("GET", path, { session: true });
+    expect(plain.status).toBe(200);
+    expect(plain.headers.get("cache-control")).toBe("private, no-cache");
+    expect(plain.headers.get("etag")).toBe(etag);
+    for (const value of [etag, `W/${etag}`, "*"]) {
+      const res = await call("GET", path, { session: true, headers: { "if-none-match": value } });
+      expect(res.status, value).toBe(304);
+      expect(res.headers.get("etag"), value).toBe(etag);
+      expect(res.headers.get("cache-control"), value).toBe("private, no-cache");
+      expect(res.bytes.length, value).toBe(0);
+    }
+    const other = await call("GET", path, {
+      session: true,
+      headers: { "if-none-match": '"something-else"' },
+    });
+    expect(other.status).toBe(200);
+  });
+
+  test("a conditional request for a trashed model's blob is 404", async () => {
+    const seeded = await seedStoredModel(env);
+    await env.repos.models.trash(seeded.model.id);
+    const res = await call("GET", `/blobs/${seeded.source.id}`, {
+      session: true,
+      headers: { "if-none-match": `"${seeded.source.id}"` },
+    });
+    expect(res.status).toBe(404);
   });
 
   test("a trashed model's file and blobs are 404", async () => {
@@ -347,7 +384,7 @@ describe("downloads and blobs", () => {
   });
 });
 
-describe("the store down (AC-012)", () => {
+describe("the store down", () => {
   test("store down: download is 503 and the file is not marked missing", async () => {
     const seeded = await seedStoredModel(env);
     const link = await mint(seeded.file.id);
@@ -444,7 +481,7 @@ describe("an object whose size differs from the record (PR #156 security review)
   });
 });
 
-describe("hostile file names (Review Focus 1)", () => {
+describe("hostile file names", () => {
   const hostile = [
     "a b  c.3mf",
     `${ACCENTED}.3mf`,
@@ -536,9 +573,11 @@ describe("hostile file names (Review Focus 1)", () => {
   });
 });
 
-describe("no S3 detail in any answer (AC-011)", () => {
+describe("no S3 detail in any answer", () => {
   test("responses carry no S3 host, key or signature", async () => {
-    // Make sure every kind of answer is in the set, then read them all.
+    // Make sure every kind of answer is in the set, then read them all: the
+    // ones this test makes, and any the tests before it recorded.
+    const start = answers.length;
     const seeded = await seedStoredModel(env);
     const link = await mint(seeded.file.id);
     await call("GET", pathOf(link.url));
@@ -569,12 +608,18 @@ describe("no S3 detail in any answer (AC-011)", () => {
       "AWSAccessKeyId",
       "127.0.0.1:9",
     ];
-    expect(answers.length).toBeGreaterThan(20);
+    // At least the six this test makes itself, so it passes or fails on its
+    // own when run alone.
+    expect(answers.length - start).toBeGreaterThanOrEqual(6);
     for (const answer of answers) {
       const headerText = [...answer.headers.entries()].map(([k, v]) => `${k}: ${v}`).join("\n");
       for (const name of answer.headers.keys()) {
         expect(name.toLowerCase().startsWith("x-amz"), name).toBe(false);
-        expect(name.toLowerCase(), name).not.toBe("etag");
+        // Only our own blob-id ETag is allowed ("<uuid>", quoted); an S3 ETag
+        // is a quoted MD5 hex and would show a store's own header.
+        if (name.toLowerCase() === "etag") {
+          expect(answer.headers.get(name), name).toMatch(OWN_ETAG);
+        }
       }
       for (const needle of forbidden) {
         expect(headerText.includes(needle), `${needle} in headers`).toBe(false);

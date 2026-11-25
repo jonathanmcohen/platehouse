@@ -20,6 +20,16 @@ export type EstimateSource = "file" | "platehouse";
 export type EstimateStatus = "pending" | "running" | "ok" | "failed";
 export type BucketVersioning = "enabled" | "suspended" | "off" | "unknown";
 export type FilamentProfileSource = "bambu" | "generic" | "file";
+/** Why a picture attempt failed (0016); retry decisions read this, never the message. */
+export type PreviewFailureReason =
+  | "slicer_down"
+  | "store_down"
+  | "queue_failed"
+  | "temp_failed"
+  | "sandbox_off_kernel"
+  | "sandbox_off_check"
+  | "lost"
+  | "render_failed";
 export type NameSource = "file" | "title" | "user";
 
 type CreatedAt = Generated<Date>;
@@ -54,6 +64,16 @@ export interface ModelsTable {
   nameSource: Generated<NameSource>;
   /** The MakerWorld design ID its .3mf carries, digits only (0005). */
   makerworldDesignId: string | null;
+  /** SHA-256, lowercase hex, of the description as ingest's converter wrote it (0014). */
+  descriptionSha256: string | null;
+  /** The converter version that wrote the description; set with descriptionSha256 (0014). */
+  descriptionConverter: number | null;
+  /** The .3mf the description was converted from; no foreign key (0014). */
+  descriptionFileId: string | null;
+  /** The newest .3mf the description was checked against and could not be proven to be Platehouse's own conversion; no foreign key (0016). */
+  descriptionUnprovenFileId: string | null;
+  /** SHA-256, lowercase hex, of the exact description text that check read; set with descriptionUnprovenFileId (0016). */
+  descriptionUnprovenSha256: string | null;
   createdAt: CreatedAt;
   updatedAt: UpdatedAt;
 }
@@ -103,6 +123,18 @@ export interface FilesTable {
   parseStatus: Generated<ParseStatus>;
   derivedStatus: string | null;
   derivedMessage: string | null;
+  /** An STL's or STEP file's preview picture: null, 'pending', 'ok' or 'failed' (migration 0012). */
+  previewStatus: string | null;
+  /** Why the preview picture failed, in derived_message's form; null with none. */
+  previewMessage: string | null;
+  /** The source blob render_png_blob_id was made from (an STL's or STEP file's picture). */
+  previewSourceBlobId: string | null;
+  /** The source the newest failed picture attempt was for. */
+  previewFailureSourceBlobId: string | null;
+  /** Why that attempt failed, in derived_message's form. */
+  previewFailureMessage: string | null;
+  /** The code for previewFailureMessage (0016); null exactly when the message is. */
+  previewFailureReason: PreviewFailureReason | null;
   meshBlobId: string | null;
   renderStlBlobId: string | null;
   renderPngBlobId: string | null;
@@ -124,6 +156,8 @@ export interface PlatesTable {
   name: string | null;
   objectCount: number;
   thumbnailBlobId: string | null;
+  /** The GLB of the plate's 3D view, made the first time it is opened (0015); null until then. */
+  meshBlobId: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface EstimatesTable {
@@ -199,6 +233,10 @@ export interface ApiTokensTable {
   createdAt: CreatedAt;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
+  /** The OIDC subject that made the token (0013); null when made before it was recorded. */
+  createdBySubject: ColumnType<string | null, string | null | undefined, never>;
+  /** The maker's display name when the token was made (0013), or null. */
+  createdByName: ColumnType<string | null, string | null | undefined, never>;
 }
 
 export interface SessionsTable {
@@ -207,6 +245,23 @@ export interface SessionsTable {
   createdAt: CreatedAt;
   expiresAt: Date;
   idleExpiresAt: Date;
+  /** The display name the issuer gave at sign-in (0013), or null. */
+  displayName: ColumnType<string | null, string | null | undefined, never>;
+}
+
+/** One finished one-time upgrade step (0014), such as reconvert-descriptions-3. */
+export interface UpgradeStepsTable {
+  name: string;
+  finishedAt: CreatedAt;
+  /** What the step did, as JSON (jsonb). */
+  result: ColumnType<unknown, string | undefined, string>;
+}
+
+/** One holder at a time for a one-off upgrade run (0016). */
+export interface UpgradeLeasesTable {
+  name: string;
+  holder: string;
+  expiresAt: Date;
 }
 
 export interface DB {
@@ -227,6 +282,8 @@ export interface DB {
   userPrinters: UserPrintersTable;
   apiTokens: ApiTokensTable;
   sessions: SessionsTable;
+  upgradeSteps: UpgradeStepsTable;
+  upgradeLeases: UpgradeLeasesTable;
 }
 
 export type Blob = Selectable<BlobsTable>;

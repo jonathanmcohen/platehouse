@@ -17,7 +17,22 @@ bar and a status for each file.
 - A file that is already in the library is skipped, and the dialog links to the model that holds
   it. Press **Import anyway** on that file to store it again.
 - To add files to an existing model, drop them on its page, or press **Add files** there.
-- Uploads go in 5 MiB pieces and pick up where they stopped if the connection drops.
+- Three files are sent at a time. The others read **Waiting** until one of the three is done, and
+  only then is their upload started on the server. Files go in 5 MiB pieces, and a short stall is
+  retried by itself.
+- When a file fails, its row says why and has a **Retry** button, which sends the file again to
+  where it was going. If the server still holds the part already sent, it picks up from there.
+- A file that failed because the connection dropped starts again by itself when the browser is
+  back online. A file the server refused, for example because it is out of room, waits for
+  **Retry**.
+- While a file is waiting or sending, the browser asks before you leave or reload the page, which
+  would stop it. Once a file reads **Adding to the library**, all of it has arrived and leaving is
+  safe.
+- After the last piece, the dialog waits for the import while the server says it is still working
+  on it, for up to 70 minutes. See
+  ["The upload could not be confirmed"](../troubleshooting.md#uploads) for when it stops waiting.
+- While the browser is offline, files waiting their turn are not started; they start when it is
+  back online.
 - A file over 512 MiB is listed as too large and is not sent.
 
 As soon as a file is stored, its plates are queued for estimates and any OpenSCAD or STEP file is
@@ -73,6 +88,11 @@ share or a sync tool.
 
 If the database, the bucket or the temporary folder is down, the inbox waits and tries again,
 backing off up to 5 minutes, instead of failing files.
+
+Anyone who can write to the inbox folder can add files without signing in, remove or replace
+files others put there, and read and write the reasons in `failed/`, so share the folder itself,
+not one above it, and only with people who could be members. See
+[Security](../security.md#inbox-folder).
 
 ## Duplicate files
 

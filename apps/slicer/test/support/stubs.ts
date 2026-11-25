@@ -3,12 +3,13 @@
 // exactly as it runs the real ones, so these tests cover the request
 // handling, the arguments, the mutex and the kill; the container tests cover
 // the real programs.
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./tmp.js";
 
+/** A folder for stub programs, removed by removeTempDirs (support/tmp.ts). */
 export function stubDir(): string {
-  return mkdtempSync(join(tmpdir(), "slicer-stub-"));
+  return tempDir("slicer-stub-");
 }
 
 function writeScript(file: string, body: string): string {
@@ -29,6 +30,8 @@ export type OrcaMode =
   | { kind: "result"; code: number; error: string; exit?: number; segfault?: boolean }
   | { kind: "crash"; exit: number }
   | { kind: "noStats" }
+  /** Leaves a FIFO named result.json, as code inside Orca could. */
+  | { kind: "fifoResult" }
   | { kind: "sleep" };
 
 /**
@@ -39,12 +42,14 @@ export type OrcaMode =
 export function fakeOrca(
   dir: string,
   mode: OrcaMode,
-): { bin: string; argsLog: string; pids: string } {
+): { bin: string; argsLog: string; pids: string; runsLog: string } {
   const argsLog = join(dir, "args.log");
+  const runsLog = join(dir, "runs.log");
   const pids = join(dir, "pids.txt");
   const head = `#!/bin/sh
 : > '${argsLog}'
 for a in "$@"; do printf '%s\\n' "$a" >> '${argsLog}'; done
+printf '%s\\n' "$*" >> '${runsLog}'
 out=""; plate=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -81,6 +86,11 @@ exit ${mode.exit}
 exit 0
 `;
       break;
+    case "fifoResult":
+      body = `mkfifo "$out/result.json"
+exit 0
+`;
+      break;
     case "sleep":
       body = `sleep 30 &
 child=$!
@@ -89,7 +99,7 @@ wait
 `;
       break;
   }
-  return { bin: writeScript(join(dir, "orca"), head + body), argsLog, pids };
+  return { bin: writeScript(join(dir, "orca"), head + body), argsLog, pids, runsLog };
 }
 
 /** A fake GNU time: "-v -o FILE cmd ..." runs cmd and writes time -v lines to FILE. */
@@ -130,12 +140,17 @@ export type ProbeMode = "blocked" | "read" | "other" | "hang";
 export type AbiMode = number | "garbled";
 
 /**
- * A fake landrun. It writes its arguments to landrun.log, then, for the
- * command after "--", writes the file named by -o (or fails like OpenSCAD).
+ * A fake landrun. It writes its arguments to landrun.log. A command after
+ * "--" that exists (Orca's or the STEP worker's, in these tests) it runs in
+ * its own place with only the --env variables, as landrun does; for any other
+ * (OpenSCAD, which these tests never have) it writes the file named by -o, or
+ * fails like OpenSCAD.
  * setProbe changes how it answers the self-test from the next run on, and
- * setAbi the Landlock ABI it reports (default 8, GitHub's runner). A run
- * without --best-effort is the ABI check: it is counted in landrun-abi.log,
- * not in landrun.log or landrun-runs.log. "big" writes a sparse output file of
+ * setAbi the Landlock ABI it reports (default 8, GitHub's runner).
+ * landrun-runs.log counts the OpenSCAD runs it acts out, the self-test's
+ * included, not the programs it runs in its place. A run without
+ * --best-effort is the ABI check: it is counted in landrun-abi.log, not in
+ * landrun.log or landrun-runs.log. "big" writes a sparse output file of
  * `bytes` bytes, so a test can pass the render output cap without filling the
  * disk. "fsize" acts out prlimit's file-size limit: it writes part of the
  * output, then dies of SIGXFSZ, as the kernel kills a program that writes
@@ -149,7 +164,13 @@ export function fakeLandrun(
     | { kind: "big"; bytes: number }
     | { kind: "fsize" }
     /** Leaves the output as a symlink to target, as code inside OpenSCAD could. */
-    | { kind: "symlink"; target: string },
+    | { kind: "symlink"; target: string }
+    /**
+     * Writes the .scad it was given, then the input.stl beside it, as the
+     * output, so a test sees the wrapper the STL route writes and the STL
+     * body that reached the job folder.
+     */
+    | { kind: "inputs" },
   opts: { probe?: ProbeMode; abi?: AbiMode } = {},
 ): {
   bin: string;
@@ -196,6 +217,11 @@ exit 1
 exit 0
 `;
       break;
+    case "inputs":
+      tail = `{ cat "$input"; cat "$(dirname "$input")/input.stl"; } > "$out"
+exit 0
+`;
+      break;
   }
   // landrun v0.1.17 without --best-effort, as it fails on an older kernel
   // (internal/log, go-landlock restrict.go).
@@ -235,13 +261,28 @@ fi
   const bin = writeScript(
     join(dir, "landrun"),
     `#!/bin/sh
-${abiCheck}printf 'run\\n' >> '${runsLog}'
-input=""
+${abiCheck}input=""
 for a in "$@"; do input="$a"; done
 if ! grep -q sandbox-probe "$input" 2>/dev/null; then
   : > '${argsLog}'
   for a in "$@"; do printf '%s\\n' "$a" >> '${argsLog}'; done
 fi
+cmd=""; past=no
+for a in "$@"; do
+  if [ "$past" = yes ]; then cmd="$a"; break; fi
+  [ "$a" = "--" ] && past=yes
+done
+if [ -n "$cmd" ] && [ -x "$cmd" ]; then
+  first=yes; past=no; take=no
+  for a in "$@"; do
+    if [ "$first" = yes ]; then set -- env -i; first=no; fi
+    if [ "$past" = yes ]; then set -- "$@" "$a"; continue; fi
+    if [ "$take" = yes ]; then set -- "$@" "$a"; take=no; continue; fi
+    case "$a" in --env) take=yes ;; --) past=yes ;; esac
+  done
+  exec "$@"
+fi
+printf 'run\\n' >> '${runsLog}'
 out=""
 while [ $# -gt 0 ]; do
   if [ "$1" = "-o" ]; then out="$2"; fi
@@ -277,7 +318,12 @@ exec "$@"
 /**
  * A fake STEP worker module: node worker.mjs <in> <out>. "echo" copies the
  * input to the output; "slow" appends "start" and "end" lines to `log`
- * around a wait of `ms`, so a test can see whether two conversions overlap.
+ * around a wait of `ms`, so a test can see whether two conversions overlap;
+ * "sleep" writes its pid to `pidFile` and waits for a kill; "big" writes
+ * `bytes` bytes of output. "symlink" leaves the output as a link to
+ * `target` and "folder" as a folder, as code inside the worker could;
+ * "cutOff" writes `bytes` bytes, then fails as Node's write fails at
+ * prlimit's file-size limit (EFBIG: Node ignores SIGXFSZ).
  */
 export function fakeStepWorker(
   dir: string,
@@ -285,7 +331,12 @@ export function fakeStepWorker(
     | { kind: "ok"; content: string }
     | { kind: "fail"; stderr: string }
     | { kind: "echo" }
-    | { kind: "slow"; log: string; ms: number },
+    | { kind: "slow"; log: string; ms: number }
+    | { kind: "sleep"; pidFile: string }
+    | { kind: "big"; bytes: number }
+    | { kind: "symlink"; target: string }
+    | { kind: "folder" }
+    | { kind: "cutOff"; bytes: number },
 ): string {
   const file = join(dir, "step-worker.mjs");
   let body: string;
@@ -303,6 +354,34 @@ process.exit(1);
     case "echo":
       body = `import { copyFileSync } from "node:fs";
 copyFileSync(process.argv[2], process.argv[3]);
+`;
+      break;
+    case "sleep":
+      body = `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(mode.pidFile)}, String(process.pid));
+await new Promise((r) => setTimeout(r, 60000));
+`;
+      break;
+    case "big":
+      body = `import { writeFileSync } from "node:fs";
+writeFileSync(process.argv[3], Buffer.alloc(${mode.bytes}, 120));
+`;
+      break;
+    case "symlink":
+      body = `import { symlinkSync } from "node:fs";
+symlinkSync(${JSON.stringify(mode.target)}, process.argv[3]);
+`;
+      break;
+    case "folder":
+      body = `import { mkdirSync } from "node:fs";
+mkdirSync(process.argv[3]);
+`;
+      break;
+    case "cutOff":
+      body = `import { writeFileSync } from "node:fs";
+writeFileSync(process.argv[3], Buffer.alloc(${mode.bytes}, 120));
+process.stderr.write("EFBIG: file too large, write\\n");
+process.exit(1);
 `;
       break;
     case "slow":

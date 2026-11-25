@@ -1,4 +1,4 @@
-// API tokens on the settings page (build plan Task 21; AC-083 UI). The user
+// API tokens on the settings page. The user
 // makes one token per API client (each script or assistant, on each machine) and revokes it
 // here. A new token is shown once, in a themed dialog with Copy, and never
 // again: it is held only while that dialog is open, never put in the list,
@@ -10,12 +10,38 @@
 // attribute, so a create that fails leaves focus on it. After a revoke,
 // focus goes to the next row's Revoke, else the previous row's, else the
 // Create token button (useRowFocus in ./focus).
+//
+// Issue #322: each row says who made the token (the name with the OIDC
+// subject beside it, else the subject alone, of the session that made it;
+// userLabel in ./SignOutEverywhere), or that its maker is unknown for a
+// token made before Platehouse recorded that. A new token needs a recent
+// sign-in; when the server refuses one with sign_in_required, the page says
+// so with a Sign in again link to the login, which comes back here; revoking
+// a token someone else made (or one with no known maker) is refused the same
+// way, and the token stays listed. Sign out
+// everywhere sits below the list, and the list is read again after it
+// revokes someone's tokens.
 import { type FormEvent, type RefObject, useId, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useI18n } from "../i18n/I18n";
-import { appApi, segment, useAppApi, useErrorText } from "./api";
+import {
+  AppApiError,
+  appApi,
+  needsSignIn,
+  SIGN_IN_AGAIN_URL,
+  segment,
+  useAppApi,
+  useErrorText,
+} from "./api";
 import { ConfirmDialog, Dialog } from "./Dialog";
 import { useRowFocus } from "./focus";
+import { SignOutEverywhere, userLabel } from "./SignOutEverywhere";
+
+/** Who made a token: the OIDC subject and the display name the session had then. */
+export interface TokenCreator {
+  subject: string;
+  name: string | null;
+}
 
 /** A live token as the list shows it. */
 export interface ListedToken {
@@ -24,6 +50,8 @@ export interface ListedToken {
   prefix: string;
   createdAt: string;
   lastUsedAt: string | null;
+  /** Null for a token made before Platehouse recorded who made it. */
+  createdBy: TokenCreator | null;
 }
 
 /** The create answer: the listed fields and, this once, the token itself. */
@@ -85,6 +113,8 @@ export function Tokens() {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  /** The act refused for an older sign-in, if any: the page offers Sign in again. */
+  const [signInAct, setSignInAct] = useState<"create" | "revoke" | null>(null);
   /** The new token, held only while its dialog is open. */
   const [created, setCreated] = useState<{ name: string; value: string } | null>(null);
   const [revoking, setRevoking] = useState<ListedToken | null>(null);
@@ -106,6 +136,7 @@ export function Tokens() {
     }
     setBusy(true);
     setError(undefined);
+    setSignInAct(null);
     try {
       const answer = await appApi<CreatedAnswer>("POST", "/tokens", { name: trimmed });
       // Only the listed fields go into the list; the token stays in the dialog.
@@ -115,19 +146,40 @@ export function Tokens() {
         prefix: answer.prefix,
         createdAt: answer.createdAt,
         lastUsedAt: answer.lastUsedAt,
+        createdBy: answer.createdBy,
       };
       list.set((prev) => ({ tokens: [row, ...prev.tokens.filter((r) => r.id !== row.id)] }));
       setName("");
       setCreated({ name: answer.name, value: answer.token });
     } catch (failure) {
-      setError(errorText(failure));
+      if (needsSignIn(failure)) setSignInAct("create");
+      else setError(errorText(failure));
     } finally {
       setBusy(false);
     }
   }
 
   async function revoke(item: ListedToken) {
-    await appApi("DELETE", `/tokens/${segment(item.id)}`);
+    setSignInAct(null);
+    try {
+      await appApi("DELETE", `/tokens/${segment(item.id)}`);
+    } catch (failure) {
+      // Already revoked elsewhere (404): what was asked for is done.
+      if (failure instanceof AppApiError && failure.status === 404) {
+        finishRevoke(item);
+        return;
+      }
+      if (!needsSignIn(failure)) throw failure;
+      // Revoking someone else's token needs a recent sign-in: close the
+      // dialog and offer the sign-in, keeping the token listed.
+      setRevoking(null);
+      setSignInAct("revoke");
+      return;
+    }
+    finishRevoke(item);
+  }
+
+  function finishRevoke(item: ListedToken) {
     // Its own button is gone with it; the dialog hands focus to its neighbour.
     revokeReturn.current = focus.after(item.id);
     list.set((prev) => ({ tokens: prev.tokens.filter((r) => r.id !== item.id) }));
@@ -135,111 +187,127 @@ export function Tokens() {
   }
 
   return (
-    <div className="ph-section">
-      <h2>{t("tokens.heading")}</h2>
-      <p className="studio-muted">
-        {rich(
-          "tokens.intro",
-          {},
-          { link: (children) => <Link to="/settings?view=api">{children}</Link> },
-        )}
-      </p>
-      <form className="ph-inline-form" onSubmit={create}>
-        <label htmlFor={nameId}>{t("tokens.nameLabel")}</label>
-        <input
-          id={nameId}
-          className="studio-input"
-          value={name}
-          maxLength={MAX_NAME}
-          autoComplete="off"
-          placeholder={t("tokens.namePlaceholder")}
-          onChange={(event) => setName(event.currentTarget.value)}
-        />
-        <button ref={createButton} type="submit" className="studio-button" aria-disabled={busy}>
-          {t("tokens.create")}
-        </button>
-      </form>
-      {error === undefined ? null : (
-        <p role="alert" className="studio-alert studio-alert-alert">
-          {error}
+    <>
+      <div className="ph-section">
+        <h2>{t("tokens.heading")}</h2>
+        <p className="studio-muted">
+          {rich(
+            "tokens.intro",
+            {},
+            { link: (children) => <Link to="/settings?view=api">{children}</Link> },
+          )}
         </p>
-      )}
-      {list.error === undefined ? null : (
-        <p className="studio-alert studio-alert-alert">{list.error}</p>
-      )}
-      {list.data === undefined && list.error === undefined ? (
-        <p className="studio-muted">{t("tokens.loading")}</p>
-      ) : null}
-      {list.data !== undefined && rows.length === 0 ? (
-        <p className="studio-empty">{t("tokens.none")}</p>
-      ) : null}
-      {rows.length > 0 ? (
-        <ul className="studio-list">
-          {rows.map((item) => (
-            <li key={item.id} className="studio-list-item" onFocus={focus.focusIn(item.id)}>
-              <div className="studio-row">
-                <strong>{item.name}</strong>
-                <button
-                  ref={focus.control(item.id)}
-                  type="button"
-                  className="studio-button ph-small ph-button-danger"
-                  aria-label={t("tokens.revokeLabel", { name: item.name })}
-                  onClick={() => {
-                    revokeReturn.current = focus.get(item.id);
-                    setRevoking(item);
-                  }}
-                >
-                  {t("tokens.revoke")}
-                </button>
-              </div>
-              <span className="studio-muted">
-                {item.lastUsedAt === null
-                  ? rich(
-                      "tokens.rowNeverUsed",
-                      { prefix: item.prefix, made: fmt.date(item.createdAt) },
-                      {
-                        code: (children) => <code>{children}</code>,
-                        made: (children) => <time dateTime={item.createdAt}>{children}</time>,
-                      },
-                    )
-                  : rich(
-                      "tokens.rowUsed",
-                      {
-                        prefix: item.prefix,
-                        made: fmt.date(item.createdAt),
-                        used: fmt.date(item.lastUsedAt, true),
-                      },
-                      {
-                        code: (children) => <code>{children}</code>,
-                        made: (children) => <time dateTime={item.createdAt}>{children}</time>,
-                        used: (children) => (
-                          <time dateTime={item.lastUsedAt as string}>{children}</time>
-                        ),
-                      },
-                    )}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {created === null ? null : (
-        <NewToken
-          name={created.name}
-          value={created.value}
-          onDone={() => setCreated(null)}
-          returnFocusTo={createButton}
-        />
-      )}
-      {revoking === null ? null : (
-        <ConfirmDialog
-          title={t("tokens.revokeTitle")}
-          message={t("tokens.revokeMessage", { name: revoking.name })}
-          confirmLabel={t("tokens.revoke")}
-          onConfirm={() => revoke(revoking)}
-          onCancel={() => setRevoking(null)}
-          returnFocusTo={revokeReturn}
-        />
-      )}
-    </div>
+        <form className="ph-inline-form" onSubmit={create}>
+          <label htmlFor={nameId}>{t("tokens.nameLabel")}</label>
+          <input
+            id={nameId}
+            className="studio-input"
+            value={name}
+            maxLength={MAX_NAME}
+            autoComplete="off"
+            placeholder={t("tokens.namePlaceholder")}
+            onChange={(event) => setName(event.currentTarget.value)}
+          />
+          <button ref={createButton} type="submit" className="studio-button" aria-disabled={busy}>
+            {t("tokens.create")}
+          </button>
+        </form>
+        {error === undefined ? null : (
+          <p role="alert" className="studio-alert studio-alert-alert">
+            {error}
+          </p>
+        )}
+        {signInAct !== null ? (
+          <p role="alert" className="studio-alert studio-alert-alert">
+            {t(signInAct === "revoke" ? "tokens.signInRequiredRevoke" : "tokens.signInRequired")}{" "}
+            <a href={SIGN_IN_AGAIN_URL}>{t("tokens.signInAgain")}</a>
+          </p>
+        ) : null}
+        {list.error === undefined ? null : (
+          <p role="alert" className="studio-alert studio-alert-alert">
+            {list.error}
+          </p>
+        )}
+        {list.data === undefined && list.error === undefined ? (
+          <p className="studio-muted">{t("tokens.loading")}</p>
+        ) : null}
+        {list.data !== undefined && rows.length === 0 ? (
+          <p className="studio-empty">{t("tokens.none")}</p>
+        ) : null}
+        {rows.length > 0 ? (
+          <ul className="studio-list">
+            {rows.map((item) => (
+              <li key={item.id} className="studio-list-item" onFocus={focus.focusIn(item.id)}>
+                <div className="studio-row">
+                  <strong>{item.name}</strong>
+                  <button
+                    ref={focus.control(item.id)}
+                    type="button"
+                    className="studio-button ph-small ph-button-danger"
+                    aria-label={t("tokens.revokeLabel", { name: item.name })}
+                    onClick={() => {
+                      revokeReturn.current = focus.get(item.id);
+                      setRevoking(item);
+                    }}
+                  >
+                    {t("tokens.revoke")}
+                  </button>
+                </div>
+                <span className="studio-muted">
+                  {item.lastUsedAt === null
+                    ? rich(
+                        "tokens.rowNeverUsed",
+                        { prefix: item.prefix, made: fmt.date(item.createdAt) },
+                        {
+                          code: (children) => <code>{children}</code>,
+                          made: (children) => <time dateTime={item.createdAt}>{children}</time>,
+                        },
+                      )
+                    : rich(
+                        "tokens.rowUsed",
+                        {
+                          prefix: item.prefix,
+                          made: fmt.date(item.createdAt),
+                          used: fmt.date(item.lastUsedAt, true),
+                        },
+                        {
+                          code: (children) => <code>{children}</code>,
+                          made: (children) => <time dateTime={item.createdAt}>{children}</time>,
+                          used: (children) => (
+                            <time dateTime={item.lastUsedAt as string}>{children}</time>
+                          ),
+                        },
+                      )}
+                </span>
+                <span className="studio-muted" data-token-maker>
+                  {item.createdBy === null
+                    ? t("tokens.madeByUnknown")
+                    : t("tokens.madeBy", { name: userLabel(t, item.createdBy) })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {created === null ? null : (
+          <NewToken
+            name={created.name}
+            value={created.value}
+            onDone={() => setCreated(null)}
+            returnFocusTo={createButton}
+          />
+        )}
+        {revoking === null ? null : (
+          <ConfirmDialog
+            title={t("tokens.revokeTitle")}
+            message={t("tokens.revokeMessage", { name: revoking.name })}
+            confirmLabel={t("tokens.revoke")}
+            onConfirm={() => revoke(revoking)}
+            onCancel={() => setRevoking(null)}
+            returnFocusTo={revokeReturn}
+          />
+        )}
+      </div>
+      <SignOutEverywhere onTokensRevoked={() => void list.reload()} />
+    </>
   );
 }

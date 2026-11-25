@@ -1,4 +1,4 @@
-// Build plan Task 4: blobs, files, plates, tags, collections, tokens, sessions
+// Blobs, files, plates, tags, collections, tokens, sessions
 // and settings repositories against a migrated Postgres 17.
 import { createHash, randomBytes } from "node:crypto";
 import { sql } from "kysely";

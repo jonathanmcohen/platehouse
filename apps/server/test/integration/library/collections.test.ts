@@ -1,5 +1,5 @@
-// Build plan Task 14, AC-062: a model can sit in more than one collection, and
-// collections are flat (Q17).
+// A model can sit in more than one collection, and
+// collections are flat: one cannot hold another.
 import { setTimeout as sleep } from "node:timers/promises";
 import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";

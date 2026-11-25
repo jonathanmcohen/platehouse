@@ -1,4 +1,5 @@
-// Build plan Task 15 (AC-080, AC-091): GET /auth/login, GET /auth/callback
+// Login limited to the configured group, with every URL from the configured
+// public origin: GET /auth/login, GET /auth/callback
 // and POST /auth/logout against a local mock issuer. The login is the OIDC
 // code flow with PKCE S256; state and nonce ride in a 10-minute signed,
 // HttpOnly cookie; redirect_uri is absoluteUrl('/auth/callback') whatever
@@ -245,7 +246,7 @@ describe("GET /auth/login", () => {
     }
   });
 
-  test("redirect_uri uses PUBLIC_ORIGIN under a spoofed Host and X-Forwarded-Host (AC-091)", async () => {
+  test("redirect_uri uses PUBLIC_ORIGIN under a spoofed Host and X-Forwarded-Host", async () => {
     const spoofed = {
       host: "evil.example",
       "x-forwarded-host": "evil.example",
@@ -323,7 +324,8 @@ describe("GET /auth/callback", () => {
       await appFor({ groups });
       const run = await runLogin(t);
       expect(run.callback.statusCode).toBe(403);
-      expect(run.callback.body).toContain(`not in the ${TEST_GROUP} group`);
+      expect(run.callback.body).toContain("Your account is not allowed to use this Platehouse.");
+      expect(run.callback.body).not.toContain(TEST_GROUP);
       expect(run.sessionCookie).toBeUndefined();
       expect(t.store.rows.size).toBe(0);
     });
@@ -501,6 +503,18 @@ describe("POST /auth/logout", () => {
     expect(await withSession(run.sessionCookie)).toBe(401);
   });
 
+  test("the sign-out answer tells the browser to drop its cached copies", async () => {
+    const run = await runLogin(t);
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { origin: TEST_ORIGIN },
+      cookies: { [SESSION_COOKIE]: run.sessionCookie ?? "" },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(res.headers["clear-site-data"]).toBe('"cache"');
+  });
+
   test("with no session it is 204 too", async () => {
     const res = await t.app.inject({
       method: "POST",
@@ -522,6 +536,7 @@ describe("POST /auth/logout", () => {
     expect(failed.statusCode).toBe(503);
     expect(failed.json()).toEqual({ error: "unavailable" });
     expect(failed.headers["cache-control"]).toBe("no-store");
+    expect(failed.headers["clear-site-data"]).toBeUndefined();
     expect(setCookie(failed, SESSION_COOKIE)).toBeUndefined();
     expect(t.store.rows.size).toBe(1);
 
@@ -549,6 +564,7 @@ describe("POST /auth/logout", () => {
       });
       expect(res.statusCode).toBe(403);
       expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.headers["clear-site-data"]).toBeUndefined();
       expect(setCookie(res, SESSION_COOKIE)).toBeUndefined();
       expect(t.store.rows.size).toBe(1);
       expect(await withSession(run.sessionCookie)).toBe(404);

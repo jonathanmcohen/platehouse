@@ -1,5 +1,5 @@
-// The organising pages' app API (build plan Task 21; AC-060, AC-061, AC-062,
-// AC-063 UI): the Creators, Collections, Tags and Trash pages. Every route
+// The organising pages' app API (rename, tags, flat collections, and the trash
+// with restore and Empty trash): the Creators, Collections, Tags and Trash pages. Every route
 // is session-class under /app/api (settings.ts, appApiScope), so it needs
 // a signed-in session, and every state-changing one Origin = PUBLIC_ORIGIN.
 //
@@ -43,13 +43,13 @@
 // routes are the web app's own session API: the public API (v1) has no bulk
 // routes, and its description and docs do not change.
 //
-// Every change calls what Task 14 built: renameModel and renameFile (the
+// Every change calls the library module (library/): renameModel and renameFile (the
 // display name only; the bucket key never changes), addTag and removeTag,
 // addToCollection and removeFromCollection (flat collections, made on first
 // use), trashModel, restoreModel and purgeExpired. Each refuses a model that
 // is unknown or in the trash, which is 404 here; taking off a tag or a
 // collection the model does not have is 404 too. The lists count live
-// models only, and the model rows are Task 14's search with one filter, a
+// models only, and the model rows are the library's search with one filter, a
 // page of up to ROWS_PER_PAGE at a time.
 //
 // Deleting tags and collections (issue #312, the maintainer, 2026-11-21).
@@ -80,7 +80,7 @@
 // readAt, the database's time when it read the list (the clock that stamps
 // trashed_at, so a browser's clock never matters), and the page sends it back
 // as the cutoff. The route purges the models trashed at or before that
-// millisecond, through Task 14's purgeExpired (see emptyTrashBefore), so a
+// millisecond, through the library's purgeExpired (see emptyTrashBefore), so a
 // model another tab or browser trashed after the page read the list stays,
 // and can be restored. The body is one timestamp however long the trash is.
 // A cutoff that is not in readAt's form, or is later than the database's
@@ -112,7 +112,7 @@ import {
 import { bulkRepo, MAX_BULK_IDS, MAX_BULK_TAGS } from "../repos/bulk.js";
 import { collectionsRepo } from "../repos/collections.js";
 import { tagsRepo } from "../repos/tags.js";
-import { viewOf } from "./library.js";
+import { MAX_PAGE_NUMBER, MAX_PAGE_SIZE, pageWindow, viewOf } from "./library.js";
 import { appApiScope, need, refuse } from "./settings.js";
 
 /** The model rows one request of /app/api/organise/models answers at most. */
@@ -301,8 +301,12 @@ async function collectionCounts(db: Kysely<DB>) {
     .execute();
 }
 
-/** The name a tag or collection is stored under, matched as its unique index does. */
-async function storedName(
+/**
+ * The name a tag or collection is stored under, matched as its unique index
+ * does. A delete can remove the row between the tagging commit and this read
+ * (issue #431); the answer is then the name that was asked for.
+ */
+export async function storedName(
   db: Kysely<DB>,
   table: "tags" | "collections",
   name: string,
@@ -311,8 +315,8 @@ async function storedName(
     .selectFrom(table)
     .select("name")
     .where(sql<boolean>`lower(name) = lower(${name.trim()})`)
-    .executeTakeFirstOrThrow();
-  return row.name;
+    .executeTakeFirst();
+  return row?.name ?? name.trim();
 }
 
 /** Each model's tags, collections and files, for the rows of the organising pages. */
@@ -373,11 +377,46 @@ async function databaseNow(db: Kysely<DB>): Promise<Date> {
   return now;
 }
 
+/** Models on one page of the trash when the request names no limit. */
+export const TRASH_PAGE_SIZE = 100;
+
+/** GET /app/api/trash's query: a 1-based page and a page size, as the library's. */
+const TRASH_QUERY = {
+  type: "object",
+  properties: {
+    page: { type: "integer", minimum: 1, maximum: MAX_PAGE_NUMBER },
+    limit: { type: "integer", minimum: 1, maximum: MAX_PAGE_SIZE },
+  },
+} as const;
+
 /**
- * The trash, newest first, and readAt: the database's time when it read the
- * list, taken in the same statement so the list and the time agree.
+ * One page of the trash, newest first, and readAt: the database's time when
+ * it read the page, taken in the same statement so the list and the time
+ * agree. A page past the end is served as the last page. Empty trash's
+ * cutoff is readAt whichever page it came from, so a model trashed after it
+ * is never purged unseen, on any page.
  */
-async function trashListing(db: Kysely<DB>): Promise<{ models: TrashedModel[]; readAt: string }> {
+async function trashListing(
+  db: Kysely<DB>,
+  query: { page?: number; limit?: number } = {},
+): Promise<{
+  models: TrashedModel[];
+  readAt: string;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  total: number;
+}> {
+  // The count and the page are separate reads, so total can differ from the
+  // page by a model trashed between them; safety comes from readAt, not total.
+  const pageSize = query.limit ?? TRASH_PAGE_SIZE;
+  const counted = await db
+    .selectFrom("models")
+    .select(sql<string>`count(*)`.as("total"))
+    .where("models.trashedAt", "is not", null)
+    .executeTakeFirstOrThrow();
+  const total = Number(counted.total);
+  const window = pageWindow({ total, pageSize, page: query.page ?? 1 });
   const rows = await db
     .selectFrom("models")
     .leftJoin("creators", "creators.id", "models.creatorId")
@@ -392,6 +431,8 @@ async function trashListing(db: Kysely<DB>): Promise<{ models: TrashedModel[]; r
     .where("models.trashedAt", "is not", null)
     .orderBy("models.trashedAt", "desc")
     .orderBy("models.id", "desc")
+    .limit(pageSize)
+    .offset(window.start)
     .execute();
   const readAt = rows[0]?.readAt ?? (await databaseNow(db));
   const models = rows.map((r): TrashedModel => {
@@ -405,12 +446,19 @@ async function trashListing(db: Kysely<DB>): Promise<{ models: TrashedModel[]; r
       purgeStarted: r.purgeStartedAt !== null,
     };
   });
-  return { models, readAt: readAt.toISOString() };
+  return {
+    models,
+    readAt: readAt.toISOString(),
+    page: window.page,
+    pageSize,
+    pageCount: window.pageCount,
+    total,
+  };
 }
 
 /**
  * Empty trash up to a cutoff: purges every model trashed at or before the
- * cutoff's millisecond, with Task 14's purgeExpired, which purges the models
+ * cutoff's millisecond, with the library's purgeExpired, which purges the models
  * trashed before now - TRASH_RETENTION_DAYS. Handing it the cutoff plus the
  * retention plus 1 ms makes that "trashed before cutoff + 1 ms": trashed_at
  * keeps microseconds, so a model trashed at 12:00:00.123456 is inside a
@@ -430,6 +478,7 @@ export async function registerOrganiseApi(
   const library = deps === undefined ? undefined : libraryCalls(deps.db);
 
   await appApiScope(app, (scope) => {
+    // These three lists assume a household-sized library and are not paged.
     scope.get("/creators", async () => ({ creators: await creatorCounts(need(deps).db) }));
     scope.get("/collections", async () => ({
       collections: await collectionCounts(need(deps).db),
@@ -602,7 +651,11 @@ export async function registerOrganiseApi(
       },
     );
 
-    scope.get("/trash", async () => trashListing(need(deps).db));
+    scope.get<{ Querystring: { page?: number; limit?: number } }>(
+      "/trash",
+      { schema: { querystring: TRASH_QUERY } },
+      async (request) => trashListing(need(deps).db, request.query),
+    );
 
     scope.post<{ Params: IdParams }>(
       "/trash/:id/restore",
@@ -656,7 +709,7 @@ export async function registerOrganiseApi(
   });
 }
 
-/** Task 14's organising calls over one database. */
+/** The library module's organising calls over one database. */
 function libraryCalls(db: Kysely<DB>) {
   return {
     ...createRename(db),

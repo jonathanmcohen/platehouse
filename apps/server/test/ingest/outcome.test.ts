@@ -1,4 +1,4 @@
-// How a failed ingest reports what it saved (build plan Tasks 8 and 9). The
+// How a failed ingest reports what it saved. The
 // upload's HEAD answers by it (uploads/tus.ts): an IngestError means nothing
 // was saved, so HEAD answers 410 and the same file can be sent again;
 // IngestOutcomeUnknown means the commit may have landed, so HEAD answers
@@ -64,9 +64,11 @@ async function upload(bytes: string): Promise<string> {
   return path;
 }
 
-/** A store held in memory: the keys it holds, and every key deleted. */
+/** A store held in memory: the keys it holds, every key put and every key deleted. */
 function memoryStore() {
   const held = new Set<string>();
+  const put: string[] = [];
+  const deleted: string[] = [];
   const store: IngestStore = {
     async putBlob(stream: Readable, { key }) {
       const hash = createHash("sha256");
@@ -77,13 +79,17 @@ function memoryStore() {
         size += bytes.length;
       }
       held.add(key);
+      put.push(key);
       return { sha256: hash.digest(), size };
     },
     async deleteBlobs(keys) {
-      for (const key of keys) held.delete(key);
+      for (const key of keys) {
+        held.delete(key);
+        deleted.push(key);
+      }
     },
   };
-  return { store, held };
+  return { store, held, put, deleted };
 }
 
 /**
@@ -213,7 +219,7 @@ describe("a failure ingest knows saved nothing is an IngestError", () => {
   });
 
   test("a database that cannot be reached at BEGIN, after the bytes were put", async () => {
-    const { store, held } = memoryStore();
+    const { store, held, put, deleted } = memoryStore();
     const error = await failure(
       createIngest({ db: scriptedDb(null), store }).ingestFile({
         tmpPath: await upload(ASCII_STL),
@@ -222,7 +228,9 @@ describe("a failure ingest knows saved nothing is an IngestError", () => {
       }),
     );
     expectNothingSaved(error, "Connection refused");
-    // The source object was put and then deleted.
+    // The source object was put and then deleted: one key, the same one.
+    expect(put).toHaveLength(1);
+    expect(deleted).toEqual(put);
     expect(held.size).toBe(0);
   });
 

@@ -1,4 +1,4 @@
-// Build plan Task 30: SIGTERM and SIGINT stop the server and the process
+// SIGTERM and SIGINT stop the server and the process
 // exits within 30 s. These drive the handler with a stand-in for process and
 // a fake clock; shutdown.test.ts sends a real SIGTERM to a real process.
 import { EventEmitter } from "node:events";

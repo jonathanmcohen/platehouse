@@ -1,7 +1,7 @@
-// buildSliceable (build plan Task 11): a generated multi-plate,
-// multi-filament Bambu project of 20 mm cubes that OrcaSlicer 2.5.0 can
-// slice. It is the fixture for the slicer's container tests and the AC-037
-// smoke slice; no designer file is involved.
+// buildSliceable: a generated multi-plate,
+// multi-filament Bambu project of 20 mm cubes that the OrcaSlicer version
+// pinned in apps/slicer/Dockerfile (ORCA_VERSION) can slice. It is the fixture for the slicer's container tests and the release
+// workflow's smoke slice; no designer file is involved.
 //
 // What Orca needs from it, read from its source at commit 40ecc66:
 // - 3D/3dmodel.model's Application metadata starting "BambuStudio-" marks a
@@ -48,6 +48,20 @@ const COLOURS = [
 export interface SliceableOptions {
   plates: number;
   filaments: number;
+  /** Edge of each cube in mm (default 20). */
+  cubeSize?: number;
+  /** Footprint (width and depth) of each object in mm, default `cubeSize`. Above the bed's 256 the bed cannot hold it. */
+  footprint?: number;
+  /** Footprint in mm of the object printed with filament k+1, one entry per filament, for plates whose objects differ in size. Overrides `footprint` for the entries it lists. */
+  footprints?: number[];
+  /** Height of each object in mm, default `cubeSize`. */
+  height?: number;
+  /** Bed position in mm of the first object's centre on each plate (measured from the plate's own corner). Default: the usual grid layout. */
+  at?: { x: number; y: number };
+  /** List no object on any plate in model_settings.config, so each plate's object count reads 0 (as when the plate list comes from thumbnails). */
+  noInstances?: boolean;
+  /** Extra field bytes for the first entry's central record, to build a crafted directory. */
+  firstEntryExtra?: Buffer;
 }
 
 /** The world position of plate `index` (0-based) in a project of `count` plates. */
@@ -60,17 +74,18 @@ export function plateOrigin(index: number, count: number, bed = BED): { x: numbe
   return { x: col * bed * 1.2, y: row === 0 ? 0 : -row * bed * 1.2 };
 }
 
-function cubeMesh(size: number): string {
-  const s = size;
+function cubeMesh(width: number, height: number): string {
+  const s = width;
+  const h = height;
   const v = [
     [0, 0, 0],
     [s, 0, 0],
     [s, s, 0],
     [0, s, 0],
-    [0, 0, s],
-    [s, 0, s],
-    [s, s, s],
-    [0, s, s],
+    [0, 0, h],
+    [s, 0, h],
+    [s, s, h],
+    [0, s, h],
   ];
   // Counter-clockwise seen from outside, as 3MF requires.
   const t = [
@@ -109,6 +124,24 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
   if (!Number.isInteger(filaments) || filaments < 1 || filaments > COLOURS.length) {
     throw new RangeError(`filaments must be 1 to ${COLOURS.length}, not ${filaments}`);
   }
+  const cubeSize = opts.cubeSize ?? CUBE;
+  const footprint = opts.footprint ?? cubeSize;
+  const height = opts.height ?? cubeSize;
+  for (const [name, value] of [
+    ["cubeSize", cubeSize],
+    ["footprint", footprint],
+    ["height", height],
+  ] as const) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new RangeError(`${name} must be a positive number, not ${value}`);
+    }
+  }
+  const sizeOf = (filament: number) => opts.footprints?.[filament - 1] ?? footprint;
+  for (const size of opts.footprints ?? []) {
+    if (!Number.isFinite(size) || size <= 0) {
+      throw new RangeError(`footprints must be positive numbers, not ${size}`);
+    }
+  }
   const placed: Placed[] = [];
   for (let p = 0; p < plates; p++) {
     const origin = plateOrigin(p, plates);
@@ -117,13 +150,13 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
         id: placed.length + 1,
         plate: p + 1,
         filament: f + 1,
-        x: origin.x + 40 + (f % 4) * 45,
-        y: origin.y + 40 + Math.floor(f / 4) * 45,
+        x: origin.x + (f === 0 && opts.at ? opts.at.x - sizeOf(1) / 2 : 40 + (f % 4) * 45),
+        y:
+          origin.y + (f === 0 && opts.at ? opts.at.y - sizeOf(1) / 2 : 40 + Math.floor(f / 4) * 45),
       });
     }
   }
 
-  const mesh = cubeMesh(CUBE);
   const model = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021">',
@@ -131,7 +164,9 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
     '<metadata name="BambuStudio:3mfVersion">1</metadata>',
     '<metadata name="Title">Platehouse sliceable cubes</metadata>',
     "<resources>",
-    ...placed.map((o) => `<object id="${o.id}" type="model">${mesh}</object>`),
+    ...placed.map(
+      (o) => `<object id="${o.id}" type="model">${cubeMesh(sizeOf(o.filament), height)}</object>`,
+    ),
     "</resources>",
     "<build>",
     ...placed.map(
@@ -151,7 +186,7 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
     ),
     ...Array.from({ length: plates }, (_, i) => {
       const mine = placed.filter((o) => o.plate === i + 1);
-      const instances = mine
+      const instances = (opts.noInstances ? [] : mine)
         .map(
           (o) =>
             `    <model_instance>\n      <metadata key="object_id" value="${o.id}"/>\n      <metadata key="instance_id" value="0"/>\n      <metadata key="identify_id" value="${1000 + o.id}"/>\n    </model_instance>`,
@@ -194,5 +229,11 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
 
 /** The project as .3mf bytes. */
 export function buildSliceable(opts: SliceableOptions): Buffer {
-  return buildZip([...sliceableEntries(opts)].map(([name, data]) => ({ name, data })));
+  return buildZip(
+    [...sliceableEntries(opts)].map(([name, data], i) =>
+      i === 0 && opts.firstEntryExtra
+        ? { name, data, centralExtra: opts.firstEntryExtra }
+        : { name, data },
+    ),
+  );
 }

@@ -33,7 +33,8 @@ Shown when the model has a `.3mf`. It lists every plate of every `.3mf`, in plat
   [Printers and estimates](./printers-and-estimates.md)).
 
 A `.3mf` shows its plate thumbnails large in the viewer, with a strip of plates to switch between.
-There is no 3D view of a `.3mf`.
+Press **Show in 3D** under the picture, or click the picture, to see that plate's objects in the
+3D viewer (see [A plate in 3D](#a-plate-in-3d)).
 
 ### Files
 
@@ -51,15 +52,52 @@ and images in them show as links, so a description can never load anything from 
 STL files, STEP files and OpenSCAD files show in a 3D viewer you can rotate and zoom with the
 pointer, or with the **Rotate**, **Zoom** and **Reset** buttons.
 
+- An STL file over 50 MiB does not start the 3D view by itself. The model page opens on its
+  preview picture, or a placeholder when it has none, with a **Show in 3D** button that loads the
+  view when you ask for it.
+
 - A STEP file is converted to a mesh for the viewer.
 - An OpenSCAD file is rendered to an STL and a preview image with OpenSCAD. Both can be viewed and
   downloaded. If the render fails, the page shows OpenSCAD's own message.
-- Replacing an OpenSCAD or STEP file renders it again. Until the new render is ready, or if it
-  fails, the previous version's renders stay visible and the page says they are from an earlier
-  version.
+- An STL or STEP file gets a preview picture, rendered with OpenSCAD from the STL, or from the
+  STEP file's mesh. It is the model's picture on its library card and shows in the **Files** tab.
+  If it cannot be rendered, the card keeps the file-type icon and the **Files** tab says why; a
+  STEP file's 3D view still works. Files added before Platehouse 0.1.1 get their preview in the
+  background, a few at a time, after the upgrade.
+- A file cannot be replaced or removed on its own yet. To add a new version, upload it to the
+  model with **Add files**; the old file stays beside it, and the new one is rendered like any
+  other upload. To drop the old one, move the whole model to the [trash](./trash.md) and upload
+  the files you want to keep again.
 
 While a plate is being estimated or a file is being rendered, the page checks again every few
 seconds, so the result appears without a reload.
+
+## A plate in 3D
+
+**Show in 3D**, under a `.3mf`'s plate picture, or a click on the picture, shows only the objects
+on that plate, placed as they sit on the plate, in the same 3D viewer as an STL. Each object is
+coloured with its filament's colour when the file gives one, and grey when it does not. Choose
+another plate in the strip to see that plate in 3D, and press **Show picture** to go back.
+
+- The first time a plate is opened, Platehouse makes its 3D view from the file, which can take a
+  few seconds for a large file; after that it opens at once. Your browser loads only that plate's
+  objects, never the whole `.3mf`.
+- Objects show in their filament's colour; colours painted onto parts of an object are not shown.
+  Modifiers, negative parts and support blockers are left out, since they are not printed.
+- When a plate cannot be shown in 3D (the file has no mesh Platehouse can read, the plate is empty,
+  its objects are too large for the browser, or your browser cannot draw 3D), the picture stays
+  and the page says why. A plate whose file takes Platehouse more than a minute to read counts as
+  too large.
+- Platehouse makes one plate's 3D view at a time, so that reading a large file stays within the
+  memory the example Compose file gives the server, and keeps a few more waiting. When more
+  are asked for, the page says it is busy making other 3D views; try again in a moment. A plate
+  you stop waiting for (by closing the view or choosing another plate) is not made unless it had
+  already started.
+- STEP files' preview pictures share that one slot: making a STEP file's picture reads its whole
+  3D mesh into the server's memory, so it waits for a plate's 3D view being made, and a plate
+  waits for a picture's mesh read. A picture waiting goes ahead of the plates waiting but holds
+  the slot only while it reads the mesh, not while the slicer draws it, and it never takes a
+  waiting plate's place, so it never makes a plate busy.
 
 ## Turning a plate image
 

@@ -1,5 +1,7 @@
-// The model page's app API (build plan Task 20; AC-030, AC-032 to AC-034
-// display, AC-040, AC-050, AC-051, AC-072), for the web app's model page:
+// The model page's app API, for the web app's model page: every plate in
+// order with its numbers, where they came from and why a plate could not be
+// sliced, the files with their Open in slicer buttons and 3D views, and the
+// plate thumbnails of a .3mf:
 //
 //   GET  /app/api/models/:id?printer    ModelView: the model, its files in
 //                                       upload order, each .3mf's plates in
@@ -10,7 +12,7 @@
 //                                       switch's choices; reading never
 //                                       queues a slice
 //   POST /app/api/estimates/:id/retry   202 {queued: true}: a failed estimate
-//                                       is queued again (Task 12's
+//                                       is queued again (the estimates module's
 //                                       retryEstimate, from the stored file)
 //                                       409 {error: "not_retryable"}
 //   GET  /app/api/models/title-names    TitleNamePlan: the "Use file titles"
@@ -25,22 +27,25 @@
 //                                       after its own confirmation; nothing
 //                                       runs it on its own
 //
-// - Every route is session-class (the Route classes contract: /app/api is
-//   unlisted, so session); the gate (auth/gate.ts) refuses a request without
+// - Every route is session-class (the route classes table in auth/gate.ts:
+//   /app/api is unlisted, so session); the gate refuses a request without
 //   a session before these handlers run, and each POST, which changes state,
 //   also needs Origin to be PUBLIC_ORIGIN. The Open buttons mint their link
-//   at Task 17's POST /app/api/files/:id/slicer-link, not here.
+//   at POST /app/api/files/:id/slicer-link (delivery/links.ts), not here.
 // - A trashed, unknown or malformed model is 404, as is a malformed
 //   estimate id; nothing about the model is in the answer.
 // - The model is read from the database alone; this module is given no
 //   store. Every image or mesh the page loads is named as /blobs/<id>
-//   (Task 17's route), and only a stored blob of this model and of the
+//   (the delivery route), and only a stored blob of this model and of the
 //   kind its place calls for is ever named: a plate's thumbnail (thumbnail),
 //   an STL's own bytes (source), a STEP's mesh (mesh_glb), a SCAD's
-//   rendered STL (render_stl) and preview (render_png). Anything else is
+//   rendered STL (render_stl), and the preview picture (render_png) of a
+//   SCAD, an STL or a STEP file (issue #316). Anything else is
 //   null, so the page shows no image rather than another file's bytes. A
-//   .3mf has no 3D view (AC-051).
-// - Each plate's numbers are Task 12's plateNumbers, with the display
+//   .3mf's own view is null: each of its plates' 3D views is asked for when
+//   it is opened, at GET /app/api/plates/:id/mesh (app-api/plate-mesh.ts,
+//   issue #358).
+// - Each plate's numbers are the estimates module's plateNumbers, with the display
 //   context (the settings row and the printer menu, readDisplayContext)
 //   read once per page, as the library page does (app-api/library.ts).
 //   Beside them, estimatePending says whether an estimate for the selected
@@ -66,10 +71,11 @@ import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
 import { derivedParts } from "../derived/client.js";
+import { hasPreviewPicture, isPictureShown } from "../derived/picture.js";
 import {
   type DisplayContext,
   type PlateNumbers,
-  plateNumbers,
+  plateNumbersMany,
   printerName,
 } from "../estimates/display.js";
 import { createRepos } from "../repos/index.js";
@@ -93,7 +99,7 @@ const PLAN_BODY_LIMIT = 1024;
 /** The planId of a plan with no renames (the SHA-256 of "[]"). */
 const EMPTY_PLAN_ID = createHash("sha256").update("[]").digest("hex");
 
-/** The model page's routes, every one session-class (the Route classes contract). */
+/** The model page's routes, every one session-class (the route classes table in auth/gate.ts). */
 export const MODEL_API_PATHS: readonly string[] = Object.freeze([
   "/app/api/models/:id",
   "/app/api/estimates/:id/retry",
@@ -136,11 +142,22 @@ export interface ModelFileView {
   derivedCodes: string[];
   /** What derivedMessage holds after those sentences (the program's own words), or null. */
   derivedDetail: string | null;
-  /** Task 17's download route for the file. */
+  /**
+   * An STL's or STEP file's preview picture (issue #380): null, pending, ok
+   * or failed. derivedStatus never says anything about it.
+   */
+  previewStatus: string | null;
+  /** Why the picture failed, cleaned as derivedMessage is; null with none. */
+  previewMessage: string | null;
+  /** Platehouse's own sentences at the start of previewMessage, by code. */
+  previewCodes: string[];
+  /** What previewMessage holds after those sentences, or null. */
+  previewDetail: string | null;
+  /** The file's download route (delivery/download.ts). */
   download: string;
   /** What the 3D viewer loads: an STL or a GLB blob; null for a .3mf or nothing stored yet. */
   view: { kind: "stl" | "glb"; url: string } | null;
-  /** A SCAD file's rendered preview image; null otherwise. */
+  /** A SCAD, STL or STEP file's rendered preview image (issue #316 for STL and STEP); null otherwise. */
   preview: string | null;
   /** The project filament list of a .3mf (file_filaments). */
   filaments: Array<{ slot: number; type: string; color: string | null }>;
@@ -152,7 +169,7 @@ export interface ModelView {
   id: string;
   name: string;
   caption: string | null;
-  /** The description as Markdown; the page renders it with renderMarkdown (Task 7). */
+  /** The description as Markdown; the page renders it with renderMarkdown (packages/makerworld). */
   description: string | null;
   creator: string | null;
   /** The SPDX licence id. */
@@ -200,7 +217,7 @@ export interface AppModelDeps {
   db: Kysely<DB>;
   /** The selected printer, the Orca version and the printer menu, read once per page. */
   displayContext(): Promise<DisplayContext>;
-  /** Task 12's retryEstimate (estimates/service.ts). */
+  /** The estimates module's retryEstimate (estimates/service.ts). */
   retryEstimate(estimateId: string): Promise<boolean>;
 }
 
@@ -251,6 +268,8 @@ export function createAppModel(deps: AppModelDeps): AppModel {
             "parseStatus",
             "derivedStatus",
             "derivedMessage",
+            "previewStatus",
+            "previewMessage",
             "blobId",
             "meshBlobId",
             "renderStlBlobId",
@@ -344,7 +363,12 @@ export function createAppModel(deps: AppModelDeps): AppModel {
               .where("status", "in", ["pending", "running"])
               .execute();
             for (const r of pendingRows) pending.add(r.plateId);
-            for (const p of plates) numbers.set(p.id, await plateNumbers(trx, ctx, p.id));
+            const read = await plateNumbersMany(
+              trx,
+              ctx,
+              plates.map((p) => p.id),
+            );
+            for (const p of plates) numbers.set(p.id, read.get(p.id) ?? {});
           });
       }
 
@@ -373,7 +397,16 @@ export function createAppModel(deps: AppModelDeps): AppModel {
                   ? f.renderStlBlobId
                   : null;
           const viewBlob = viewFrom === undefined ? null : stored(viewSource, viewFrom.kind);
-          const previewBlob = f.kind === "scad" ? stored(f.renderPngBlobId, "render_png") : null;
+          // A SCAD's rendered PNG, or an STL's or STEP's preview picture
+          // (issue #316), which is shown only while its own status is ok
+          // (isPictureShown): never while pending, once it failed, or before
+          // it was queued (issues #380 and #389).
+          const pictureShown = hasPreviewPicture(f.kind)
+            ? isPictureShown(f.previewStatus)
+            : f.kind === "scad";
+          const previewBlob = pictureShown ? stored(f.renderPngBlobId, "render_png") : null;
+          const previewMessage = scrubDerivedMessage(f.previewMessage);
+          const previewParts = derivedParts(previewMessage);
           return {
             id: f.id,
             name: f.name,
@@ -383,6 +416,10 @@ export function createAppModel(deps: AppModelDeps): AppModel {
             derivedStatus: f.derivedStatus,
             derivedMessage: scrubDerivedMessage(f.derivedMessage),
             ...derivedParts(scrubDerivedMessage(f.derivedMessage)),
+            previewStatus: f.previewStatus,
+            previewMessage,
+            previewCodes: previewParts.derivedCodes,
+            previewDetail: previewParts.derivedDetail,
             download: `/files/${f.id}/download`,
             view:
               viewFrom === undefined || viewBlob === null
@@ -476,6 +513,8 @@ export async function registerModelApi(app: FastifyInstance, model: AppModel): P
 
     // Registered beside /app/api/models/:id; Fastify matches the fixed
     // segment first, so "title-names" never reaches the id route.
+    // The plan is one list of every model whose name differs from its file's
+    // title, not paged: it assumes a household-sized library.
     scope.get("/app/api/models/title-names", async () => model.titleNames());
 
     // The one route here with a body. The gate removes every body parser

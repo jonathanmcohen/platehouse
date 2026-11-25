@@ -1,5 +1,5 @@
-// Reads the plate data of a Bambu Studio .3mf. A port of the Bambu Plates
-// parser (parser.rb@136fd61) with its AC-023 ceilings, plus the printer,
+// Reads the plate data of a Bambu Studio .3mf. A port of an earlier plate
+// parser written for Manyfold, with its hostile-file ceilings, plus the printer,
 // process and MakerWorld fields Platehouse needs.
 //
 // Rules carried from that parser:
@@ -19,26 +19,40 @@
 // - every cap counts bytes actually inflated, never a declared size;
 // - a colour is kept only as #RRGGBB or #RRGGBBAA;
 // - only the parser's own reads of the file (opening the zip, listing it,
-//   inflating an entry), the ceilings and the 32-bit rule above make a
-//   damaged file (null); otherwise broken config XML or JSON costs that
-//   entry only, while a plate index or filament slot past 2147483647 in
-//   valid config costs the whole file;
+//   inflating an entry), the ceilings, the 32-bit rule above and a DTD in
+//   an XML config entry (model_settings.config or slice_info.config) make a
+//   damaged file (null); otherwise broken config XML or JSON costs that entry
+//   only, while a plate index or filament slot past 2147483647 in valid
+//   config, or a DOCTYPE in an XML config entry, costs the whole file
+//   (project_settings.config is JSON, and a DOCTYPE string there is not
+//   checked);
 // - a filesystem error is ReadUnavailable and never damage;
 // - anything else reaches the caller unchanged: whatever onThumbnail throws,
 //   and a bug in this file's own code. Neither is a file with no plate data.
 import type { FileHandle } from "node:fs/promises";
 import { open } from "node:fs/promises";
-import { Readable } from "node:stream";
 import { XMLParser } from "fast-xml-parser";
-import yauzl from "yauzl";
-import { Damaged, isSystemError, ReadUnavailable } from "./errors.js";
-import { LIMITS, MAX_ZIP_ENTRIES, MODEL_PREFIX_BYTES } from "./limits.js";
+import type yauzl from "yauzl";
+import {
+  HandleReader,
+  listEntries,
+  openArchive,
+  ownRead,
+  pump,
+  readCapped,
+  unavailableOr,
+} from "./archive.js";
+import { Damaged } from "./errors.js";
+import { LIMITS, MODEL_PREFIX_BYTES } from "./limits.js";
 import type { Filament, Plate, Project, ReadOptions } from "./types.js";
+
+// The zip helpers live in archive.ts; model-xml.ts takes these two from here.
+export { listEntries, ownRead } from "./archive.js";
 
 const MODEL_SETTINGS = "Metadata/model_settings.config";
 const SLICE_INFO = "Metadata/slice_info.config";
 const PROJECT_SETTINGS = "Metadata/project_settings.config";
-const MODEL = "3D/3dmodel.model";
+export const MODEL = "3D/3dmodel.model";
 const PLATE_PNG = /^Metadata\/plate_([1-9][0-9]*)(_small)?\.png$/;
 const COLOUR = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
 const INTEGER = /^\s*-?[0-9]+\s*$/;
@@ -52,11 +66,12 @@ const MAX_STORED_INDEX = 2147483647;
  */
 const MAX_PRINTER_MODEL_ID_LENGTH = 64;
 const RESOURCES = Buffer.from("<resources", "latin1");
-const READ_CHUNK = 64 * 1024;
 
 /**
- * Reads one .3mf. Returns null when the file holds no Bambu plate data or
- * breaks any ceiling; the app shows NO_PLATE_DATA_MESSAGE for it. Throws
+ * Reads one .3mf. Returns null when the file holds no Bambu plate data,
+ * breaks any ceiling, or has a DTD in an XML config entry
+ * (model_settings.config or slice_info.config); the app shows
+ * NO_PLATE_DATA_MESSAGE for it. Throws
  * ReadUnavailable when the file cannot be read right now.
  */
 export async function readProject(path: string, opts: ReadOptions = {}): Promise<Project | null> {
@@ -105,22 +120,6 @@ export async function readProjectFromReader(
   }
 }
 
-/**
- * Runs one of the parser's own reads of the archive (yauzl or inflate) and
- * classifies what it throws: a filesystem error is ReadUnavailable, anything
- * else is Damaged. The parser.rb@136fd61 damaged_on_read_error. It never
- * wraps the parser's mapping code or the caller's callback.
- */
-async function ownRead<T>(read: () => Promise<T>): Promise<T> {
-  try {
-    return await read();
-  } catch (err) {
-    if (err instanceof Damaged || err instanceof ReadUnavailable) throw err;
-    if (isSystemError(err)) throw new ReadUnavailable(err);
-    throw new Damaged(`unreadable archive: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
 /** Carries what onThumbnail threw past the classification above, untouched. */
 class CallerError {
   readonly error: unknown;
@@ -130,78 +129,13 @@ class CallerError {
   }
 }
 
-function unavailableOr(err: unknown): unknown {
-  if (err instanceof ReadUnavailable) return err;
-  return isSystemError(err) ? new ReadUnavailable(err) : err;
-}
-
-class HandleReader extends yauzl.RandomAccessReader {
-  private readonly handle: FileHandle;
-
-  constructor(handle: FileHandle) {
-    super();
-    this.handle = handle;
-  }
-
-  // Positional reads on the one handle. A FileHandle read stream is not used
-  // because destroying it early closes the shared handle.
-  override _readStreamForRange(start: number, end: number): Readable {
-    const handle = this.handle;
-    let position = start;
-    return new Readable({
-      highWaterMark: READ_CHUNK,
-      read(): void {
-        const length = Math.min(READ_CHUNK, end - position);
-        if (length <= 0) {
-          this.push(null);
-          return;
-        }
-        handle.read(Buffer.alloc(length), 0, length, position).then(
-          ({ buffer, bytesRead }) => {
-            position += bytesRead;
-            // A short file ends the stream; yauzl then reports the missing
-            // bytes as damage.
-            this.push(bytesRead === 0 ? null : buffer.subarray(0, bytesRead));
-          },
-          (err: Error) => this.destroy(err),
-        );
-      },
-    });
-  }
-
-  override read(
-    buffer: Buffer,
-    offset: number,
-    length: number,
-    position: number,
-    callback: (err: Error | null, bytesRead?: number) => void,
-  ): void {
-    this.handle.read(buffer, offset, length, position).then(
-      ({ bytesRead }) => callback(null, bytesRead),
-      (err: Error) => callback(err),
-    );
-  }
-}
-
 async function readArchive(
   reader: yauzl.RandomAccessReader,
   size: number,
   opts: ReadOptions,
 ): Promise<Project | null> {
-  // decodeStrings: false keeps every entry name as the bytes the archive
-  // holds. Decoding would turn a backslash into a slash (so
-  // Metadata\model_settings.config would pass for the Bambu entry), honour
-  // an Info-ZIP Unicode Path field over the real name, and make the whole
-  // file damaged when any entry, even one never read, has '..' or an
-  // absolute path. listEntries keys on those bytes instead.
-  const zip = await ownRead(() =>
-    yauzl.fromRandomAccessReaderPromise(reader, size, {
-      lazyEntries: true,
-      autoClose: false,
-      validateEntrySizes: true,
-      decodeStrings: false,
-    }),
-  );
+  // Entry names stay as the raw bytes the archive holds (openArchive).
+  const zip = await openArchive(reader, size);
   try {
     const entries = await ownRead(() => listEntries(zip));
     const configText = async (name: string): Promise<string | null> => {
@@ -241,7 +175,7 @@ async function readArchive(
     // Pass 1: every thumbnail must fit the file's budget before any is
     // handed over, so a caller never stores thumbnails of a file that turns
     // out damaged. Bytes are counted and dropped, never held. As in
-    // parser.rb thumbnail_from: plate_N.png comes first, and an empty one or
+    // the earlier parser: plate_N.png comes first, and an empty one or
     // one over LIMITS.pngBytes gives way to plate_N_small.png; a plate with
     // no usable entry has no thumbnail. Every byte read from a thumbnail
     // entry counts against the budget, a passed-over one included.
@@ -260,7 +194,8 @@ async function readArchive(
         }
       }
     }
-    // Pass 2: hand them over one at a time, in plate order (Bambu Plates #11).
+    // Pass 2: hand them over one at a time, in plate order, so no file's
+    // thumbnails are ever all held in memory at once.
     // The same bytes again, so the checks below hold unless the file changed
     // under the read.
     if (opts.onThumbnail) {
@@ -288,88 +223,10 @@ async function readArchive(
 }
 
 /**
- * Lists the entries once, keyed by the raw name bytes read as latin1: one
- * character per byte, so a key equals a Bambu name only when the bytes are
- * exactly that ASCII name. The first entry of a duplicated name wins.
- */
-function listEntries(zip: yauzl.ZipFile): Promise<Map<string, yauzl.Entry>> {
-  return new Promise((resolve, reject) => {
-    const entries = new Map<string, yauzl.Entry>();
-    let count = 0;
-    const done = (fn: () => void): void => {
-      zip.removeAllListeners("entry");
-      zip.removeAllListeners("end");
-      zip.removeAllListeners("error");
-      zip.on("error", () => undefined);
-      fn();
-    };
-    zip.on("entry", (entry: yauzl.Entry) => {
-      count++;
-      if (count > MAX_ZIP_ENTRIES) {
-        done(() => reject(new Damaged("too many entries")));
-        return;
-      }
-      const name = entry.fileNameRaw.toString("latin1");
-      if (!entries.has(name)) entries.set(name, entry);
-      zip.readEntry();
-    });
-    zip.on("end", () => done(() => resolve(entries)));
-    zip.on("error", (err: Error) => done(() => reject(err)));
-    zip.readEntry();
-  });
-}
-
-function openStream(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<Readable> {
-  return new Promise((resolve, reject) => {
-    zip.openReadStream(entry, (err, stream) => (err ? reject(err) : resolve(stream)));
-  });
-}
-
-/**
- * Streams an entry through inflate and hands each chunk to take. take returns
- * false to stop early. Throws Damaged once more than cap bytes have come out.
- */
-async function pump(
-  zip: yauzl.ZipFile,
-  entry: yauzl.Entry,
-  cap: number,
-  take: (chunk: Buffer) => boolean,
-): Promise<number> {
-  const stream = await ownRead(() => openStream(zip, entry));
-  const chunks = (stream as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
-  let total = 0;
-  try {
-    // Only pulling the next inflated chunk is a read of the file; take and
-    // the cap check are the parser's own code.
-    for (;;) {
-      const next = await ownRead(() => chunks.next());
-      if (next.done) break;
-      const chunk = next.value;
-      total += chunk.length;
-      if (total > cap) throw new Damaged(`entry over ${cap} bytes`);
-      if (!take(chunk)) break;
-    }
-  } finally {
-    stream.on("error", () => undefined);
-    stream.destroy();
-  }
-  return total;
-}
-
-async function readCapped(zip: yauzl.ZipFile, entry: yauzl.Entry, cap: number): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  await pump(zip, entry, cap, (chunk) => {
-    chunks.push(chunk);
-    return true;
-  });
-  return Buffer.concat(chunks);
-}
-
-/**
  * Inflates an entry until it ends or limit bytes have come out, and returns
  * how many bytes were taken, at most limit. Bytes past limit in the last
  * chunk are dropped, not counted, so the count is the same however the
- * inflated stream is chunked (parser.rb reads cap + 1 bytes the same way).
+ * inflated stream is chunked (the earlier parser read cap + 1 bytes the same way).
  */
 async function countUpTo(zip: yauzl.ZipFile, entry: yauzl.Entry, limit: number): Promise<number> {
   let taken = 0;
@@ -381,7 +238,7 @@ async function countUpTo(zip: yauzl.ZipFile, entry: yauzl.Entry, limit: number):
 }
 
 /** 3D/3dmodel.model up to <resources, at most MODEL_PREFIX_BYTES. Never damage by size. */
-async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<string> {
+export async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<string> {
   let buf = Buffer.alloc(0);
   let end = -1;
   await pump(zip, entry, Number.POSITIVE_INFINITY, (chunk) => {
@@ -395,7 +252,7 @@ async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<
 }
 
 /**
- * The per-file thumbnail budget (parser.rb max_thumbnail_bytes):
+ * The per-file thumbnail budget:
  * maxThumbnailBytes when it is a positive finite number, never above
  * LIMITS.thumbnailBytesPerFile. Anything else (NaN from an unset setting,
  * zero, a negative number, Infinity) keeps the default, so the option can
@@ -433,7 +290,7 @@ type Node = Record<string, unknown>;
 /**
  * The <config> element of a config entry, or null when there is none. XML
  * that fast-xml-parser cannot parse counts as the entry being absent, as
- * Nokogiri's recovery does under parser.rb: a broken model_settings.config
+ * the earlier parser's XML recovery did: a broken model_settings.config
  * costs the plate names (the png list takes over) and a broken
  * slice_info.config costs the slice data, never the whole file. A DTD is
  * still damage.
@@ -516,6 +373,23 @@ interface Listed {
   objectCount: number;
 }
 
+/** The longest plate name kept, in code points. */
+export const MAX_PLATE_NAME_CODE_POINTS = 200;
+
+/** The first max code points of text; a character is never split. */
+export function cutCodePoints(text: string, max: number): string {
+  // Every code point is at most 2 UTF-16 units, so a shorter string fits.
+  if (text.length <= max) return text;
+  let end = 0;
+  let count = 0;
+  for (const ch of text) {
+    if (count === max) break;
+    end += ch.length;
+    count += 1;
+  }
+  return text.slice(0, end);
+}
+
 function platesFromModelSettings(text: string | null): Listed[] | null {
   if (text === null) return null;
   const config = parseXml(text);
@@ -527,7 +401,10 @@ function platesFromModelSettings(text: string | null): Listed[] | null {
     const meta = metadata(block);
     const index = storedIndex(meta.get("plater_id"));
     if (index === null || index < 1 || seen.has(index)) continue;
-    const name = withoutNul(meta.get("plater_name") ?? "");
+    const name = cutCodePoints(
+      withoutNul(meta.get("plater_name") ?? ""),
+      MAX_PLATE_NAME_CODE_POINTS,
+    );
     seen.set(index, {
       index,
       // A blank name is no name, so the page shows "Plate N" for it.

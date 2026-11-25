@@ -1,11 +1,11 @@
-// The About tab (build plan Task 20; AC-022 display): the caption, the
+// The About tab (the MakerWorld details read from the file): the caption, the
 // creator, the MakerWorld page when the model's .3mf named one (View on
 // MakerWorld, also beside the creator in the page head), the licence with the stored licence note beside it (so a
 // MakerWorld-only licence such as the Standard Digital File License shows
 // even when the description was already set and ingest left it alone; the maintainer,
 // 2026-11-08, PR #49), the tags and collections, and the description.
 //
-// The description is Markdown, rendered by Task 7's renderMarkdown, which
+// The description is Markdown, rendered by renderMarkdown (packages/makerworld), which
 // sanitises it with DOMPurify in this browser: raw HTML, scripts, images
 // and non-http(s) links never come through. Its output is the only HTML
 // this page sets; nothing else is added to it. The renderer (markdown-it
@@ -73,7 +73,7 @@ function Description({ markdown }: { markdown: string }) {
   return (
     <div
       className="studio-prose"
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown's output (Task 7) is already sanitised with DOMPurify, and nothing is added to it.
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown's output (packages/makerworld) is already sanitised with DOMPurify, and nothing is added to it.
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

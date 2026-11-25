@@ -1,6 +1,6 @@
-// The bucket key layout (build plan, Contracts): models/<modelId>/<blobId>.
+// The bucket key layout: models/<modelId>/<blobId>.
 // Both ids are UUIDv7, lowercase and hyphenated. A key holds no extension and
-// no user-supplied text, and is never renamed (AC-060): a display name lives
+// no user-supplied text, and is never renamed (a rename changes the display name only): a display name lives
 // in the database only.
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;

@@ -23,9 +23,11 @@ import {
   registerV1,
 } from "../../src/api/v1.js";
 import type { ApiToken } from "../../src/db/types.js";
+import { SettingsInputError } from "../../src/input-error.js";
 import { InvalidCursor } from "../../src/library/search.js";
 import { BlobNotFound, StoreUnavailable } from "../../src/storage/s3.js";
-import { createUploads, registerTus } from "../../src/uploads/tus.js";
+import { registerTus } from "../../src/uploads/tus.js";
+import { readyUploads } from "../support/uploads.js";
 
 // Built from parts so no source line holds a whole token-shaped string.
 const GOOD = `ph_${"A".repeat(20)}${"B".repeat(23)}`;
@@ -61,6 +63,8 @@ const FILE: ApiFile = {
   parseStatus: "ok",
   derivedStatus: null,
   derivedMessage: null,
+  previewStatus: null,
+  previewMessage: null,
   createdAt: "2026-11-01T10:00:00.000Z",
   updatedAt: "2026-11-01T10:00:00.000Z",
   plates: [
@@ -177,11 +181,7 @@ beforeAll(async () => {
   await registerTus(app, {
     prefix: "/api/v1/uploads",
     authHook: apiUploadHook(deps),
-    uploads: createUploads({
-      tmpDir: tmp,
-      queue: { enqueue: async () => {}, result: async () => undefined },
-      log: () => {},
-    }),
+    uploads: await readyUploads(tmp),
   });
   await app.ready();
 });
@@ -496,10 +496,10 @@ describe("one model, one file", () => {
     expect(await answer("GET", `/api/v1/models/${MODEL_ID}`)).toMatchInlineSnapshot(`
       {
         "auth": undefined,
-        "body": "{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"Cable clip","caption":"A clip for desk cables","description":"Prints without supports.","creator":"Example Maker","license":"CC-BY-4.0","licenseNote":null,"externalRef":"manyfold:42","tags":["desk","clips"],"collections":["Office"],"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-02T11:30:00.000Z","files":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a6c","modelId":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"cable-clip.3mf","originalName":"cable-clip.3mf","kind":"3mf","size":5,"sha256":"abababababababababababababababababababababababababababababababab","parseStatus":"ok","derivedStatus":null,"derivedMessage":null,"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-01T10:00:00.000Z","plates":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a7d","index":1,"name":"Plate 1","objectCount":4,"numbers":{"file":{"source":"file","estimateId":"e1","printerId":"Bambu Lab P1S 0.4 nozzle","printerLabel":"Bambu Lab P1S 0.4 nozzle","printerName":"Bambu Lab P1S, 0.4 mm nozzle","slicer":"BambuStudio","slicerVersion":"02.03.00.70","processProfile":"0.20mm Standard @BBL X1C","timeSeconds":3720,"weightGrams":21.5,"filaments":[{"slot":1,"type":"PLA","color":"#00AE42","grams":21.5,"profile":null,"profileSource":null}]}}}]}]}",
+        "body": "{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"Cable clip","caption":"A clip for desk cables","description":"Prints without supports.","creator":"Example Maker","license":"CC-BY-4.0","licenseNote":null,"externalRef":"manyfold:42","tags":["desk","clips"],"collections":["Office"],"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-02T11:30:00.000Z","files":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a6c","modelId":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"cable-clip.3mf","originalName":"cable-clip.3mf","kind":"3mf","size":5,"sha256":"abababababababababababababababababababababababababababababababab","parseStatus":"ok","derivedStatus":null,"derivedMessage":null,"previewStatus":null,"previewMessage":null,"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-01T10:00:00.000Z","plates":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a7d","index":1,"name":"Plate 1","objectCount":4,"numbers":{"file":{"source":"file","estimateId":"e1","printerId":"Bambu Lab P1S 0.4 nozzle","printerLabel":"Bambu Lab P1S 0.4 nozzle","printerName":"Bambu Lab P1S, 0.4 mm nozzle","slicer":"BambuStudio","slicerVersion":"02.03.00.70","processProfile":"0.20mm Standard @BBL X1C","timeSeconds":3720,"weightGrams":21.5,"filaments":[{"slot":1,"type":"PLA","color":"#00AE42","grams":21.5,"profile":null,"profileSource":null}]}}}]}]}",
         "cache": "no-store",
         "disposition": undefined,
-        "length": "1283",
+        "length": "1326",
         "status": 200,
         "type": "application/json; charset=utf-8",
       }
@@ -524,10 +524,10 @@ describe("one model, one file", () => {
     expect(await answer("GET", `/api/v1/files/${FILE_ID}`)).toMatchInlineSnapshot(`
       {
         "auth": undefined,
-        "body": "{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a6c","modelId":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"cable-clip.3mf","originalName":"cable-clip.3mf","kind":"3mf","size":5,"sha256":"abababababababababababababababababababababababababababababababab","parseStatus":"ok","derivedStatus":null,"derivedMessage":null,"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-01T10:00:00.000Z","plates":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a7d","index":1,"name":"Plate 1","objectCount":4,"numbers":{"file":{"source":"file","estimateId":"e1","printerId":"Bambu Lab P1S 0.4 nozzle","printerLabel":"Bambu Lab P1S 0.4 nozzle","printerName":"Bambu Lab P1S, 0.4 mm nozzle","slicer":"BambuStudio","slicerVersion":"02.03.00.70","processProfile":"0.20mm Standard @BBL X1C","timeSeconds":3720,"weightGrams":21.5,"filaments":[{"slot":1,"type":"PLA","color":"#00AE42","grams":21.5,"profile":null,"profileSource":null}]}}}]}",
+        "body": "{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a6c","modelId":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"cable-clip.3mf","originalName":"cable-clip.3mf","kind":"3mf","size":5,"sha256":"abababababababababababababababababababababababababababababababab","parseStatus":"ok","derivedStatus":null,"derivedMessage":null,"previewStatus":null,"previewMessage":null,"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-01T10:00:00.000Z","plates":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a7d","index":1,"name":"Plate 1","objectCount":4,"numbers":{"file":{"source":"file","estimateId":"e1","printerId":"Bambu Lab P1S 0.4 nozzle","printerLabel":"Bambu Lab P1S 0.4 nozzle","printerName":"Bambu Lab P1S, 0.4 mm nozzle","slicer":"BambuStudio","slicerVersion":"02.03.00.70","processProfile":"0.20mm Standard @BBL X1C","timeSeconds":3720,"weightGrams":21.5,"filaments":[{"slot":1,"type":"PLA","color":"#00AE42","grams":21.5,"profile":null,"profileSource":null}]}}}]}",
         "cache": "no-store",
         "disposition": undefined,
-        "length": "909",
+        "length": "952",
         "status": 200,
         "type": "application/json; charset=utf-8",
       }
@@ -648,7 +648,7 @@ describe("tags and collections", () => {
   });
 
   test("a tag the library refuses is 400 with its message", async () => {
-    behaviour.tagThrows = new RangeError("A tag is 1 to 100 characters");
+    behaviour.tagThrows = new SettingsInputError("A tag is 1 to 100 characters");
     try {
       expect(await answer("PUT", `/api/v1/models/${MODEL_ID}/tags/desk`)).toMatchInlineSnapshot(`
         {
@@ -661,6 +661,19 @@ describe("tags and collections", () => {
           "type": "application/json; charset=utf-8",
         }
       `);
+    } finally {
+      behaviour.tagThrows = undefined;
+    }
+  });
+});
+
+describe("a RangeError that is not a user's mistake", () => {
+  test("is a 500 that does not echo its message", async () => {
+    behaviour.tagThrows = new RangeError("Invalid time value");
+    try {
+      const res = await answer("PUT", `/api/v1/models/${MODEL_ID}/tags/desk`);
+      expect(res.status).toBe(500);
+      expect(res.body).not.toContain("Invalid time value");
     } finally {
       behaviour.tagThrows = undefined;
     }

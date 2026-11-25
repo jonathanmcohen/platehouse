@@ -1,4 +1,4 @@
-// Build plan Task 4: migration 0001 and the forward-only migrator, against a
+// Migration 0001 and the forward-only migrator, against a
 // real postgres:17-alpine.
 import { appendFile, cp, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,7 +17,7 @@ import {
 import type { DB } from "../../../src/db/types.js";
 import { startTestPostgres, type TestPostgres } from "../support/db.js";
 
-// Every table in the Database schema contract, plus the migrator's own record.
+// Every table the migrations in src/db/migrations create, plus the migrator's own record.
 const TABLES = [
   "api_tokens",
   "blobs",
@@ -35,6 +35,8 @@ const TABLES = [
   "sessions",
   "settings",
   "tags",
+  "upgrade_leases",
+  "upgrade_steps",
   "user_printers",
 ];
 
@@ -52,6 +54,11 @@ const SHIPPED = [
   "0009_name_sort_prefix.sql",
   "0010_drop_unused_tags.sql",
   "0011_estimate_started_at.sql",
+  "0012_file_preview_status.sql",
+  "0013_token_creators.sql",
+  "0014_description_source.sql",
+  "0015_plate_mesh.sql",
+  "0016_jobs_database.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -499,7 +506,14 @@ describe("0009 name sort prefix", () => {
     `.execute(db);
     const before = (await sql`select * from models order by id`.execute(db)).rows;
 
-    await migrate(db);
+    // Up to 0009 only: a later migration may add columns to models, which
+    // would show here as a changed row though 0009 changed none.
+    await cp(
+      join(MIGRATIONS_DIR, "0009_name_sort_prefix.sql"),
+      join(dir, "0009_name_sort_prefix.sql"),
+    );
+    await migrateFrom(db, dir);
+    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED.slice(0, 9));
 
     expect((await sql`select * from models order by id`.execute(db)).rows).toEqual(before);
     const def = await nameIndex(db);
@@ -570,7 +584,14 @@ describe("0010 drop unused tags", () => {
     const collections = (await sql`select * from collections order by id`.execute(db)).rows;
     const members = (await sql`select * from collection_models order by model_id`.execute(db)).rows;
 
-    await migrate(db);
+    // Up to 0010 only: a later migration may add columns to models, which
+    // would show here as a changed row though 0010 changed none.
+    await cp(
+      join(MIGRATIONS_DIR, "0010_drop_unused_tags.sql"),
+      join(dir, "0010_drop_unused_tags.sql"),
+    );
+    await migrateFrom(db, dir);
+    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED.slice(0, 10));
 
     const tags = await sql<{ name: string }>`select name from tags order by name`.execute(db);
     expect(tags.rows.map((r) => r.name)).toEqual(["Live tag", "Trashed tag"]);
@@ -616,7 +637,14 @@ describe("0011 estimate started_at", () => {
     `.execute(db);
     const before = (await sql`select * from models order by id`.execute(db)).rows;
 
-    await migrate(db);
+    // Up to 0011 only: a later migration may add columns to models, which
+    // would show here as a changed row though 0011 changed none.
+    await cp(
+      join(MIGRATIONS_DIR, "0011_estimate_started_at.sql"),
+      join(dir, "0011_estimate_started_at.sql"),
+    );
+    await migrateFrom(db, dir);
+    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED.slice(0, 11));
 
     expect((await sql`select * from models order by id`.execute(db)).rows).toEqual(before);
     const { rows } = await sql<{ dataType: string; nullable: string; def: string | null }>`
@@ -625,5 +653,481 @@ describe("0011 estimate started_at", () => {
        where table_name = 'estimates' and column_name = 'started_at'
     `.execute(db);
     expect(rows).toEqual([{ dataType: "timestamp with time zone", nullable: "YES", def: null }]);
+  });
+});
+
+// Migration 0012 (issue #380) gives an STL's or STEP file's preview picture
+// its own status, preview_status and preview_message, so derived_status
+// keeps its 0.1.0 meaning. Every existing file starts with neither: none has
+// a picture yet. Nothing else on a file changes.
+describe("0012 file preview status", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 11,
+    );
+    expect(later).toContain("0012_file_preview_status.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const MODEL = "0190a0b0-0000-7000-8000-000000000051";
+  const FILES = [
+    {
+      id: "0190a0b0-0000-7000-8000-000000000061",
+      blob: "0190a0b0-0000-7000-8000-000000000071",
+      kind: "stl",
+      status: null,
+    },
+    {
+      id: "0190a0b0-0000-7000-8000-000000000062",
+      blob: "0190a0b0-0000-7000-8000-000000000072",
+      kind: "step",
+      status: "ok",
+    },
+    {
+      id: "0190a0b0-0000-7000-8000-000000000063",
+      blob: "0190a0b0-0000-7000-8000-000000000073",
+      kind: "step",
+      status: "failed",
+    },
+  ];
+
+  async function seedAt0011(db: Kysely<DB>) {
+    await migrateFrom(db, dir);
+    await sql`insert into models (id, name) values (${MODEL}, 'Synthetic preview model')`.execute(
+      db,
+    );
+    for (const f of FILES) {
+      await sql`
+        insert into blobs (id, model_id, key, kind, size, sha256, content_type, state)
+        values (${f.blob}, ${MODEL}, ${`models/${MODEL}/${f.blob}`}, 'source', 3,
+                decode(repeat('ab', 32), 'hex'), 'application/octet-stream', 'stored')
+      `.execute(db);
+      await sql`
+        insert into files (id, model_id, blob_id, name, original_name, kind, size, sha256,
+                           derived_status, derived_message)
+        values (${f.id}, ${MODEL}, ${f.blob}, ${`synthetic.${f.kind}`}, ${`synthetic.${f.kind}`},
+                ${f.kind}, 3, decode(repeat('ab', 32), 'hex'), ${f.status},
+                ${f.status === "failed" ? "STEP import failed" : null})
+      `.execute(db);
+    }
+  }
+
+  test("on a database at 0011, adds the preview columns, null on every file, and changes nothing else", async () => {
+    const { db } = await pgc.freshDatabase();
+    await seedAt0011(db);
+    const before = (await sql`select * from files order by id`.execute(db)).rows;
+
+    await migrate(db);
+
+    const after = (await sql<Record<string, unknown>>`select * from files order by id`.execute(db))
+      .rows;
+    expect(after).toHaveLength(FILES.length);
+    // The db's CamelCasePlugin names the columns in camelCase.
+    for (const [i, row] of after.entries()) {
+      const {
+        previewStatus,
+        previewMessage,
+        previewSourceBlobId,
+        previewFailureSourceBlobId,
+        previewFailureMessage,
+        // 0016's column, which migrate() adds after 0012.
+        previewFailureReason,
+        ...rest
+      } = row;
+      expect(previewStatus).toBeNull();
+      expect(previewMessage).toBeNull();
+      expect(previewSourceBlobId).toBeNull();
+      expect(previewFailureSourceBlobId).toBeNull();
+      expect(previewFailureMessage).toBeNull();
+      expect(previewFailureReason).toBeNull();
+      expect(rest).toEqual(before[i]);
+    }
+  });
+
+  test("preview_status takes only pending, ok and failed", async () => {
+    const { db } = await pgc.freshDatabase();
+    await seedAt0011(db);
+    await migrate(db);
+    const id = FILES[0]?.id ?? "";
+    for (const status of ["pending", "ok", "failed"]) {
+      await sql`update files set preview_status = ${status} where id = ${id}`.execute(db);
+    }
+    await expect(
+      sql`update files set preview_status = 'done' where id = ${id}`.execute(db),
+    ).rejects.toThrow(/check constraint/);
+  });
+});
+
+// Migration 0013 (issue #322) records who made each API token and the display
+// name each session signed in with. It runs on the database every migration
+// before it leaves, holding a live token, a revoked one and a session: they keep
+// every value they had, and their new columns are null, so the tokens list
+// their creator as unknown and the session has no name. It also caps every
+// stored subject at 255 characters (issue #378, as admit() now does at
+// sign-in): a 0.1.0 session whose subject is longer is deleted, since that
+// user can no longer sign in, and every other session is kept as it was.
+describe("0013 token creators", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 12,
+    );
+    expect(later).toContain("0013_token_creators.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("applies after every earlier migration, with tokens and sessions, changing no value", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    await sql`
+      insert into api_tokens (id, name, prefix, token_hash, revoked_at)
+      values ('0190a0b0-0000-7000-8000-000000000021', 'Live script', 'ph_aaaaa',
+              decode(repeat('ab', 32), 'hex'), null),
+             ('0190a0b0-0000-7000-8000-000000000022', 'Revoked script', 'ph_bbbbb',
+              decode(repeat('cd', 32), 'hex'), now())
+    `.execute(db);
+    await sql`
+      insert into sessions (id, subject, expires_at, idle_expires_at)
+      values (${"G".repeat(43)}, 'subject-old', now() + interval '1 day', now() + interval '1 day'),
+             (${"J".repeat(43)}, ${"m".repeat(255)}, now() + interval '1 day', now() + interval '1 day')
+    `.execute(db);
+    const tokensBefore = (
+      await sql<Record<string, unknown>>`select * from api_tokens order by id`.execute(db)
+    ).rows;
+    const sessionsBefore = (
+      await sql<Record<string, unknown>>`select * from sessions order by id`.execute(db)
+    ).rows;
+    // A session 0.1.0 let in with a subject longer than 255 characters: the
+    // migration deletes it, as that user can no longer sign in.
+    await sql`
+      insert into sessions (id, subject, expires_at, idle_expires_at)
+      values (${"K".repeat(43)}, ${"n".repeat(256)}, now() + interval '1 day', now() + interval '1 day')
+    `.execute(db);
+
+    await migrate(db);
+
+    const tokensAfter = (
+      await sql<Record<string, unknown>>`select * from api_tokens order by id`.execute(db)
+    ).rows;
+    expect(tokensAfter).toEqual(
+      tokensBefore.map((row) => ({ ...row, createdBySubject: null, createdByName: null })),
+    );
+    const sessionsAfter = (
+      await sql<Record<string, unknown>>`select * from sessions order by id`.execute(db)
+    ).rows;
+    expect(sessionsAfter).toEqual(sessionsBefore.map((row) => ({ ...row, displayName: null })));
+  });
+
+  test("the columns refuse an empty value, a subject over 255 characters, an over-long name, and a name with no subject", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrate(db);
+    const token = (n: number, subject: string | null, name: string | null) => sql`
+      insert into api_tokens (id, name, prefix, token_hash, created_by_subject, created_by_name)
+      values (${`0190a0b0-0000-7000-8000-00000000003${n}`}, 'Script', 'ph_ccccc',
+              decode(repeat(${`0${n}`}, 32), 'hex'), ${subject}, ${name})
+    `;
+    await token(1, "subject-ok", "Synthetic Name").execute(db);
+    await token(2, "subject-ok", null).execute(db);
+    // A subject is at most 255 characters, the most admit() lets sign in
+    // (issue #378), counted as characters: 255 four-byte ones fit too.
+    await token(4, "x".repeat(255), null).execute(db);
+    await token(8, String.fromCodePoint(0x1f600).repeat(255), null).execute(db);
+    for (const [n, subject, name] of [
+      [3, "", null],
+      [9, "x".repeat(256), null],
+      [5, "subject-ok", ""],
+      [6, "subject-ok", "x".repeat(201)],
+      [7, null, "Name without a subject"],
+    ] as const) {
+      await expect(token(n, subject, name).execute(db), `case ${n}`).rejects.toMatchObject({
+        code: "23514",
+      });
+    }
+    const session = (id: string, subject: string, name: string | null) => sql`
+      insert into sessions (id, subject, display_name, expires_at, idle_expires_at)
+      values (${id}, ${subject}, ${name}, now() + interval '1 day', now() + interval '1 day')
+    `;
+    await expect(session("H".repeat(43), "subject-ok", "").execute(db)).rejects.toMatchObject({
+      code: "23514",
+    });
+    await session("L".repeat(43), String.fromCodePoint(0x1f600).repeat(255), null).execute(db);
+    await expect(session("M".repeat(43), "x".repeat(256), null).execute(db)).rejects.toMatchObject({
+      code: "23514",
+    });
+  });
+});
+
+// Migration 0014 adds where a model's description came from (#357) and the
+// upgrade_steps table. It runs on a database with every migration before
+// it applied and models that have descriptions; every row keeps every value it had, and the three
+// new columns start as null, so no stored description counts as proved
+// untouched until something records its source.
+describe("0014 description source", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) >= 14,
+    );
+    expect(later).toContain("0014_description_source.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("applies on the database before it, with models, keeping every value and leaving the new columns null", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    await sql`
+      insert into models (id, name, description_md, trashed_at)
+      values ('0190a0b0-0000-7000-8000-000000000021', 'Synthetic described', 'A synthetic description.', null),
+             ('0190a0b0-0000-7000-8000-000000000022', 'Synthetic bare', null, null),
+             ('0190a0b0-0000-7000-8000-000000000023', 'Synthetic trashed', 'Trashed text.', now())
+    `.execute(db);
+    const before = (
+      await sql<Record<string, unknown>>`select * from models order by id`.execute(db)
+    ).rows;
+
+    await cp(
+      join(MIGRATIONS_DIR, "0014_description_source.sql"),
+      join(dir, "0014_description_source.sql"),
+    );
+    await migrateFrom(db, dir);
+    // Up to and including 0014: later migrations are not in this folder.
+    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED.slice(0, 14));
+
+    const after = (await sql<Record<string, unknown>>`select * from models order by id`.execute(db))
+      .rows;
+    expect(after).toEqual(
+      before.map((row) => ({
+        ...row,
+        descriptionSha256: null,
+        descriptionConverter: null,
+        descriptionFileId: null,
+      })),
+    );
+    expect(await db.selectFrom("upgradeSteps").selectAll().execute()).toEqual([]);
+  });
+});
+
+// Migration 0015 (issue #358) points each plate at the GLB of its 3D view,
+// made the first time the plate is opened. It runs on a database at 0014
+// with plates, changing no row: every plate starts with no mesh. The column
+// is cleared when its blob goes, as a plate's thumbnail is, so deleting a
+// model's blobs never trips over it.
+describe("0015 plate mesh", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 14,
+    );
+    expect(later).toContain("0015_plate_mesh.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("applies on a database at 0014 with plates, changing no row, and a mesh goes with its blob", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    const model = "0190a0b0-0000-7000-8000-000000000021";
+    const source = "0190a0b0-0000-7000-8000-000000000022";
+    const file = "0190a0b0-0000-7000-8000-000000000023";
+    const plate = "0190a0b0-0000-7000-8000-000000000024";
+    const mesh = "0190a0b0-0000-7000-8000-000000000025";
+    await sql`insert into models (id, name) values (${model}, 'Synthetic plates')`.execute(db);
+    await sql`
+      insert into blobs (id, model_id, key, kind, content_type)
+      values (${source}, ${model}, ${`models/${model}/${source}`}, 'source', 'model/3mf')
+    `.execute(db);
+    await sql`
+      insert into files (id, model_id, blob_id, name, original_name, kind, size, sha256)
+      values (${file}, ${model}, ${source}, 'a.3mf', 'a.3mf', '3mf', 1, ${Buffer.alloc(32)})
+    `.execute(db);
+    await sql`
+      insert into plates (id, file_id, "index", object_count) values (${plate}, ${file}, 1, 1)
+    `.execute(db);
+    const before = (
+      await sql<Record<string, unknown>>`select * from plates order by id`.execute(db)
+    ).rows;
+
+    await migrate(db);
+
+    const after = (await sql<Record<string, unknown>>`select * from plates order by id`.execute(db))
+      .rows;
+    expect(after).toEqual(before.map((row) => ({ ...row, meshBlobId: null })));
+    await sql`
+      insert into blobs (id, model_id, key, kind, content_type)
+      values (${mesh}, ${model}, ${`models/${model}/${mesh}`}, 'mesh_glb', 'model/gltf-binary')
+    `.execute(db);
+    await sql`update plates set mesh_blob_id = ${mesh} where id = ${plate}`.execute(db);
+    await sql`delete from blobs where id = ${mesh}`.execute(db);
+    const left = (
+      await sql<{ meshBlobId: string | null }>`
+        select mesh_blob_id from plates where id = ${plate}
+      `.execute(db)
+    ).rows;
+    expect(left).toEqual([{ meshBlobId: null }]);
+  });
+});
+
+// Migration 0016 (0.1.1 step 6) adds the indexes the blob-reference lookups
+// and the estimate rate need, a reason code beside each stored picture failure
+// message, the unproven description columns and the upgrade lease table. The
+// reason column is backfilled from the 0.1.1-rc message texts, which the
+// migration freezes on purpose.
+describe("0016 jobs and database", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 15,
+    );
+    expect(later).toContain("0016_jobs_database.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const CASES: ReadonlyArray<readonly [string, string | null, string | null]> = [
+    [
+      "slicer down",
+      "The slicer is not answering, so the preview picture could not be made. It will be tried again automatically.",
+      "slicer_down",
+    ],
+    [
+      "store down",
+      "Storage is not answering, so the preview picture could not be made. It will be tried again automatically.",
+      "store_down",
+    ],
+    [
+      "queue failed",
+      "The preview picture could not be queued. It will be tried again automatically.",
+      "queue_failed",
+    ],
+    [
+      "temp failed",
+      "Platehouse could not write a temporary file; it will be tried again automatically.",
+      "temp_failed",
+    ],
+    [
+      "sandbox off kernel",
+      "Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12.",
+      "sandbox_off_kernel",
+    ],
+    [
+      "sandbox off check",
+      "Pictures and OpenSCAD renders are off on this server: its sandbox check failed.",
+      "sandbox_off_check",
+    ],
+    ["lost", "The render did not finish.", "lost"],
+    ["openscad said", "OpenSCAD said: boom", "render_failed"],
+    ["no failure", null, null],
+  ];
+
+  test("gives each stored failure message its reason code and refuses a message without one", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    const model = "0190a0b0-0000-7000-8000-000000000031";
+    const source = "0190a0b0-0000-7000-8000-000000000032";
+    await sql`insert into models (id, name) values (${model}, 'Synthetic failures')`.execute(db);
+    await sql`
+      insert into blobs (id, model_id, key, kind, content_type)
+      values (${source}, ${model}, ${`models/${model}/${source}`}, 'source', 'model/stl')
+    `.execute(db);
+    const ids = CASES.map(
+      (_, i) => `0190a0b0-0000-7000-8000-0000000001${String(i).padStart(2, "0")}`,
+    );
+    for (const [i, [name, message]] of CASES.entries()) {
+      await sql`
+        insert into files (id, model_id, blob_id, name, original_name, kind, size, sha256,
+                           preview_failure_message)
+        values (${ids[i]}, ${model}, ${source}, ${`${name}.stl`}, ${`${name}.stl`}, 'stl', 1,
+                ${Buffer.alloc(32)}, ${message})
+      `.execute(db);
+    }
+
+    await migrate(db);
+
+    const rows = (
+      await sql<{ id: string; previewFailureReason: string | null }>`
+        select id, preview_failure_reason from files order by id
+      `.execute(db)
+    ).rows;
+    expect(rows).toEqual(ids.map((id, i) => ({ id, previewFailureReason: CASES[i]?.[2] })));
+
+    await expect(
+      sql`update files set preview_failure_message = 'x' where id = ${ids[CASES.length - 1]}`.execute(
+        db,
+      ),
+    ).rejects.toThrow(/files_preview_failure_reason_set/);
+  });
+
+  test("adds the six indexes, the unproven description columns and the lease table", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrate(db);
+    const wanted = [
+      "files_mesh_blob_id",
+      "files_render_stl_blob_id",
+      "files_render_png_blob_id",
+      "plates_thumbnail_blob_id",
+      "plates_mesh_blob_id",
+      "estimates_rate",
+    ];
+    const found = (
+      await sql<{ indexname: string }>`
+        select indexname from pg_indexes where indexname = any(${wanted})
+      `.execute(db)
+    ).rows.map((r) => r.indexname);
+    expect(found.sort()).toEqual([...wanted].sort());
+
+    const model = "0190a0b0-0000-7000-8000-000000000041";
+    await sql`insert into models (id, name) values (${model}, 'Synthetic unproven')`.execute(db);
+    await expect(
+      sql`update models set description_unproven_sha256 = ${"a".repeat(64)} where id = ${model}`.execute(
+        db,
+      ),
+    ).rejects.toThrow(/models_description_unproven_complete/);
+    await sql`
+      update models set description_unproven_sha256 = ${"a".repeat(64)},
+        description_unproven_file_id = ${model}
+      where id = ${model}
+    `.execute(db);
+    await sql`
+      insert into upgrade_leases (name, holder, expires_at) values ('reconvert', 'a', now())
+    `.execute(db);
+    await expect(
+      sql`insert into upgrade_leases (name, holder, expires_at) values ('Bad Name', 'a', now())`.execute(
+        db,
+      ),
+    ).rejects.toThrow();
   });
 });

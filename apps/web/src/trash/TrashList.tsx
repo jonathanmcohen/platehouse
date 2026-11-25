@@ -1,4 +1,4 @@
-// The trash (build plan Task 21; AC-063 UI, decided Q11), on its own page
+// The trash, on its own page
 // and on the settings page. Each trashed model shows the day after which
 // the daily purge deletes it for good (30 days after it was trashed) and a
 // Restore button, which brings it back with its files, tags and
@@ -21,9 +21,24 @@
 // ignore a press. When a restored model leaves the list, focus goes to the
 // next model's Restore, else the previous one's, else the status line
 // (useRowFocus in ../settings/focus).
-import { useRef, useState } from "react";
+// The server pages the trash, 100 models to a page, newest first. The page
+// lives in the address (?page= on /trash, ?trashPage= in Settings, beside its
+// own ?view=), and the library's Pager shows when there is more than one.
+// After a restore or Empty trash the same page is read again; a page past
+// the end comes back as the last page, and the address is changed to that
+// page (replacing the entry, so Back does not return to the past-the-end
+// one). When the pager loads another page the list and the pager unmount, so
+// focus would fall to the page body: it goes to the status line instead,
+// which then says "Page N of M". Restoring the last model of the last page
+// keeps its row until the read again answers, so the trash never shows as
+// empty for a moment. Empty trash's count is the whole
+// trash, not the page on screen, because the cutoff covers every page.
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import { serverTextWith } from "../i18n/serverText";
+import { Pager } from "../library/Pager";
+import { pageFrom } from "../library/paging";
 import { AppApiError, appApi, segment, useAppApi, useErrorText } from "../settings/api";
 import { ConfirmDialog } from "../settings/Dialog";
 import { useRowFocus } from "../settings/focus";
@@ -74,16 +89,36 @@ function incompleteFailure(
 interface TrashListing {
   models: TrashedModel[];
   readAt: string;
+  /** The page served (a page past the end is the last page). */
+  page: number;
+  pageCount: number;
+  /** Every model in the trash, whichever page it is on. */
+  total: number;
 }
 
-export function TrashList() {
+/**
+ * pageParam names the address parameter that holds the page: "page" on the
+ * trash's own page, another where the page shares its address (Settings).
+ */
+export function TrashList({ pageParam = "page" }: { pageParam?: string }) {
   const errorText = useErrorText();
   const i18n = useI18n();
   const { t, rich } = i18n;
-  const trash = useAppApi<TrashListing>("/trash");
+  const [params] = useSearchParams();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const asked = pageFrom(params.get(pageParam));
+  const trash = useAppApi<TrashListing>(asked > 1 ? `/trash?page=${asked}` : "/trash");
+  const hrefFor = (page: number) => {
+    const next = new URLSearchParams(params);
+    if (page <= 1) next.delete(pageParam);
+    else next.set(pageParam, String(page));
+    const query = next.toString();
+    return query === "" ? pathname : `${pathname}?${query}`;
+  };
   /**
    * What Empty trash asks to delete, from when the dialog opened: how many
-   * models were listed and the time the list was read; null when closed.
+   * models the trash held and the time the list was read; null when closed.
    */
   const [asking, setAsking] = useState<{ count: number; cutoff: string } | null>(null);
   const [status, setStatus] = useState("");
@@ -99,6 +134,22 @@ export function TrashList() {
     models.map((m) => m.id),
     statusLine,
   );
+  /** Set when the pager is followed: the next page that arrives takes focus. */
+  const pagerFollowed = useRef(false);
+  // Each time new data arrives (not on a render that still holds the data of
+  // the page just left).
+  const arrived = trash.data;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once per arrival of data; asked, t and the address are read as they are then.
+  useEffect(() => {
+    if (arrived === undefined) return;
+    if (pagerFollowed.current) {
+      pagerFollowed.current = false;
+      setStatus(t("trash.pageOf", { page: arrived.page, count: arrived.pageCount }));
+      statusLine.current?.focus();
+    }
+    // A page past the end was served as the last page: the address follows it.
+    if (arrived.page < asked) navigate(hrefFor(arrived.page), { replace: true });
+  }, [arrived]);
 
   function marking(id: string, on: boolean) {
     setRestoring((prev) => {
@@ -116,8 +167,21 @@ export function TrashList() {
     setStatus("");
     try {
       await appApi("POST", `/trash/${segment(model.id)}/restore`);
-      trash.set((prev) => ({ ...prev, models: prev.models.filter((m) => m.id !== model.id) }));
+      const leave = () =>
+        trash.set((prev) => ({
+          ...prev,
+          models: prev.models.filter((m) => m.id !== model.id),
+          total: prev.total - 1,
+        }));
       setStatus(t("trash.restored"));
+      if ((trash.data?.pageCount ?? 1) > 1) {
+        // Another page's models move up into this one, and the last page may
+        // go: keep the rows until the read answers, so the list never shows
+        // empty meanwhile. If the read fails, the row still leaves.
+        if (!(await trash.reload())) leave();
+      } else {
+        leave();
+      }
     } catch (failure) {
       setError(errorText(failure));
     } finally {
@@ -132,7 +196,7 @@ export function TrashList() {
       const answer = await appApi<{ purged: number }>("POST", "/trash/empty", {
         cutoff: asking.cutoff,
       });
-      trash.set((prev) => ({ ...prev, models: [] }));
+      trash.set((prev) => ({ ...prev, models: [], total: 0 }));
       // The result goes where focus goes; Empty trash has nothing left to do.
       emptyReturn.current = statusLine.current;
       setAsking(null);
@@ -157,7 +221,7 @@ export function TrashList() {
           onClick={() => {
             if (trash.data === undefined || models.length === 0) return;
             emptyReturn.current = emptyButton.current;
-            setAsking({ count: models.length, cutoff: trash.data.readAt });
+            setAsking({ count: trash.data.total, cutoff: trash.data.readAt });
           }}
         >
           {t("trash.empty")}
@@ -210,6 +274,16 @@ export function TrashList() {
             </li>
           ))}
         </ul>
+      ) : null}
+      {trash.data !== undefined && trash.data.pageCount > 1 ? (
+        <Pager
+          page={trash.data.page}
+          pageCount={trash.data.pageCount}
+          hrefFor={hrefFor}
+          onNavigate={() => {
+            pagerFollowed.current = true;
+          }}
+        />
       ) : null}
       {asking !== null ? (
         <ConfirmDialog

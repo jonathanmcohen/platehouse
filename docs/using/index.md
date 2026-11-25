@@ -11,6 +11,8 @@ The pages in this section:
 
 - [Adding files](./adding-files.md): uploading in the browser, the inbox folder, the API, how new
   models are named and what happens to duplicates.
+- [Importing from Manyfold](./importing-from-manyfold.md): copying a Manyfold library across once,
+  with the importer.
 - [Models, files and plates](./models-files-plates.md): what a model is and what its page shows.
 - [Printers and estimates](./printers-and-estimates.md): where the time, weight and filament
   numbers come from.
@@ -21,31 +23,34 @@ The pages in this section:
 - [Activity](./activity.md): library numbers, job progress and recent events.
 - [Settings](./settings.md): the accent colour, language, My printers, API tokens, model names and
   trash.
-- [New in 0.1.0](./new-in-0-1-0.md): the features added late in this release.
+- [New in 0.1.0](./new-in-0-1-0.md): the features added late in 0.1.0, the first release.
 
 ## The library
 
 The library at `/` shows a card for each model: plate 1's thumbnail, the name, the creator, the
 plate count, and the total print time and weight when every plate has numbers. The totals are for
 the printer named in the library header: your default printer, unless you pick another there.
-A card says "partial" when some plates have no numbers yet. STL, STEP and OpenSCAD models show a
-file-type icon instead of a thumbnail. Pictures of prints sit on a neutral grey backdrop, so a
-black or white print stays visible in both themes.
+A card says "partial" when some plates have no numbers yet. STL and STEP models show a preview
+picture of the model instead of a thumbnail, once it has been rendered, and a file-type icon until
+then or if it could not be rendered. OpenSCAD models show a file-type icon. Pictures of prints sit
+on a neutral grey backdrop, so a black or white print stays visible in both themes.
 
-Search in the top bar matches names, captions, creators and tags, best match first. Pick a tag
-chip to filter by tag, and **All** to turn the tag filter off. The tag you are filtering by keeps
+Search in the top bar matches names, captions, creators and tags, best match first. The tag chips
+show the 30 most-used tags; **More tags** shows the rest. Pick a tag chip to filter by tag, and
+**All** to turn the tag filter off. The tag you are filtering by keeps
 its chip even when no model has that tag any more. Typing a search in the top bar turns off a tag
 filter and searches the whole library; this is deliberate, so a search always looks through every
 tag. The one exception is a creator or collection filter opened from **Show in the library**,
 which stays on. When nothing matches a search or filter, **Show all models** takes you back to the
 whole library. Loading the library never downloads a model file: the only images it
-loads are the stored plate thumbnails.
+loads are the stored plate thumbnails and the preview pictures of STL and STEP models.
 
 ### Pages and View all
 
 The library shows 48 models a page, with **Previous**, **Next** and page numbers at the bottom
-(shortened with gaps on a narrow screen). **View all** shows the matches on one page instead,
-loading them 200 at a time as you go.
+(shortened with gaps whenever there are more than 7 pages, at any width). **View all** shows the
+matches on one page instead, loading them 200 at a time, one batch right after the other, until
+all are there.
 
 - The pages and View all both reach the first 1000 matches in the chosen sort, no further. When
   more match, the count shows "1000+" and a note above the cards says only the first 1000 can be
@@ -90,7 +95,8 @@ its plates has numbers, so a model still marked "partial" is in that last group 
 **Select**, above the cards, turns on Select mode: each card becomes a checkbox (click it, or press
 Space on it) and a toolbar appears above the grid with the number selected.
 
-- **Select all on this page** adds the cards shown (every card, in View all). **Select all
+- **Select all on this page** adds the cards shown (every card, in View all); when the page shows
+  none it is greyed out. **Select all
   matching** adds every model that matches the search and filters, up to 1000; if more match, the
   toolbar says only the first 1000 were selected. When nothing matches it is greyed out.
   **Clear selection** empties it.
@@ -100,7 +106,9 @@ Space on it) and a toolbar appears above the grid with the number selected.
   matches the pages reach. A new search or filter keeps the selected models it still shows and
   drops the rest, and the toolbar says how many left. To gather models from several searches or
   tags, select them under one view that shows them all, such as the whole library with no search
-  or filter. **Select** again, or Escape, ends Select mode and clears the selection.
+  or filter. **Select** again, or Escape, ends Select mode and clears the selection. Escape does not end
+  Select mode while you are typing in a text field, such as the search box; it only leaves the
+  field.
 - While the page checks which selected models a new search or filter shows, the actions wait. If
   that check fails, the toolbar says so and offers **Try again**.
 

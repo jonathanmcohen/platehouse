@@ -1,12 +1,12 @@
-// Plain words for why a plate could not be sliced (build plan Task 12,
-// AC-034). The reason itself comes from the slicer's reason map (Slicer HTTP
-// contract v1): Orca's return code mapped to one of the contract's reasons,
+// Plain words for why a plate could not be sliced, so the plate shows the
+// slicer's reason rather than a code. The reason itself comes from the slicer's reason map (Slicer HTTP
+// contract 2): Orca's return code mapped to one of the contract's reasons,
 // with every code the map does not name reported as slicer_error. The app
 // never re-maps a reason; it only puts it in words.
 //
-// The first six sentences are the plan's, word for word. filament_temperature
+// The first six sentences were written with the slicer contract. filament_temperature
 // (-62) and toolpath_conflict (-101) were added to the map as legitimate
-// refusals after the plan was written (the maintainer, 2026-11-08, gate run 3); their
+// refusals later (the maintainer, 2026-11-08, gate run 3); their
 // sentences are written here in the same style. The slicer's own detail
 // (Orca's error_string) is kept with the estimate and shown behind a Details
 // toggle, never in place of these words.

@@ -17,6 +17,7 @@ import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { printerNameIn } from "../i18n/printers";
 import { serverText, serverTextWith } from "../i18n/serverText";
 import { AppApiError, appApi } from "../settings/api";
+import { isHidden } from "../visibility";
 import { Events } from "./Events";
 import { formatCount, formatDuration, formatRate, formatSize } from "./format";
 import "../settings/organise.css";
@@ -79,9 +80,21 @@ export type ActivityEvent =
       detail: string | null;
     }
   | {
+      /** The description re-conversion on upgrade (#357): what one run did. */
+      type: "descriptions_reconverted";
+      at: string;
+      converter: number;
+      checked: number;
+      changed: number;
+      unchanged: number;
+      kept: number;
+      unreadable: number;
+    }
+  | {
       type: "render_failed";
       at: string;
-      kind: "scad" | "step";
+      /** preview: an STL's or a STEP file's preview picture (issue #316). */
+      kind: "scad" | "step" | "preview";
       model: { id: string; name: string };
       file: { id: string; name: string };
       message: string | null;
@@ -120,6 +133,10 @@ export interface ActivityView {
     busy: boolean | null;
     orca: string | null;
     openscad: string | null;
+    /** The slicer's sandbox; null when it did not answer. */
+    sandbox: "checking" | "on" | "off" | null;
+    sandboxReason: "old_kernel" | "check_failed" | null;
+    unsandboxed: boolean | null;
     /** The default printer of My printers, and its full name. */
     printerId: string;
     printerName: string;
@@ -131,10 +148,6 @@ export interface ActivityView {
 // ---- Loading and refreshing ----
 
 type Problem = "failed" | "signed-out" | null;
-
-function isHidden(): boolean {
-  return typeof document !== "undefined" && document.visibilityState === "hidden";
-}
 
 /** The newest answer, why the last ask failed (if it did), and a way to ask at once. */
 function useActivity(): { view: ActivityView | undefined; problem: Problem; refresh(): void } {
@@ -359,6 +372,8 @@ const SCHEDULE_KEYS: Readonly<Record<string, MessageKey>> = {
   "sweep-uploads": "activity.schedule.sweepUploads",
   "poll-orca": "activity.schedule.pollOrca",
   "check-renders": "activity.schedule.checkRenders",
+  "backfill-previews": "activity.schedule.backfillPreviews",
+  "reconvert-descriptions": "activity.schedule.reconvertDescriptions",
 };
 
 /**
@@ -460,6 +475,25 @@ function Slicer({ slicer }: { slicer: ActivityView["slicer"] }) {
     : slicer.busy
       ? t("activity.slicer.busy")
       : t("activity.slicer.idle");
+  // Off with unsandboxed runs allowed, estimates and STEP previews still
+  // run, so the off line gives only the reason and the unsandboxed line
+  // below says what runs.
+  const offKey =
+    slicer.sandboxReason === "old_kernel"
+      ? slicer.unsandboxed
+        ? "activity.slicer.sandboxOffKernelShort"
+        : "activity.slicer.sandboxOffKernel"
+      : slicer.unsandboxed
+        ? "activity.slicer.sandboxOffCheckShort"
+        : "activity.slicer.sandboxOffCheck";
+  const sandbox =
+    slicer.sandbox === "on"
+      ? t("activity.slicer.sandboxOn")
+      : slicer.sandbox === "checking"
+        ? t("activity.slicer.sandboxChecking")
+        : slicer.sandbox === "off"
+          ? t(offKey)
+          : null;
   return (
     <Section title={t("model.numbers.slicer")}>
       {slicer.reachable ? null : (
@@ -475,6 +509,8 @@ function Slicer({ slicer }: { slicer: ActivityView["slicer"] }) {
         <dt>{t("activity.slicer.defaultPrinter")}</dt>
         <dd>{printerNameIn(i18n, slicer.printerName)}</dd>
       </dl>
+      {sandbox === null ? null : <p>{sandbox}</p>}
+      {slicer.unsandboxed ? <p>{t("activity.slicer.sandboxUnsandboxed")}</p> : null}
     </Section>
   );
 }

@@ -1,6 +1,6 @@
 // Classifies each plate's slice and applies the maintainer's pass rule (2026-11-07):
-// every plate gets a time and a weight above zero, or is refused for a reason
-// AC-034 treats as legitimate (process not compatible, machine not supported,
+// every plate gets a time and a weight above zero, or is refused for a
+// legitimate reason (process not compatible, machine not supported,
 // bed too small, nozzle or extruder mismatch), which is reported. A crash, a
 // timeout or an unexplained slicer error on any plate fails the gate.
 // The maintainer, 2026-11-08: -101 (G-code path conflicts) and -62 (filament
@@ -10,13 +10,14 @@
 // Return codes are OrcaSlicer v2.5.0's, from src/libslic3r/Utils.hpp, with the
 // messages from src/OrcaSlicer.cpp cli_errors.
 //
-// The plan's reason map (slicer contract v1) sends -61 to -69 to
+// The slicer contract's first reason map sent -61 to -69 to
 // nozzle_mismatch, but in Orca only -66 and -68 are about extruders; -61 to
 // -65, -67 and -69 are bed type, temperature, collisions, vase mode, TPU count
 // and mixed filament. Those codes (except -62, which the maintainer has decided), and -50
-// (empty plate), are neither a legitimate AC-034 refusal by Orca's own meaning
+// (empty plate), are neither a legitimate refusal by Orca's own meaning
 // nor an unexplained error, so the gate reports them as needs-decision for the maintainer
-// instead of passing or failing them silently.
+// instead of passing or failing them silently. The product answers a clean -50 on a
+// plate with objects as bed_too_small; a gate -50 is still needs-decision.
 
 export const CODES = Object.freeze({
   0: "success",
@@ -73,7 +74,7 @@ const LEGITIMATE = new Map([
 
 const NEEDS_DECISION = new Set([-50, -61, -63, -64, -65, -67, -69]);
 
-/** The reason the plan's slicer contract v1 map gives a return code. */
+/** The reason the slicer contract's first reason map gives a return code. */
 export function planReason(code) {
   if (code === -16) return "machine_not_supported";
   if (code === -17) return "process_not_compatible";
@@ -180,7 +181,7 @@ export function summarise(values) {
 const GiB = 2 ** 30;
 
 /**
- * Proposed AC-035 limits from the measured worst case (report item d). The
+ * Proposed slicer container limits from the measured worst case (report item d). The
  * rule is mechanical and stated in the report: memory is 1.5x the worst peak
  * RSS rounded up to a whole GiB (at least 2g); SLICE_PLATE_SECONDS is twice
  * the worst wall time rounded up to 30 s (at least 120); tmpfs is twice the

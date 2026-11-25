@@ -1,6 +1,6 @@
-// buildSliceable (build plan Task 11): a generated multi-plate,
+// buildSliceable: a generated multi-plate,
 // multi-filament Bambu project of simple cubes that OrcaSlicer can slice. It
-// is the fixture for the slicer's container tests and the AC-037 smoke slice;
+// is the fixture for the slicer's container tests and the release workflow's smoke slice;
 // no designer file is involved. Orca itself is only in the slicer image, so
 // these tests check the file's shape against what Orca 2.5.0's 3MF loader
 // reads (src/libslic3r/Format/bbs_3mf.cpp at 40ecc66); the container tests
@@ -111,6 +111,66 @@ describe("buildSliceable", () => {
     const settings = entries.get("Metadata/model_settings.config") ?? "";
     const extruders = [...settings.matchAll(/key="extruder" value="(\d+)"/g)].map((m) => m[1]);
     expect(extruders).toEqual(["1", "2", "1", "2"]);
+  });
+
+  test("footprint and height size each object, and the default stays a 20 mm cube", () => {
+    const extent = (model: string, axis: "x" | "z") => {
+      const re = new RegExp(`<vertex[^>]* ${axis}="([\\d.]+)"`, "g");
+      return Math.max(...[...model.matchAll(re)].map((m) => Number(m[1])));
+    };
+    const entry = (o: object) =>
+      sliceableEntries({ plates: 1, filaments: 1, ...o }).get("3D/3dmodel.model") ?? "";
+    const small = entry({});
+    expect([extent(small, "x"), extent(small, "z")]).toEqual([20, 20]);
+    const slab = entry({ footprint: 300, height: 10 });
+    expect([extent(slab, "x"), extent(slab, "z")]).toEqual([300, 10]);
+    const bigger = entry({ cubeSize: 30 });
+    expect([extent(bigger, "x"), extent(bigger, "z")]).toEqual([30, 30]);
+  });
+
+  test("at puts the first object's centre at that bed position, and the default layout is unchanged", () => {
+    const corner = (o: object) => {
+      const model =
+        sliceableEntries({ plates: 1, filaments: 2, ...o }).get("3D/3dmodel.model") ?? "";
+      return [...model.matchAll(/<item objectid="\d+" transform="([^"]+)"/g)].map((m) => ({
+        x: Number(m[1]?.split(" ")[9]),
+        y: Number(m[1]?.split(" ")[10]),
+      }));
+    };
+    // The mesh spans 0..size from the item's origin, so the centre is half a size in.
+    const placed = corner({ cubeSize: 20, at: { x: 220, y: 200 } });
+    expect(placed[0]).toEqual({ x: 210, y: 190 });
+    expect(placed[1]).toEqual({ x: 85, y: 40 });
+    expect(corner({})).toEqual([
+      { x: 40, y: 40 },
+      { x: 85, y: 40 },
+    ]);
+  });
+
+  test("footprints sizes each filament's object on its own, and the default is unchanged", () => {
+    const sizes = (o: object) => {
+      const model =
+        sliceableEntries({ plates: 1, filaments: 2, ...o }).get("3D/3dmodel.model") ?? "";
+      return [...model.matchAll(/<object id="\d+"[^>]*>([\s\S]*?)<\/object>/g)].map((m) =>
+        Math.max(
+          ...[...(m[1] ?? "").matchAll(/<vertex[^>]* x="([\d.]+)"/g)].map((v) => Number(v[1])),
+        ),
+      );
+    };
+    expect(sizes({})).toEqual([20, 20]);
+    expect(sizes({ footprints: [20, 200], height: 10 })).toEqual([20, 200]);
+    expect(sizes({ footprints: [30], footprint: 50 })).toEqual([30, 50]);
+  });
+
+  test("a size that is not a positive number is refused", () => {
+    expect(() => buildSliceable({ plates: 1, filaments: 1, cubeSize: 0 })).toThrow(/cubeSize/);
+    expect(() => buildSliceable({ plates: 1, filaments: 1, footprint: Number.NaN })).toThrow(
+      /footprint/,
+    );
+    expect(() => buildSliceable({ plates: 1, filaments: 1, height: -1 })).toThrow(/height/);
+    expect(() => buildSliceable({ plates: 1, filaments: 2, footprints: [20, 0] })).toThrow(
+      /footprints/,
+    );
   });
 
   test("options outside 1 to 128 plates or 1 to 16 filaments are refused", () => {

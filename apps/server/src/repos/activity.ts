@@ -98,8 +98,11 @@ export interface FailedDerived {
 
 const FILE_KINDS: readonly FileKind[] = ["3mf", "stl", "step", "scad"];
 
+/** pg-boss's job table, schema-qualified. */
+export const BOSS_JOB = sql.id(BOSS_SCHEMA, "job");
+
 export function activityRepo(db: Kysely<DB>) {
-  const job = sql.id(BOSS_SCHEMA, "job");
+  const job = BOSS_JOB;
 
   return {
     async libraryCounts(): Promise<LibraryCounts> {
@@ -208,15 +211,15 @@ export function activityRepo(db: Kysely<DB>) {
       return rows;
     },
 
-    /** The newest finished run pg-boss still keeps of each task on the maintenance queue. */
-    async lastRuns(queue: string): Promise<LastRun[]> {
+    /** The newest finished run pg-boss still keeps of each task on these queues (maintenance, upgrade). */
+    async lastRuns(queues: readonly string[]): Promise<LastRun[]> {
       const { rows } = await sql<LastRun>`
         select distinct on (data->>'task')
                data->>'task' as task,
                state::text as state,
                completed_on as at
           from ${job}
-         where name = ${queue}
+         where name = any(${[...queues]}::text[])
            and completed_on is not null
            and state in ('completed', 'failed')
            and data->>'task' is not null
@@ -334,6 +337,32 @@ export function activityRepo(db: Kysely<DB>) {
           "f.updatedAt as at",
         ])
         .where("f.derivedStatus", "=", "failed")
+        .where("m.trashedAt", "is", null)
+        .orderBy("f.updatedAt", "desc")
+        .orderBy("f.id", "desc")
+        .limit(limit)
+        .execute();
+      return rows;
+    },
+
+    /**
+     * The newest STL and STEP preview pictures that failed, on live models,
+     * from their own column (issue #380), newest first.
+     */
+    async failedPreviews(limit: number): Promise<FailedDerived[]> {
+      const rows = await db
+        .selectFrom("files as f")
+        .innerJoin("models as m", "m.id", "f.modelId")
+        .select([
+          "f.id as fileId",
+          "f.name as fileName",
+          "f.kind as kind",
+          "m.id as modelId",
+          "m.name as modelName",
+          "f.previewMessage as message",
+          "f.updatedAt as at",
+        ])
+        .where("f.previewStatus", "=", "failed")
         .where("m.trashedAt", "is", null)
         .orderBy("f.updatedAt", "desc")
         .orderBy("f.id", "desc")

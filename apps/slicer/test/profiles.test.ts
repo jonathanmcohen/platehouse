@@ -1,14 +1,13 @@
-// Profiles (build plan Task 11): the T1 recipe, ported from the slicing gate's
+// Profiles: the slicing gate's recipe, ported from its
 // flatten-profiles.mjs, which gate run 4 proved. Presets are flattened
 // through inherits at image build; only the machine preset is loaded with
 // --load-settings, one default filament per type with --load-filaments (Bambu's
 // own preset for the printer, else the generic one; filaments.test.ts), and
 // Orca's process_full folder gets every instantiable machine's default
 // process (without it a printer switch fails with code -3, gate run 3).
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import {
   buildProfiles,
   flattenPreset,
@@ -20,8 +19,9 @@ import {
   writeProcessFull,
 } from "../src/profiles.js";
 import { profileTree, put, TREE_PRINTERS } from "./support/profiles.js";
+import { removeTempDirs, tempDir } from "./support/tmp.js";
 
-const scratch = () => mkdtempSync(join(tmpdir(), "slicer-out-"));
+const scratch = () => tempDir("slicer-out-");
 const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"));
 
 describe("flattening", () => {
@@ -286,3 +286,6 @@ describe("the image's profile folder", () => {
     expect(() => loadProfiles(out)).toThrow(/manifest/);
   });
 });
+
+// Every folder profileTree() and scratch() made for a test.
+afterEach(removeTempDirs);

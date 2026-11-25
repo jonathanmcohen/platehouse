@@ -1,4 +1,5 @@
-// What one Manyfold model needs in Platehouse (AC-001, AC-002). Pure: no
+// What one Manyfold model needs in Platehouse, so that a re-run only fills in
+// what is missing and never makes a duplicate. Pure: no
 // network, no clock.
 //
 // - A model is matched by externalRef = manyfold:<id>, Manyfold's public id
@@ -26,8 +27,8 @@
 //   original name and Manyfold's contentSize, matched one to one. A file of
 //   that name with another size is a failure, not a second upload, so a
 //   re-run never makes a duplicate. A file with no contentSize fails, since
-//   its size cannot be checked (AC-004). A file type Platehouse does not take
-//   (Task 8: .3mf, .stl, .step, .stp, .scad) is skipped with the reason,
+//   its size cannot be checked against what Platehouse stores. A file type Platehouse does not take
+//   (ingest takes .3mf, .stl, .step, .stp, .scad) is skipped with the reason,
 //   and is never downloaded. So is a file whose contentSize is over
 //   Platehouse's single-upload cap (MAX_UPLOAD_BYTES, 512 MiB, the server's
 //   apps/server/src/uploads/tus.ts), which the upload would refuse only
@@ -55,6 +56,7 @@
 //   parser resolves it as a dot segment (%2e forms included), so the PUT
 //   would reach another route. It is left out with the reason. In a new
 //   model's create body, which carries no path, it is sent as it is.
+import { stripFormatChars } from "./format-chars.js";
 import type { NewModel, PlatehouseFile, PlatehouseModel } from "./platehouse.js";
 
 export interface SourceFile {
@@ -187,7 +189,7 @@ export function externalRefFor(manyfoldId: string): string {
   return `manyfold:${manyfoldId}`;
 }
 
-/** Whether Platehouse takes a file with this name (Task 8's supported types). */
+/** Whether Platehouse takes a file with this name (the types ingest supports). */
 export function importable(filename: string): boolean {
   return EXTENSIONS.has(extensionOf(filename));
 }
@@ -335,6 +337,12 @@ function newModel(
 function planFiles(files: SourceFile[], stored: PlatehouseFile[]): FilePlan[] {
   const unmatched = [...stored];
   return files.map((file): FilePlan => {
+    // 0.1.0 stored a name as it came, format characters included; later
+    // releases store it without them. A stored file is the same file under
+    // either form.
+    const storedName = stripFormatChars(file.filename);
+    const isStored = (s: PlatehouseFile) =>
+      s.originalName === storedName || s.originalName === file.filename;
     if (typeof file.problem === "string") return { action: "fail", file, reason: file.problem };
     if (!importable(file.filename)) {
       const ext = extensionOf(file.filename);
@@ -357,14 +365,12 @@ function planFiles(files: SourceFile[], stored: PlatehouseFile[]): FilePlan[] {
           `of ${MAX_UPLOAD_BYTES} bytes (512 MiB); not downloaded`,
       };
     }
-    const at = unmatched.findIndex(
-      (s) => s.originalName === file.filename && s.size === file.contentSize,
-    );
+    const at = unmatched.findIndex((s) => isStored(s) && s.size === file.contentSize);
     if (at !== -1) {
       const [match] = unmatched.splice(at, 1);
       if (match !== undefined) return { action: "present", file, stored: match };
     }
-    const sameName = unmatched.find((s) => s.originalName === file.filename);
+    const sameName = unmatched.find(isStored);
     if (sameName !== undefined) {
       return {
         action: "fail",

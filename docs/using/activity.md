@@ -11,12 +11,16 @@ did not turn out as expected.
 - **Estimates**: progress for your default printer, as a progress bar with a rough time left.
 - **Queues**: the background job queues (imports, the slicer queue and maintenance) and what is
   waiting or running in each.
-- **Scheduled jobs**: the daily and regular jobs, such as the trash purge and the cleanup, with
-  their last runs.
+- **Scheduled jobs**: the daily and regular jobs, such as the trash purge, the cleanup and
+  "Preview pictures for older STL and STEP files", with their last runs. After an upgrade from a version before 0.1.1, "MakerWorld descriptions
+  and licences (until they finish)" is listed too while stored MakerWorld descriptions and missing licences are being
+  read again; it goes once that has finished. On a new install the row can appear briefly.
 - **Slicer**: whether the slicer is healthy, and its OrcaSlicer and OpenSCAD versions.
 - **Recent events**: the newest 50 events: models added, inbox files that failed, estimates that
-  failed (with the same **Retry** as on the model page), and renders and STEP conversions that
-  failed.
+  failed (with the same **Retry** as on the model page), renders and STEP conversions that
+  failed, preview pictures that failed, and "MakerWorld descriptions converted again", which says how many stored descriptions
+  the re-conversion changed, how many were already right, how many it left as they were because
+  they were edited or not written from their file, and how many files it could not read.
 
 The page builds everything from what the database, the job queues and the inbox's `failed` folder
 record. It shows no log lines, and it takes file paths, network addresses and tokens out of any

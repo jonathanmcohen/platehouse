@@ -1,4 +1,4 @@
-# Platehouse app image (build plan Task 24; AC-093, AC-094): the Fastify
+# Platehouse app image, with a healthcheck: the Fastify
 # server (apps/server) with the built web app (apps/web/dist) beside it, on
 # node:26.13.0-trixie-slim, run as the image's non-root node user.
 #
@@ -8,6 +8,10 @@
 #
 # Layout inside the image, /app, is the workspace's own:
 #   apps/server/dist/src/main.js           the entry point (CMD)
+#   apps/server/dist/src/plate-mesh/worker.js
+#                                          the thread a plate's mesh is read
+#                                          in, started from worker-read.js
+#                                          beside it (#358)
 #   apps/server/dist/src/db/migrations/    the SQL migrations, copied next to
 #                                          the built migrate.js, which reads
 #                                          ./migrations beside itself (#31)
@@ -24,8 +28,8 @@
 # apps/importer is never copied (its test folder holds Manyfold's AGPL
 # OpenAPI fixture, PR #157), and neither is any test folder.
 #
-# Configuration is the environment only (the plan's Configuration contract);
-# the image sets none of it except what the contract defaults already say.
+# Configuration is the environment only (apps/server/src/config.ts);
+# the image sets none of it except what that file's defaults already say.
 # INBOX_DIR and TMP_DIR default to /data/inbox and /data/tmp, which exist in
 # the image owned by the node user, for a run without the bind mounts.
 
@@ -97,6 +101,7 @@ RUN node_modules/.bin/tsc -b apps/server \
  && test -f packages/i18n/locales/en.json \
  && test -f apps/server/dist/src/db/migrate.js \
  && test -f apps/server/dist/src/db/migrations/0001_init.sql \
+ && test -f apps/server/dist/src/plate-mesh/worker.js \
  && test -f apps/web/dist/index.html \
  && test -d apps/web/dist/assets \
  && test -f apps/web/dist/favicon.ico \
@@ -132,10 +137,11 @@ LABEL org.opencontainers.image.source="https://github.com/jonathanmcohen/plateho
 # Debian's pending updates, applied here because the base image can lag
 # Debian's security fixes: the release workflow's Trivy gate fails on any
 # fixable OS HIGH or CRITICAL, and run 43661472697 failed on a zlib1g fix the
-# base did not have yet. Upgrades only (no new package, no recommends), with
-# apt retrying a failed download 10 times as the other images do (#147), and
-# the package lists removed afterwards. Only this stage needs it: nothing from
-# the build stage's OS reaches the image, only /src.
+# base did not have yet. Upgrades, plus tini for PID 1 (see ENTRYPOINT),
+# installed without recommends and with apt retrying a failed download 10
+# times as the other images do (#147), and the package lists removed
+# afterwards. Only this stage needs it: nothing from the build stage's OS
+# reaches the image, only /src.
 #
 # OS_UPDATES_STAMP is used in this RUN so that a new value rebuilds it: the
 # build cache would otherwise keep this layer for as long as the base digest
@@ -151,10 +157,15 @@ RUN echo "Debian updates, stamp ${OS_UPDATES_STAMP}" \
  && apt-get update --error-on=any \
  && DEBIAN_FRONTEND=noninteractive apt-get -y upgrade --no-install-recommends \
       -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+ && DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends tini \
+ && test -x /usr/bin/tini \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src /app
+
+# The AGPL licence text, so the image carries the licence it is distributed under.
+COPY LICENSE /app/LICENSE
 
 # The inbox and the temp folder the configuration defaults to, writable by
 # the node user (uid 1000) when no bind mount covers them.
@@ -163,11 +174,12 @@ RUN mkdir -p /data/inbox /data/tmp \
 
 USER node
 
-# The same checks as the node user: it can read the server, the migrations
-# and the web build with its icons and manifest, and write the data folders.
+# The same checks as the node user: it can read the server, the plate mesh
+# worker, the migrations and the web build with its icons and manifest, and write the data folders.
 RUN test "$(id -u)" != 0 \
  && test -r /app/apps/server/dist/src/main.js \
  && test -r /app/apps/server/dist/src/db/migrations/0001_init.sql \
+ && test -r /app/apps/server/dist/src/plate-mesh/worker.js \
  && test -r /app/apps/web/dist/index.html \
  && test -r /app/apps/web/dist/favicon.ico \
  && test -r /app/apps/web/dist/favicon.svg \
@@ -185,14 +197,18 @@ ENV NODE_ENV=production \
 WORKDIR /app
 EXPOSE 3000
 
-# AC-093: Docker marks the container unhealthy when /healthz stops answering
-# 200 (the database, pg-boss and the web build; Tasks 24 and 30), so the
-# fleet restart-loop alert sees it. A fetch that hangs counts as a failure
+# Docker marks the container unhealthy when /healthz stops answering
+# 200 (the database, pg-boss and the web build), so an orchestrator or
+# monitor watching container health sees it. A fetch that hangs counts as a failure
 # after 4 s. During the start period a check runs every 2 s, so a healthy
 # start shows within seconds.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --start-interval=2s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 
-# Node runs as PID 1 and stops itself on SIGTERM and SIGINT (main.ts, within
-# 30 s); the server starts no child processes, so nothing needs reaping.
+# tini runs as PID 1 and reaps orphans: a process whose parent has gone is
+# re-parented to PID 1, and Node, which waits only on the children it spawned,
+# would leave it a zombie for the life of the container. tini also passes
+# SIGTERM on to Node, which stops itself on SIGTERM and SIGINT (main.ts,
+# within 30 s), also while it is still starting.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "apps/server/dist/src/main.js"]

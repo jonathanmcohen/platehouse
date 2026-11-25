@@ -1,10 +1,13 @@
-// The app's own themed dialogs (build plan Task 21; Task 18's rule: no
-// native browser dialog anywhere). Dialog is a modal panel over the page:
+// The app's own themed dialogs (the rule: no native browser dialog
+// anywhere). Dialog is a modal panel over the page:
 // role="dialog" with aria-modal and its title as its name, focus moved into
 // it when it opens and kept there (Tab and Shift+Tab wrap), Escape closes it,
 // and on close focus goes back to the control that opened it
 // (returnFocusTo), so a keyboard user never lands on the document body.
-// A press on the backdrop does not move focus out of the panel either.
+// A press on the backdrop does not move focus out of the panel either, and the
+// page behind it is inert (useInertOutside), so nothing outside the dialog can
+// take focus or be read while it is open. ConfirmDialog is a Dialog, so it is
+// isolated the same way.
 // ConfirmDialog asks before something that cannot be undone, with the safe
 // choice, Cancel, focused first. Once the change is sent it cannot be called
 // back, so while it runs both buttons are marked aria-disabled and ignore a
@@ -19,6 +22,7 @@ import {
   type RefObject,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -26,6 +30,7 @@ import { useI18n } from "../i18n/I18n";
 import { useErrorText } from "./api";
 import { focusFirst } from "./focus";
 import "./organise.css";
+import { useInertOutside } from "./useInertOutside";
 
 const FOCUSABLE =
   'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
@@ -40,14 +45,72 @@ export interface DialogProps {
   children: ReactNode;
 }
 
+/** The open dialogs: only the topmost takes an Escape pressed outside every panel. */
+interface OpenDialog {
+  panel: RefObject<HTMLElement | null>;
+  close: { current: () => void };
+}
+const openDialogs: OpenDialog[] = [];
+
+/**
+ * The newest dialog that has no other open dialog inside it. Effects of a
+ * dialog inside another run first when both mount together, so the order of
+ * the list alone cannot say which is on top.
+ */
+function topDialog(): OpenDialog | undefined {
+  return openDialogs.findLast(
+    (entry) =>
+      !openDialogs.some(
+        (other) =>
+          other !== entry &&
+          other.panel.current !== null &&
+          entry.panel.current?.contains(other.panel.current),
+      ),
+  );
+}
+
 export function Dialog({ title, onClose, returnFocusTo, initialFocus, children }: DialogProps) {
   const titleId = useId();
+  const backdrop = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const opener = useRef<Element | null>(null);
   const returnTo = useRef(returnFocusTo);
 
-  useEffect(() => {
+  // The opener is read before the page goes inert: a browser may drop focus
+  // from an element the moment it becomes inert. Layout effects run before
+  // the passive ones, where the hook below sets inert.
+  useLayoutEffect(() => {
     opener.current = document.activeElement;
+  }, []);
+
+  // Before the focus effect, so its cleanup runs first on close: focus cannot
+  // go back to the opener while the page is still inert.
+  useInertOutside(backdrop, true);
+
+  // Escape with focus outside the panel (on the body after a click on the
+  // page text): the newest open dialog closes. A key from inside the panel is
+  // the panel's own handler's, and one already handled is left alone.
+  const closeNow = useRef(onClose);
+  closeNow.current = onClose;
+  useEffect(() => {
+    const entry: OpenDialog = { panel, close: closeNow };
+    openDialogs.push(entry);
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (topDialog() !== entry) return;
+      if (event.target instanceof Node && panel.current?.contains(event.target)) return;
+      event.preventDefault();
+      closeNow.current();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      const at = openDialogs.indexOf(entry);
+      if (at >= 0) openDialogs.splice(at, 1);
+    };
+  }, []);
+
+  useEffect(() => {
     const first =
       initialFocus?.current ?? panel.current?.querySelector<HTMLElement>(FOCUSABLE) ?? null;
     (first ?? panel.current)?.focus();
@@ -90,7 +153,7 @@ export function Dialog({ title, onClose, returnFocusTo, initialFocus, children }
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the backdrop only stops a press from taking focus away; the dialog's own controls and keys do the work.
-    <div className="ph-dialog-backdrop" onMouseDown={keepFocus}>
+    <div ref={backdrop} className="ph-dialog-backdrop" onMouseDown={keepFocus}>
       <div
         ref={panel}
         className="ph-dialog"
@@ -116,6 +179,8 @@ export interface ConfirmDialogProps {
   onConfirm(): Promise<void>;
   onCancel(): void;
   returnFocusTo?: RefObject<HTMLElement | null>;
+  /** Choices shown under the message, such as Sign out everywhere's revoke box. */
+  children?: ReactNode;
 }
 
 export function ConfirmDialog({
@@ -125,6 +190,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   returnFocusTo,
+  children,
 }: ConfirmDialogProps) {
   const { t } = useI18n();
   const errorText = useErrorText();
@@ -158,6 +224,7 @@ export function ConfirmDialog({
       {...(returnFocusTo === undefined ? {} : { returnFocusTo })}
     >
       <p>{message}</p>
+      {children}
       {error === undefined ? null : (
         <p role="alert" className="studio-alert studio-alert-alert">
           {error}

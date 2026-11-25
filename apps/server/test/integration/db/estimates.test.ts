@@ -1,4 +1,4 @@
-// Build plan Task 4: the estimates repository against a migrated Postgres 17.
+// The estimates repository against a migrated Postgres 17.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { migrate } from "../../../src/db/migrate.js";
 import { createRepos, type Repos } from "../../../src/repos/index.js";

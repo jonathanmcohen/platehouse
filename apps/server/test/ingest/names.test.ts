@@ -2,9 +2,11 @@
 // file name, cut at the API's 500-character name limit. Every name here is
 // made up for the test.
 import { describe, expect, test } from "vitest";
+import { nothingToShow, stripFormatChars } from "../../src/format-chars.js";
 import {
   cutName,
   fileStems,
+  hasControlCharacter,
   MAX_MODEL_NAME_LENGTH,
   nameFromFile,
   newModelName,
@@ -113,5 +115,56 @@ describe("fileStems", () => {
     expect(fileStems(["Desk_clip.3mf", "Desk_clip_base.stl"])).toEqual(
       new Set(["Desk_clip", "Desk clip", "Desk_clip_base", "Desk clip base"]),
     );
+  });
+});
+
+// A file name with a control character in it is refused, by the upload
+// route and by the inbox alike: C0 (below U+0020) and DEL (U+007F).
+describe("hasControlCharacter", () => {
+  test.each([
+    ["a newline", "part\nname.stl"],
+    ["an escape", "part\u001b[31mname.stl"],
+    ["a delete", "part\u007fname.stl"],
+    ["a NUL", "part\u0000name.stl"],
+    ["a tab", "part\tname.stl"],
+  ])("is true for a name with %s", (_label, name) => {
+    expect(hasControlCharacter(name)).toBe(true);
+  });
+
+  test.each([
+    ["plain text", "Desk cable clip.3mf"],
+    ["non-ASCII letters", `${U_UMLAUT}ber ${NIHON}.stl`],
+    ["an empty name", ""],
+  ])("is false for %s", (_label, name) => {
+    expect(hasControlCharacter(name)).toBe(false);
+  });
+});
+
+describe("stripFormatChars", () => {
+  const RLO = String.fromCodePoint(0x202e);
+  const ZWSP = String.fromCodePoint(0x200b);
+  const ZWNJ = String.fromCodePoint(0x200c);
+  const ZWJ = String.fromCodePoint(0x200d);
+
+  test("removes a right-to-left override and a zero-width space", () => {
+    expect(stripFormatChars(`a${RLO}b${ZWSP}c.stl`)).toBe("abc.stl");
+  });
+
+  test("keeps the zero-width non-joiner and joiner", () => {
+    expect(stripFormatChars(`a${ZWNJ}b${ZWJ}c`)).toBe(`a${ZWNJ}b${ZWJ}c`);
+  });
+
+  test("leaves a name with no format characters as it was", () => {
+    expect(stripFormatChars("Benchy (v2).3mf")).toBe("Benchy (v2).3mf");
+  });
+
+  test("a name of only format characters becomes empty", () => {
+    expect(stripFormatChars(`${RLO}${ZWSP}`)).toBe("");
+  });
+
+  test("a name of only joiners and white space has nothing to show", () => {
+    expect(nothingToShow(`${ZWNJ} ${ZWJ}`)).toBe(true);
+    expect(nothingToShow("")).toBe(true);
+    expect(nothingToShow(`a${ZWJ}`)).toBe(false);
   });
 });

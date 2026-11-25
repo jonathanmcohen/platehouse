@@ -1,4 +1,4 @@
-# Platehouse slicing gate image (build plan Task 1). Throwaway: it is built on
+# Platehouse slicing gate image. Throwaway: it is built on
 # the test server for one gate run and deleted afterwards. amd64 only.
 #
 # Every release file fetched below is pinned to an exact version and checked

@@ -84,7 +84,7 @@ function run(args, { gate, stubDir, extra = {} }) {
   return { ...r, calls };
 }
 
-test("run.sh runs plan, one container per plate, checks and report with Task 1's limits", () => {
+test("run.sh runs plan, one container per plate, checks and report with the gate's limits", () => {
   const stubDir = stubs();
   const gate = gateDir();
   const r = run([], { gate, stubDir, extra: { STUB_VERDICT: "3" } });

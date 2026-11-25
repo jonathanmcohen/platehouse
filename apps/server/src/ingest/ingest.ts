@@ -1,11 +1,10 @@
-// The ingest pipeline (build plan Task 8; AC-020 server side, AC-022, AC-024,
-// AC-033, AC-012). Every way a file arrives (the tus upload of Task 9 for the
-// UI and the API, the inbox of Task 10, the importer through the API) ends in
+// The ingest pipeline. Every way a file arrives (the tus upload, uploads/tus.ts, for the
+// UI and the API, the inbox watcher, inbox/watch.ts, the importer through the API) ends in
 // ingestFile.
 //
-// The order is the plan's:
+// The order:
 //   1. detect: the name and the first bytes must agree on a supported kind
-//      (detect.ts), or the file is refused and nothing is stored (AC-024);
+//      (detect.ts), or the file is refused and nothing is stored;
 //   2. hash and put the source blob: putBlob hashes while it uploads and
 //      checks the stored size;
 //   3. parse a .3mf (packages/threemf); each plate thumbnail is put as a blob
@@ -13,16 +12,17 @@
 //   4. one transaction: the model (when new), the blob rows, the file, its
 //      filament list, its plates and the file's own numbers (estimates with
 //      source 'file'). Metadata is filled only into empty fields, so nothing
-//      the user set is overwritten (AC-022). A new model is named from the
+//      the user set is overwritten. A new model is named from the
 //      file's MakerWorld title, else its cleaned file name (names.ts); a
 //      model joined takes the title only while nobody has named it;
-//   5. enqueueing estimates (Task 12) and renders (Task 13) comes after the
-//      commit, through the afterCommit hook the caller wires in (Task 13's
+//   5. enqueueing estimates (estimates/) and renders (derived/) comes after the
+//      commit, through the afterCommit hook the caller wires in (the renders'
 //      is derived.afterUpload, which only sends a job). Nothing here calls
-//      the slicer, so ingest returns before any slice runs (AC-033).
+//      the slicer, so ingest returns before any slice runs: an upload never
+//      waits on a slice.
 //
 // No row is written before step 4. A failure at any step deletes the objects
-// already put and leaves no rows (AC-012), with two exceptions, both only
+// already put and leaves no rows, so a failed upload, a store outage included, leaves no half-made model, with two exceptions, both only
 // for a failure after the transaction's callback finished, at COMMIT. Kysely
 // sends COMMIT only once the callback has returned, and rolls back when it
 // throws, so a failure that arrives while the callback is still running
@@ -53,9 +53,10 @@
 // inbox's), ingest hashes the upload and looks it up before any byte is put,
 // and refuses a duplicate with DuplicateFile (an IngestError, code
 // duplicate), naming the models that hold it and storing nothing. Inside the
-// transaction it looks again, under pg_advisory_xact_lock on the hash, so of
-// two copies sent at once one lands and the other is refused; that lock is
-// always taken before the batch lock below, so the two cannot deadlock. With
+// transaction it looks again, under pg_advisory_xact_lock on the hash (in
+// INGEST_LOCK_NAMESPACE), so of two copies sent at once one lands and the
+// other is refused; that lock is always taken before the batch lock below, so
+// the two cannot deadlock. With
 // "allow", the default, so the Public API v1 behaves as before unless a
 // client asks, the file is stored as before and the result lists the live
 // copies that were already there (IngestResult.duplicates). A file in a
@@ -64,17 +65,20 @@
 // A combined batch (target {batch, combine: true}) puts every file in one
 // model. Its id is derived from the batch (batchModelId), so every file of
 // the batch knows its key prefix before the model exists, and
-// pg_advisory_xact_lock(hashtext(batch)) makes concurrent finishes take turns:
-// the first creates the model and the rest join it.
+// pg_advisory_xact_lock(INGEST_LOCK_NAMESPACE, hashtext(batch)) makes
+// concurrent finishes take turns: the first creates the model and the rest
+// join it.
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
-import { extractMakerWorld, htmlToMarkdown, mapLicense } from "@platehouse/makerworld";
+import { CONVERTER_VERSION, extractMakerWorld, mapLicense } from "@platehouse/makerworld";
 import { makerWorldDesignId, type Project, readProject } from "@platehouse/threemf";
 import { type Kysely, sql, type Transaction } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
+import { stripFormatChars } from "../format-chars.js";
+import { convertedDescription } from "../library/converted-description.js";
 import { createRepos } from "../repos/index.js";
 import type { FoundMetadata } from "../repos/models.js";
 import { blobKey } from "../storage/keys.js";
@@ -87,6 +91,7 @@ import {
   findDuplicates,
 } from "./duplicates.js";
 import { newModelName } from "./names.js";
+import { projectReads } from "./read-limit.js";
 
 export {
   type DuplicateMatch,
@@ -94,6 +99,15 @@ export {
   duplicateMessage,
   MAX_DUPLICATES,
 } from "./duplicates.js";
+
+/**
+ * The first key of ingest's two-argument advisory locks. A one-argument lock
+ * (the migration lock, the backfill's) lives in a separate keyspace from any
+ * two-argument one, so these cannot collide with them, and the 32-bit hash
+ * only has to be unique among ingest's own keys (issue #473, #423). No other
+ * code uses the two-argument form; keep this value distinct if one does.
+ */
+export const INGEST_LOCK_NAMESPACE = 0x50_48_49_31;
 
 export const STORAGE_UNAVAILABLE_MESSAGE = "Storage is unavailable right now; nothing was saved";
 
@@ -265,18 +279,23 @@ function baseName(name: string): string {
 }
 
 /**
- * The MakerWorld details of a .3mf as model metadata (AC-022,
- * packages/makerworld), with the design ID (packages/threemf). The caption is
+ * The MakerWorld details of a .3mf as model metadata (packages/makerworld), with the design ID (packages/threemf). The caption is
  * the MakerWorld Title, which also names a new model (names.ts). A file that
  * names no Designer is not a MakerWorld file, so it gives no details, no title
  * and no design ID.
  */
-function metadataOf(project: Project | null): FoundMetadata {
+function metadataOf(project: Project | null, fileId: string): FoundMetadata {
   const xml = project?.makerWorldXml;
   const details = xml ? extractMakerWorld(xml) : null;
   if (!xml || details === null) return {};
   const license = mapLicense(details.license);
-  const markdown = details.descriptionHtml ? htmlToMarkdown(details.descriptionHtml).trim() : "";
+  // The value is not logged: the licence note holds it.
+  if (license.unknown) {
+    console.info(
+      `ingest: file ${fileId} names a MakerWorld licence Platehouse does not know; kept as a licence note`,
+    );
+  }
+  const markdown = convertedDescription(details.descriptionHtml);
   // A footer licence sets no SPDX id. fillMetadata stores it as the licence
   // note whenever the model has none, and adds it at the foot of the
   // description only when the description is empty (the maintainer, 2026-11-08: a
@@ -288,6 +307,8 @@ function metadataOf(project: Project | null): FoundMetadata {
     licenseSpdx: license.spdx ?? null,
     licenseNote: license.footer ?? null,
     makerworldDesignId: makerWorldDesignId(xml),
+    // Recorded with the description if this file fills it (#357).
+    descriptionSource: { fileId, converter: CONVERTER_VERSION },
   };
 }
 
@@ -311,7 +332,7 @@ export interface IngestDeps {
   store: IngestStore;
   /**
    * Called once a file's rows have committed, before ingestFile returns:
-   * Task 13 queues a .scad render or a STEP mesh here. It never runs a
+   * the render jobs (derived/) queue a .scad render or a STEP mesh here. It never runs a
    * render itself, so ingest still returns before any slicer work. An error
    * from it is logged and does not fail the upload, which is stored.
    */
@@ -409,7 +430,10 @@ export function createIngest(deps: IngestDeps) {
   }
 
   async function ingestOnce(input: IngestInput): Promise<IngestResult> {
-    const { tmpPath, originalName, target } = input;
+    const { tmpPath, target } = input;
+    // The name every caller sends, cleaned once: the bytes are read from
+    // tmpPath, so the raw name is needed nowhere below (issue #473).
+    const originalName = stripFormatChars(input.originalName);
     if (input.fileId !== undefined && !isUuid(input.fileId)) {
       throw new TypeError("ingestFile: fileId must be a UUID");
     }
@@ -456,12 +480,17 @@ export function createIngest(deps: IngestDeps) {
       let parseStatus: ParseStatus = "ok";
       const thumbnails = new Map<number, string>();
       if (kind === "3mf") {
-        project = await readProject(tmpPath, {
-          onThumbnail: async (index, png) => {
-            const blob = await putOne("thumbnail", Readable.from([png]), png.length, "image/png");
-            thumbnails.set(index, blob.id);
-          },
-        });
+        // One of at most INGEST_CONCURRENCY reads in the process, from the
+        // queue and the inbox watcher together (read-limit.ts): the memory
+        // budget counts that many.
+        project = await projectReads.run(() =>
+          readProject(tmpPath, {
+            onThumbnail: async (index, png) => {
+              const blob = await putOne("thumbnail", Readable.from([png]), png.length, "image/png");
+              thumbnails.set(index, blob.id);
+            },
+          }),
+        );
         if (project === null) parseStatus = "no_plate_data";
       }
 
@@ -479,7 +508,7 @@ export function createIngest(deps: IngestDeps) {
         if (id === undefined) throw new Error("pg_current_xact_id returned no row");
         xid = id;
         const repos = createRepos(trx);
-        const found = metadataOf(project);
+        const found = metadataOf(project, fileId);
         // A new model is named from this file: its title, else its cleaned
         // file name (names.ts).
         let created = false;
@@ -492,7 +521,7 @@ export function createIngest(deps: IngestDeps) {
         if (policy === "skip") {
           // Copies sent at once take turns here, so the second sees the
           // first's committed row. Always before the batch lock.
-          await sql`select pg_advisory_xact_lock(hashtext('platehouse-sha256:' || ${source.sha256.toString("hex")}))`.execute(
+          await sql`select pg_advisory_xact_lock(${INGEST_LOCK_NAMESPACE}::int, hashtext('platehouse-sha256:' || ${source.sha256.toString("hex")}))`.execute(
             trx,
           );
           const copies = await findDuplicates(trx, source.sha256);
@@ -513,7 +542,9 @@ export function createIngest(deps: IngestDeps) {
             .executeTakeFirst();
           if (live === undefined) throw new IngestError("model_not_found", MODEL_NOT_FOUND_MESSAGE);
         } else if (target !== "new" && target.combine) {
-          await sql`select pg_advisory_xact_lock(hashtext(${target.batch}))`.execute(trx);
+          await sql`select pg_advisory_xact_lock(${INGEST_LOCK_NAMESPACE}::int, hashtext(${target.batch}))`.execute(
+            trx,
+          );
           const existing = await trx
             .selectFrom("models")
             .select(["id", "trashedAt"])
@@ -534,7 +565,7 @@ export function createIngest(deps: IngestDeps) {
         // already be one of the earlier files', and before fillMetadata, so
         // the caption it reads is the earlier files'.
         if (!created) await repos.models.nameFromTitle(modelId, found.caption);
-        // One fill rule for a new model and an existing one (AC-022).
+        // One fill rule for a new model and an existing one: never overwrite a field the user set.
         await repos.models.fillMetadata(modelId, found);
 
         for (const blob of put) {
@@ -625,7 +656,7 @@ export function createIngest(deps: IngestDeps) {
           // The failure that matters is already being thrown, and during an
           // outage this delete fails too. An object left behind has no blob
           // row, so the orphan sweep (orphans.ts) deletes it once it is 24
-          // hours old; AC-010's reconciliation would only count it.
+          // hours old; reconciling the bucket against the file rows would only count it.
         }
       }
       if (error instanceof StoreUnavailable) {

@@ -2,11 +2,12 @@
 // while Select is on:
 //
 // - The count, in a status line, so a screen reader hears it change.
-// - Select all on this page (the cards shown, every one in View all), Select
-//   all matching (every match's id for the search, filters and sort, from
-//   GET /app/api/library/ids, capped at View all's 1000, which it says;
-//   marked aria-disabled and ignoring a press while nothing matches, issue
-//   #317), and Clear selection.
+// - Select all on this page (the cards shown, every one in View all; marked
+//   aria-disabled and ignoring a press while the page shows none, the
+//   0.1.1-rc.1 live check), Select all matching (every match's id for the
+//   search, filters and sort, from GET /app/api/library/ids, capped at View
+//   all's 1000, which it says; marked aria-disabled and ignoring a press
+//   while nothing matches, issue #317), and Clear selection.
 // - The actions, each marked aria-disabled and ignoring a press while
 //   nothing is selected: Add tags (type tags or pick the library's, in a
 //   ChipEditor; a tag typed but not yet added to the list is sent too; a
@@ -400,6 +401,8 @@ export function SelectBar({
   const none = count === 0;
   /** Nothing matches the search and filters, so Select all matching has nothing to select. */
   const noMatches = total === 0;
+  /** The page shows no card, so Select all on this page has nothing to select (the 0.1.1-rc.1 live check). */
+  const noneShown = shown.length === 0;
   /** The actions wait: nothing is selected, or the selection is not yet checked against the view. */
   const off = none || check !== null;
 
@@ -491,12 +494,14 @@ export function SelectBar({
         <button
           type="button"
           className="studio-button ph-small"
-          onClick={() =>
+          aria-disabled={noneShown}
+          onClick={() => {
+            if (noneShown) return;
             onAdd(
               shown.map((c) => [c.id, c.name]),
               era(),
-            )
-          }
+            );
+          }}
         >
           {t("library.select.page")}
         </button>
@@ -536,12 +541,15 @@ export function SelectBar({
           </button>
         </div>
       ) : null}
-      {note === null ? null : <p className="studio-muted">{note}</p>}
-      {result === null ? null : <p className="studio-muted">{result.done}</p>}
-      {result?.notInView ? <p className="studio-muted">{result.notInView}</p> : null}
-      {left > 0 ? (
-        <p className="studio-muted">{t("library.select.left", { count: left })}</p>
-      ) : null}
+      {/* Always mounted, so text that arrives later is announced. */}
+      <div role="status">
+        {note === null ? null : <p className="studio-muted">{note}</p>}
+        {result === null ? null : <p className="studio-muted">{result.done}</p>}
+        {result?.notInView ? <p className="studio-muted">{result.notInView}</p> : null}
+        {left > 0 ? (
+          <p className="studio-muted">{t("library.select.left", { count: left })}</p>
+        ) : null}
+      </div>
       {result?.failed ? (
         <p role="alert" className="studio-alert studio-alert-alert">
           {result.failed}

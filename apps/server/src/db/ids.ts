@@ -2,8 +2,8 @@ import { randomBytes } from "node:crypto";
 
 // UUIDv7 (RFC 9562 section 5.7): 48 bits of Unix time in milliseconds, the
 // version nibble 7, 12 random bits, the variant bits 10 and 62 random bits.
-// Every id the repositories mint comes from here, and the bucket key contract
-// (models/<modelId>/<blobId>) relies on these being lowercase and hyphenated.
+// Every id the repositories mint comes from here, and the bucket key layout
+// (models/<modelId>/<blobId>, storage/keys.ts) relies on these being lowercase and hyphenated.
 // Postgres 17 has no uuidv7() of its own (it arrives in 18), so ids are made
 // in the app and every id column is a plain uuid with no default.
 

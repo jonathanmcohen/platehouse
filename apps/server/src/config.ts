@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import { z } from "zod";
 
-// The Configuration contract of the Platehouse build plan. Configuration comes
+// Platehouse's configuration. Configuration comes
 // from the environment only, and the server refuses to start when a required
 // value is missing or any value is invalid.
 //
@@ -50,6 +50,12 @@ export interface Config {
     readonly settleSeconds: number;
   };
   readonly tmpDir: string;
+  /**
+   * UPLOAD_TEMP_MAX_BYTES: the most that unfinished uploads, and finished
+   * ones still waiting for ingest, may declare together in TMP_DIR/uploads;
+   * a new upload past it is refused (507).
+   */
+  readonly uploadTempMaxBytes: number;
   /**
    * LOCALES_DIR: a folder of translations a self-hoster adds without a
    * rebuild (locales/locales.ts); undefined when unset, and then only the
@@ -161,6 +167,8 @@ const envSchema = z.object({
   SLICE_PLATE_SECONDS: optional("120", positiveInt, WHOLE),
   INBOX_DIR: optional("/data/inbox", absolutePath, ABSOLUTE),
   TMP_DIR: optional("/data/tmp", absolutePath, ABSOLUTE),
+  // 4 GiB: eight uploads at the 512 MiB cap.
+  UPLOAD_TEMP_MAX_BYTES: optional("4294967296", positiveInt, WHOLE),
   INBOX_SETTLE_SECONDS: optional("15", positiveInt, WHOLE),
   // Unset (or empty) means no folder: only the built-in languages.
   LOCALES_DIR: z
@@ -216,6 +224,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
       settleSeconds: e.INBOX_SETTLE_SECONDS,
     }),
     tmpDir: e.TMP_DIR,
+    uploadTempMaxBytes: e.UPLOAD_TEMP_MAX_BYTES,
     localesDir: e.LOCALES_DIR,
     absoluteUrl(path: string): string {
       if (!path.startsWith("/") || path.startsWith("//")) {

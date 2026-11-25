@@ -1,0 +1,163 @@
+// Issue #389: an STL's or STEP file's preview status is a pure function of
+// stored facts. These pin that function, previewState, branch by branch, and
+// that only an ok picture is shown.
+import { describe, expect, test } from "vitest";
+import { DERIVED_MESSAGES } from "../../src/derived/client.js";
+import {
+  isPictureShown,
+  PREVIEW_RETRIED,
+  PREVIEW_SANDBOX_OFF,
+  type PreviewFacts,
+  previewState,
+} from "../../src/derived/picture.js";
+
+const CURRENT = "0190a0b0-0000-7000-8000-0000000000c1";
+const EARLIER = "0190a0b0-0000-7000-8000-0000000000c0";
+const REPLACEMENT = "0190a0b0-0000-7000-8000-0000000000c2";
+
+const none: PreviewFacts = {
+  kind: "stl",
+  sourceBlobId: CURRENT,
+  pictureSourceBlobId: null,
+  previewJobLive: false,
+  failureSourceBlobId: null,
+  failureMessage: null,
+};
+
+describe("previewState", () => {
+  test("a picture of the current source is ok, whatever else is true", () => {
+    expect(
+      previewState({
+        ...none,
+        pictureSourceBlobId: CURRENT,
+        previewJobLive: true,
+        failureSourceBlobId: CURRENT,
+        failureMessage: "ERROR: an older attempt",
+      }),
+    ).toEqual({ status: "ok", message: null });
+  });
+
+  test("a picture of an earlier source is not ok", () => {
+    expect(previewState({ ...none, pictureSourceBlobId: EARLIER })).toEqual({
+      status: null,
+      message: null,
+    });
+  });
+
+  test("with no picture of the current source, a live job for it is pending", () => {
+    expect(previewState({ ...none, pictureSourceBlobId: EARLIER, previewJobLive: true })).toEqual({
+      status: "pending",
+      message: null,
+    });
+  });
+
+  test("with nothing live, the newest failed attempt for the current source is failed, with its reason", () => {
+    expect(
+      previewState({ ...none, failureSourceBlobId: CURRENT, failureMessage: "ERROR: bad facet" }),
+    ).toEqual({ status: "failed", message: "ERROR: bad facet" });
+    for (const message of [
+      DERIVED_MESSAGES.previewSlicerDown,
+      DERIVED_MESSAGES.previewStoreDown,
+      DERIVED_MESSAGES.previewQueueFailed,
+      DERIVED_MESSAGES.previewTempFailed,
+    ]) {
+      expect(
+        previewState({ ...none, failureSourceBlobId: CURRENT, failureMessage: message }),
+      ).toEqual({ status: "failed", message });
+    }
+  });
+
+  test("a failure of another source, such as a replacement that was not saved, changes nothing", () => {
+    expect(
+      previewState({ ...none, failureSourceBlobId: REPLACEMENT, failureMessage: "ERROR: x" }),
+    ).toEqual({ status: null, message: null });
+    expect(
+      previewState({
+        ...none,
+        pictureSourceBlobId: CURRENT,
+        failureSourceBlobId: REPLACEMENT,
+        failureMessage: "The slicer could not render this file.",
+      }),
+    ).toEqual({ status: "ok", message: null });
+  });
+
+  test("a STEP file follows the same rules", () => {
+    expect(previewState({ ...none, kind: "step", pictureSourceBlobId: CURRENT })).toEqual({
+      status: "ok",
+      message: null,
+    });
+    expect(previewState({ ...none, kind: "step", previewJobLive: true })).toEqual({
+      status: "pending",
+      message: null,
+    });
+  });
+
+  test("every other kind has no picture status", () => {
+    for (const kind of ["3mf", "scad"] as const) {
+      expect(
+        previewState({
+          ...none,
+          kind,
+          pictureSourceBlobId: CURRENT,
+          previewJobLive: true,
+          failureSourceBlobId: CURRENT,
+          failureMessage: "x",
+        }),
+      ).toEqual({ status: null, message: null });
+    }
+  });
+
+  test("the outage messages the backfill retries say so", () => {
+    for (const message of [
+      DERIVED_MESSAGES.previewSlicerDown,
+      DERIVED_MESSAGES.previewStoreDown,
+      DERIVED_MESSAGES.previewQueueFailed,
+      DERIVED_MESSAGES.previewTempFailed,
+    ]) {
+      expect(message).toMatch(/tried again automatically/);
+      expect(message).not.toMatch(/started again/);
+    }
+  });
+
+  test("the failures the backfill retries are named by reason code, not by wording", () => {
+    expect(PREVIEW_RETRIED).toEqual(["slicer_down", "store_down", "queue_failed", "temp_failed"]);
+  });
+});
+
+describe("a temp file problem (issue #415)", () => {
+  test("says it will be tried again, and the backfill tries it again", () => {
+    expect(DERIVED_MESSAGES.previewTempFailed).toBe(
+      "Platehouse could not write a temporary file; it will be tried again automatically.",
+    );
+    expect(PREVIEW_RETRIED).toContain("temp_failed");
+  });
+
+  test("is not the render check's sentence, which the backfill leaves alone", () => {
+    expect(DERIVED_MESSAGES.previewTempFailed).not.toBe(DERIVED_MESSAGES.renderLost);
+    expect(PREVIEW_RETRIED).not.toContain("lost");
+  });
+});
+
+describe("a picture refused because the slicer's sandbox is off", () => {
+  test("has its two sentences, which are not in the always-retried set", () => {
+    expect(PREVIEW_SANDBOX_OFF).toEqual(["sandbox_off_kernel", "sandbox_off_check"]);
+    for (const code of PREVIEW_SANDBOX_OFF) expect(PREVIEW_RETRIED).not.toContain(code);
+  });
+
+  test("is failed with that reason", () => {
+    expect(
+      previewState({
+        ...none,
+        failureSourceBlobId: CURRENT,
+        failureMessage: DERIVED_MESSAGES.sandboxOffKernel,
+      }),
+    ).toEqual({ status: "failed", message: DERIVED_MESSAGES.sandboxOffKernel });
+  });
+});
+
+describe("isPictureShown", () => {
+  test("only an ok picture is shown", () => {
+    expect(isPictureShown("ok")).toBe(true);
+    for (const status of ["pending", "failed", null]) expect(isPictureShown(status)).toBe(false);
+  });
+});

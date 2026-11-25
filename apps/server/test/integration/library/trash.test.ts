@@ -1,9 +1,12 @@
-// Build plan Task 14, AC-063: trash, restore, the 30-day purge and Empty trash.
+// Trash, restore, the 30-day purge and Empty trash.
 // A purge deletes the bucket objects first, then the rows, and is safe to run
 // again after it failed part way.
 import { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
+import Fastify from "fastify";
+import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { registerOrganiseApi } from "../../../src/app-api/organise.js";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { createCollections } from "../../../src/library/collections.js";
 import { createRename } from "../../../src/library/rename.js";
@@ -63,6 +66,37 @@ async function purgeStartedAt(modelId: string): Promise<Date | null | undefined>
 
 function trashFor(store: PurgeStore = env.store) {
   return createTrash({ db: env.db, store });
+}
+
+/**
+ * Empty trash as the page does it: POST /app/api/trash/empty with a cutoff
+ * read from the database's clock, which purges every model trashed up to
+ * then. The status is 200 with the number purged, or 500 "incomplete" with
+ * the number purged and failed.
+ */
+async function emptyTrash(trash: ReturnType<typeof trashFor>): Promise<{
+  status: number;
+  body: { purged: number; failed?: number; error?: string };
+}> {
+  const app = Fastify({ logger: false });
+  await registerOrganiseApi(app, { db: env.db, trash });
+  await app.ready();
+  try {
+    // Past the millisecond a model trashed just before was stamped in.
+    await sleep(5);
+    const { rows } = await sql<{ cutoff: string }>`
+      select to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as cutoff`.execute(
+      env.db,
+    );
+    const res = await app.inject({
+      method: "POST",
+      url: "/app/api/trash/empty",
+      payload: { cutoff: rows[0]?.cutoff },
+    });
+    return { status: res.statusCode, body: res.json() };
+  } finally {
+    await app.close();
+  }
 }
 
 describe("trashModel and restoreModel", () => {
@@ -157,8 +191,8 @@ describe("trashModel and restoreModel", () => {
     const { model, source, thumbnail } = await seedStoredModel(env);
     const trash = trashFor();
     expect(await trash.trashModel(model.id)).toBe(true);
-    // An object lost some other way than a purge (AC-010 reconciliation
-    // exists for this): the rows say stored, the bucket has no thumbnail.
+    // An object lost some other way than a purge (reconciling the bucket
+    // against the rows exists for this): the rows say stored, the bucket has no thumbnail.
     await env.store.deleteBlobs([thumbnail.key]);
     expect(await purgeStartedAt(model.id)).toBeNull();
 
@@ -190,14 +224,11 @@ describe("trashModel and restoreModel", () => {
       },
     };
 
-    const failed = await trashFor(listFails)
-      .emptyTrash()
-      .catch((e: unknown) => e);
+    const failed = await emptyTrash(trashFor(listFails));
 
-    expect(failed).toBeInstanceOf(PurgeIncomplete);
-    expect(
-      (failed as PurgeIncomplete).failed.find((f) => f.modelId === model.id)?.error,
-    ).toBeInstanceOf(StoreUnavailable);
+    expect(failed.status).toBe(500);
+    expect(failed.body.error).toBe("incomplete");
+    expect(failed.body.failed).toBeGreaterThanOrEqual(1);
     expect(deletes).toBe(0);
     expect(await purgeStartedAt(model.id)).toBeNull();
     expect(await env.store.listPrefix(prefix(model.id))).toHaveLength(2);
@@ -222,7 +253,9 @@ describe("trashModel and restoreModel", () => {
       },
     };
 
-    await expect(trashFor(dropsMidDelete).emptyTrash()).rejects.toBeInstanceOf(PurgeIncomplete);
+    expect((await emptyTrash(trashFor(dropsMidDelete))).body).toMatchObject({
+      error: "incomplete",
+    });
     expect(await purgeStartedAt(model.id)).toBeInstanceOf(Date);
     expect(await env.store.listPrefix(prefix(model.id))).toHaveLength(1);
 
@@ -239,7 +272,7 @@ describe("trashModel and restoreModel", () => {
     expect((await env.repos.blobs.get(thumbnail.id))?.state).toBe("stored");
 
     // The next purge finishes it.
-    expect((await trash.emptyTrash()).purged).toContain(model.id);
+    expect((await emptyTrash(trash)).status).toBe(200);
     expect(await rowCounts(env.db, model.id)).toMatchObject({ models: 0, blobs: 0 });
     expect(await env.store.listPrefix(prefix(model.id))).toEqual([]);
   });
@@ -376,14 +409,10 @@ describe("purgeExpired", () => {
     await trash.trashModel(b.model.id);
 
     // Another test's model may be left unpurgeable on purpose; these two are not.
-    const purged = await trash.emptyTrash().then(
-      (r) => r.purged,
-      (error: unknown) => {
-        if (error instanceof PurgeIncomplete) return error.purged;
-        throw error;
-      },
-    );
-    expect(purged).toEqual(expect.arrayContaining([a.model.id, b.model.id]));
+    const emptied = await emptyTrash(trash);
+    expect(emptied.body.purged).toBeGreaterThanOrEqual(2);
+    expect(await rowCounts(env.db, a.model.id)).toMatchObject({ models: 0 });
+    expect(await rowCounts(env.db, b.model.id)).toMatchObject({ models: 0 });
     expect(await labelStored(env.db, "tags", own)).toBe(false);
   });
 
@@ -498,7 +527,9 @@ describe("purgeExpired", () => {
         throw new StoreUnavailable("DeleteObjects", "ECONNRESET");
       },
     };
-    await expect(trashFor(dropsMidDelete).emptyTrash()).rejects.toBeInstanceOf(PurgeIncomplete);
+    expect((await emptyTrash(trashFor(dropsMidDelete))).body).toMatchObject({
+      error: "incomplete",
+    });
     expect(await purgeStartedAt(model.id)).toBeInstanceOf(Date);
     expect(await env.store.listPrefix(prefix(model.id))).toHaveLength(1);
     // An unmarked model trashed today, which the daily run must leave alone.
@@ -668,7 +699,7 @@ describe("purgeExpired", () => {
   });
 });
 
-describe("emptyTrash", () => {
+describe("Empty trash (POST /app/api/trash/empty)", () => {
   test("empty trash purges everything trashed", async () => {
     const justNow = await seedStoredModel(env);
     const lastWeek = await seedStoredModel(env);
@@ -678,10 +709,10 @@ describe("emptyTrash", () => {
     await trash.trashModel(lastWeek.model.id);
     await trashDaysAgo(env.db, lastWeek.model.id, 7);
 
-    const result = await trash.emptyTrash();
+    const result = await emptyTrash(trash);
 
-    expect(result.purged).toEqual(expect.arrayContaining([justNow.model.id, lastWeek.model.id]));
-    expect(result.purged).not.toContain(live.model.id);
+    expect(result.status).toBe(200);
+    expect(result.body.purged).toBeGreaterThanOrEqual(2);
     for (const gone of [justNow, lastWeek]) {
       expect(await env.store.listPrefix(prefix(gone.model.id))).toEqual([]);
       expect(await rowCounts(env.db, gone.model.id)).toEqual({
@@ -702,6 +733,6 @@ describe("emptyTrash", () => {
       .where("trashedAt", "is not", null)
       .execute();
     expect(left).toEqual([]);
-    expect((await trash.emptyTrash()).purged).toEqual([]);
+    expect(await emptyTrash(trash)).toEqual({ status: 200, body: { purged: 0 } });
   });
 });

@@ -1,7 +1,7 @@
 // Test-only builders for synthetic Bambu-style .3mf archives. The suite makes
 // every fixture itself: no designer file is ever read or committed. The zip
 // writer can lie about sizes and offsets so the hostile-file tests can build
-// the damaged archives the Bambu Plates issues describe.
+// the damaged archives hostile.test.ts lists.
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +35,8 @@ export interface ZipOptions {
    * zip64 markers.
    */
   zip64Records?: boolean;
+  /** Entry count written to the end record instead of the real one. */
+  entryCount?: number;
 }
 
 export function buildZip(entries: ZipEntry[], opts: ZipOptions = {}): Buffer {
@@ -104,8 +106,9 @@ export function buildZip(entries: ZipEntry[], opts: ZipOptions = {}): Buffer {
   const eocd = Buffer.alloc(22);
   eocd.writeUInt32LE(0x06054b50, 0);
   const zip64 = zip64EndAt !== undefined;
-  eocd.writeUInt16LE(zip64 ? 0xffff : entries.length, 8);
-  eocd.writeUInt16LE(zip64 ? 0xffff : entries.length, 10);
+  const claimed = opts.entryCount ?? entries.length;
+  eocd.writeUInt16LE(zip64 ? 0xffff : claimed, 8);
+  eocd.writeUInt16LE(zip64 ? 0xffff : claimed, 10);
   eocd.writeUInt32LE(zip64 ? 0xffffffff : cd.length, 12);
   eocd.writeUInt32LE(zip64 ? 0xffffffff : (opts.cdOffset ?? offset), 16);
   tail.push(eocd);

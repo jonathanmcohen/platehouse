@@ -26,6 +26,7 @@ import { DERIVED_SENTENCES } from "../../src/derived/client.js";
 import { REASON_WORDS } from "../../src/estimates/reasons.js";
 import {
   CHANGED_REASON,
+  CONTROL_CHARS_REASON,
   HELD_REASON,
   NON_UTF8_REASON,
   PUT_BACK_FAILED_REASON,
@@ -42,7 +43,7 @@ import {
   STORAGE_UNAVAILABLE_MESSAGE,
   UNSUPPORTED_MESSAGE,
 } from "../../src/ingest/ingest.js";
-import { MAINTENANCE_TASKS } from "../../src/jobs/queues.js";
+import { MAINTENANCE_TASKS, UPGRADE_TASKS } from "../../src/jobs/queues.js";
 import { UPLOAD_FAILED_MESSAGE } from "../../src/uploads/tus.js";
 
 const EN = JSON.parse(readFileSync(`${builtinLocalesDir()}/en.json`, "utf8")) as Record<
@@ -109,12 +110,16 @@ describe("Activity labels (app-api/activity.ts)", () => {
     expect(en(`activity.queue.${id}`)).toBe(label);
   });
 
-  test.each(Object.entries(MAINTENANCE_TASKS))("activity.schedule.%s", (name, key) => {
+  // The fixed schedules, and the description re-conversion's while it is
+  // pending (#382), which the page lists so an unfinished step shows.
+  const SCHEDULED = { ...MAINTENANCE_TASKS, ...UPGRADE_TASKS };
+
+  test.each(Object.entries(SCHEDULED))("activity.schedule.%s", (name, key) => {
     expect(en(`activity.schedule.${name}`)).toBe(SCHEDULE_LABELS[key]);
   });
 
   test("every scheduled job the server labels has a catalog label", () => {
-    expect(Object.keys(SCHEDULE_LABELS).sort()).toEqual(Object.values(MAINTENANCE_TASKS).sort());
+    expect(Object.keys(SCHEDULE_LABELS).sort()).toEqual(Object.values(SCHEDULED).sort());
   });
 
   test.each([
@@ -140,6 +145,7 @@ describe("inbox reasons (inbox/watch.ts)", () => {
     ["inbox.reason.stillWriting", STILL_WRITING_REASON],
     ["inbox.reason.held", HELD_REASON],
     ["inbox.reason.nonUtf8", NON_UTF8_REASON],
+    ["inbox.reason.controlChars", CONTROL_CHARS_REASON],
   ])("%s", (key, sentence) => {
     expect(en(key)).toBe(sentence);
   });

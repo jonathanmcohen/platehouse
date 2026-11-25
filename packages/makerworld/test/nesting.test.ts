@@ -16,7 +16,7 @@ import { htmlEscape } from "./support/payloads.js";
 // come out as text: no image, no attribute but a link's http(s) href, and the
 // payload intact.
 
-// Every character Task 7 escapes, a line-start "1.", and the three crafted
+// Every character htmlToMarkdown escapes, a line-start "1.", and the three crafted
 // inputs: an image to an address the designer chose, a raw <img onerror>
 // and a javascript: link, plus a script tag.
 const PAYLOAD =
@@ -97,6 +97,12 @@ const CONTEXTS: Record<string, Context> = {
   link: { open: `<a href="${LINK}">`, mid: `</a> <a href="${LINK}">`, close: "</a>" },
   emphasis: { open: "<b>", mid: "</b> <b>", close: "</b>" },
   blockquote: { open: "<blockquote>", mid: "</blockquote><blockquote>", close: "</blockquote>" },
+  // MakerWorld's Boost Me box, a block since #357.
+  "Boost Me box": {
+    open: "<boostme><boosttitle>",
+    mid: "</boosttitle><boostcontent>",
+    close: "</boostcontent></boostme>",
+  },
 };
 
 // The link or emphasis left open across a boundary.

@@ -1,5 +1,5 @@
 // The models of one creator, collection or tag, each ready to organise
-// (build plan Task 21; AC-060 to AC-063): inline rename of the model and of
+// (rename, tags, collections and the trash): inline rename of the model and of
 // each of its files, tag chips and collection chips that can be added and
 // removed, and Move to trash. Every change goes to the app API and, once it
 // answers, shows on the row; a refusal shows its sentence on the row. Each

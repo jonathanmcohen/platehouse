@@ -7,9 +7,12 @@
 //
 // 1. Shipped text (PR #230). Platehouse is published as public images, so
 //    text a user sees, such as a placeholder or a help line, must be generic.
-//    Every non-comment line of apps/web/src, apps/web/index.html,
-//    apps/server/src, packages/i18n/src and the translation catalogs in
-//    packages/i18n/locales is checked against every entry. Comment lines are
+//    Every non-comment line of the .ts and .tsx files of apps/web/src,
+//    apps/server/src and packages/i18n/src, of apps/web/index.html and of the
+//    translation catalogs in packages/i18n/locales is checked against every
+//    entry. Other files under those trees (CSS, the generated
+//    apps/web/src/api-docs/openapi.json, which is built from server .ts
+//    strings checked here) are covered by guard 2. Comment lines are
 //    left out here: guard 2 covers them.
 // 2. The whole tracked tree (git ls-files), comments, docs, CI, fixtures and
 //    file paths included, because the 0.1.0 tree becomes the public
@@ -107,6 +110,9 @@ const FORBIDDEN: Forbidden[] = [
     "a server name the public repo never defines (issue #305)",
   ),
   w("7e50628dd9f471bfbc6243965eed2ae17dfffd515a4b9697fb83a6873a75c919", "a personal tool name"),
+  // The maintainer's surname, as a word. (Joined into the GitHub owner name
+  // it stays allowed: see ALLOWED.)
+  w("ce4e149f7e786b226e23bbefe9e0075a96b4abcda9dfb36a08a136205386d21c", "the maintainer's surname"),
   // The maintainer's first name, as the start of a word.
   {
     sha256: "bb472edb86809a761936d90c70aeb4346618aa71da7a00c16e334863499108fd",

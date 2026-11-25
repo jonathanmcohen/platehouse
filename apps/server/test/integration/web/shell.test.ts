@@ -1,4 +1,4 @@
-// Build plan Task 18, AC-070, with the Route classes contract: the server
+// The theme on the first paint, and the shell pages' route class: the server
 // serves the built web app. The shell pages are session-class: without a
 // session a page is sent to /auth/login, and with one it is index.html with
 // data-theme and the color-scheme meta written in from the ph_theme cookie,
@@ -17,12 +17,18 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { buildApp } from "../../../src/app.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
+import { uuidv7 } from "../../../src/db/ids.js";
 import { createUploads } from "../../../src/uploads/tus.js";
-import { ACCENT_COOKIE, DEFAULT_ACCENT, THEME_COOKIE } from "../../../src/web/shell.js";
+import {
+  ACCENT_COOKIE,
+  DEFAULT_ACCENT,
+  SHELL_PAGES as SHELL_ROUTES,
+  THEME_COOKIE,
+} from "../../../src/web/shell.js";
 import { TEST_ORIGIN, type TestAuth, testAuth } from "../support/oidc-issuer.js";
 
-/** The sidebar's sections: Library, Creators, Collections and Tags. */
-const SHELL_PAGES = ["/", "/creators", "/collections", "/tags"];
+/** Every shell page the server registers, with a real id for the model page's :id. */
+const SHELL_PAGES = SHELL_ROUTES.map((page) => page.replace(":id", uuidv7()));
 const HTML = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 const SCRIPT = "export const shell = 1;\n";
 const INDEX = [
@@ -97,7 +103,9 @@ describe("a built web app", () => {
       for (const method of ["GET", "HEAD"] as const) {
         const res = await t.app.inject({ method, url, headers: { accept: HTML } });
         expect(res.statusCode, `${method} ${url}`).toBe(302);
-        expect(res.headers.location, `${method} ${url}`).toBe(`${TEST_ORIGIN}/auth/login`);
+        // The login keeps the page asked for; the start page is plain.
+        const login = url === "/" ? "/auth/login" : `/auth/login?next=${url}`;
+        expect(res.headers.location, `${method} ${url}`).toBe(`${TEST_ORIGIN}${login}`);
       }
     }
   });

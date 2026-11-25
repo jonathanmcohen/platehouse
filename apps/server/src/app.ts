@@ -1,4 +1,4 @@
-// The Fastify app (build plan Tasks 30 and 15). buildApp(deps) returns it
+// The Fastify app, with the route-class gate in front of every route. buildApp(deps) returns it
 // with every route registered and nothing listening; start() in main.ts
 // listens.
 //
@@ -14,31 +14,31 @@
 //   HEALTH_TIMEOUT_MS and pg-boss is started (and, when web.required is
 //   set, the web build is there), else 503. The body is a fixed
 //   word either way, never an error, a host or a port: the app image's
-//   HEALTHCHECK (Task 24) reads only the status.
-// - The tus upload handler (Task 9) is mounted at /app/uploads behind
+//   HEALTHCHECK (docker/app.Dockerfile) reads only the status.
+// - The tus upload handler (uploads/tus.ts) is mounted at /app/uploads behind
 //   requireSession and at /api/v1/uploads behind apiUploadHook: the bearer
 //   check (api/tokens.ts), then, for a creation into an existing model, that
 //   the model is live. Either hook runs before tus sees the request, so a
 //   refused request stores nothing.
-// - The Public API v1 (api/v1.ts, Task 16) is mounted at /api/v1, every route
+// - The Public API v1 (api/v1.ts) is mounted at /api/v1, every route
 //   behind the bearer check, and its OpenAPI document (api/openapi.ts) is
 //   generated from those routes with servers[0].url = absoluteUrl('/api/v1').
 //   A request to an unknown path under /api/v1 gets the bearer check before
 //   its 404, so without a token it is 401 like every other API request. No
 //   CORS plugin is registered.
-// - The web app's own JSON API under /app/api (app-api/: Task 19's library,
-//   Task 20's model page, Task 21's settings, tokens, organising and the
+// - The web app's own JSON API under /app/api (app-api/: the library,
+//   the model page, settings, tokens, organising and the
 //   trash, and the Activity page's GET /app/api/activity), session-class, so the gate's session and Origin checks cover
 //   every route. Without library the library routes answer an empty
 //   library, without model every model is 404 and nothing is retried, and
-//   without appApi Task 21's routes are still registered and answer 503, as
+//   without appApi the settings, tokens and organising routes are still registered and answer 503, as
 //   the Activity route does without activity.
-// - The web app (web/shell.ts, Task 18): the shell pages (session-class)
+// - The web app (web/shell.ts): the shell pages (session-class)
 //   answer with the built index.html, data-theme and the color-scheme meta
 //   written in from the ph_theme cookie, and the hashed build output is
 //   served under /assets/ (public-class). A missing build is logged at
 //   startup; it also makes /healthz 503 only when web.required is set.
-// - File delivery (delivery/download.ts, Task 17) streams a file's bytes at
+// - File delivery (delivery/download.ts) streams a file's bytes at
 //   GET /files/:id/download and a blob's at GET /blobs/:id, both session-
 //   class, and slicer links (delivery/links.ts) are minted at POST
 //   /app/api/files/:id/slicer-link (session-class, so the gate's Origin
@@ -73,6 +73,14 @@
 //   Upload-Metadata cut to its key names (not the file name or model id)
 //   and pino redacting Authorization, Cookie and Proxy-Authorization
 //   (LOG_REDACT_PATHS), so no API token or session cookie reaches the log.
+// - Every answer carries the app's Content-Security-Policy, Referrer-Policy
+//   and X-Content-Type-Options (web/security-headers.ts, issue #449),
+//   unless its route set its own; frameworkError sets them on Fastify's own
+//   400 and 414 too. HSTS is left to the TLS-terminating proxy.
+// - An error on a root route (not in a scope with its own handler) is
+//   answered by the root error handler: a 4xx keeps its status and message,
+//   a store outage is 503 {error: "unavailable"}, anything else is logged
+//   and answered 500 {error: "internal"} with no path or cause (issue #455).
 
 import { STATUS_CODES } from "node:http";
 import fastifyCookie from "@fastify/cookie";
@@ -84,20 +92,26 @@ import Fastify, {
   type FastifyServerOptions,
 } from "fastify";
 import { registerOpenApi } from "./api/openapi.js";
-import { createBearerHook } from "./api/tokens.js";
+import { createBearerHook, tokenOf } from "./api/tokens.js";
 import { API_PREFIX, type ApiDeps, apiUploadHook, refusingApi, registerV1 } from "./api/v1.js";
 import { type AppActivity, registerActivityApi } from "./app-api/activity.js";
 import { type AppLibrary, emptyAppLibrary, registerLibraryApi } from "./app-api/library.js";
 import { registerLocalesApi } from "./app-api/locales.js";
 import { type AppModel, emptyAppModel, registerModelApi } from "./app-api/model.js";
 import { type OrganiseDeps, registerOrganiseApi } from "./app-api/organise.js";
+import {
+  type AppPlateMeshes,
+  emptyPlateMeshes,
+  registerPlateMeshApi,
+} from "./app-api/plate-mesh.js";
 import { registerSettingsApi, type SettingsApiDeps } from "./app-api/settings.js";
 import { registerTokensApi, type TokensApiDeps } from "./app-api/tokens.js";
-import { installGate, isLinkPath, patternClass, routeClass } from "./auth/gate.js";
+import { registerUsersApi, type UsersApiDeps } from "./app-api/users.js";
+import { installGate, isLinkPath, patternClass, routeClass, sessionOf } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
-import { type DeliveryDeps, registerDownloads } from "./delivery/download.js";
+import { type DeliveryDeps, isStoreOutage, registerDownloads } from "./delivery/download.js";
 import { LINK_ROUTE, registerLinks } from "./delivery/links.js";
 import { createLocales, type Locales } from "./locales/locales.js";
 import {
@@ -107,9 +121,10 @@ import {
   SLOW_LINK_BYTES_PER_SECOND,
   type Uploads,
 } from "./uploads/tus.js";
+import { addSecurityHeaders, setSecurityHeaders } from "./web/security-headers.js";
 import { defaultWebDir, registerWeb, type WebDeps } from "./web/shell.js";
 
-/** Where the tus upload handler is mounted (Public API v1 contract, Task 9). */
+/** Where the tus upload handler is mounted: one for the UI, one for the Public API v1. */
 export const UPLOAD_PREFIXES = Object.freeze({
   app: "/app/uploads",
   api: "/api/v1/uploads",
@@ -130,7 +145,7 @@ export interface AppHealth {
   queuesRunning(): boolean;
 }
 
-/** What login, sessions and the route-class gate need (Task 15). */
+/** What login, sessions and the route-class gate need (auth/). */
 export interface AppAuth {
   oidc: OidcClient;
   sessions: Sessions;
@@ -138,8 +153,6 @@ export interface AppAuth {
   publicOrigin: string;
   /** Config.absoluteUrl: an absolute URL on PUBLIC_ORIGIN, never from a request. */
   absoluteUrl(path: string): string;
-  /** OIDC_GROUP, named on the refusal page. */
-  group: string;
   /** The login cookie's signing key (loginCookieKey). */
   cookieSecret: Buffer;
   /** The clock for the login cookie's 10 minutes; the real one when left out. */
@@ -152,13 +165,13 @@ export interface AppDeps {
   uploads: Uploads;
   auth: AppAuth;
   /**
-   * The Public API v1's tokens and library (Task 16). The server always
+   * The Public API v1's tokens and library (api/). The server always
    * passes its own; left out, no token is live (refusingApi), so every API
    * request is 401.
    */
   api?: ApiDeps;
   /**
-   * File delivery and slicer links (Task 17): GET /files/:id/download, GET
+   * File delivery and slicer links (delivery/): GET /files/:id/download, GET
    * /blobs/:id, POST /app/api/files/:id/slicer-link and the link route
    * /s/:token/* (GET /s/<token>/<name>). The server always passes its own;
    * left out, those routes are not registered, so their paths are unknown:
@@ -168,19 +181,25 @@ export interface AppDeps {
    */
   delivery?: DeliveryDeps;
   /**
-   * The library's app API (Task 19): the cards and tag filter of the library
-   * page, read from the database and Task 12's plate numbers. Left out, the
+   * The library's app API (app-api/library.ts): the cards and tag filter of the library
+   * page, read from the database and the estimates module's plate numbers. Left out, the
    * routes are still there and answer an empty library, so the route-class
    * test walks them.
    */
   library?: AppLibrary;
   /**
-   * The model page's app API (Task 20): a model with its files, plates and
+   * The model page's app API (app-api/model.ts): a model with its files, plates and
    * numbers, and the retry of a failed estimate. Left out, the routes are
    * still there (every model is 404, nothing is retried), so the
    * route-class test walks them.
    */
   model?: AppModel;
+  /**
+   * A .3mf plate's 3D view (issue #358): GET /app/api/plates/:id/mesh makes
+   * the plate's GLB the first time it is opened. Left out, the route is
+   * still there (every plate is 404), so the route-class test walks it.
+   */
+  plateMeshes?: AppPlateMeshes;
   /**
    * Fastify's request log: off when left out or false, to stdout when true,
    * or to this stream (the tests read it). Either way each request is logged
@@ -188,18 +207,20 @@ export interface AppDeps {
    */
   logger?: boolean | { write(line: string): unknown };
   /**
-   * The built web app (Task 18); apps/web/dist beside the server, not
+   * The built web app; apps/web/dist beside the server, not
    * required, when left out. With required, /healthz is also 503 while the
    * build is missing.
    */
   web?: WebDeps;
   /**
-   * The web app's own JSON API under /app/api (Task 21: settings, tokens and
-   * organising). Session-class like every route outside the listed
-   * prefixes. Left out, the routes still exist (so the route-class gate
-   * covers them) and answer 503.
+   * The web app's own JSON API under /app/api (settings, tokens and
+   * organising; issue #322: Sign out everywhere). Session-class like every
+   * route outside the listed prefixes. A module left out (or all of them)
+   * still has its routes (so the route-class gate covers them), and they
+   * answer 503. The server passes every module (main.ts checks it against
+   * AppApiDeps); a test passes the ones it is about.
    */
-  appApi?: AppApiDeps;
+  appApi?: Partial<AppApiDeps>;
   /**
    * The Activity page's app API (app-api/activity.ts): library numbers, job
    * progress, the slicer's health and recent events, read-only. Left out,
@@ -216,11 +237,12 @@ export interface AppDeps {
   locales?: Locales;
 }
 
-/** What the /app/api routes of Task 21 read and change. */
+/** What the settings, tokens and organising routes under /app/api and Sign out everywhere read and change. */
 export interface AppApiDeps {
   settings: SettingsApiDeps;
   tokens: TokensApiDeps;
   organise: OrganiseDeps;
+  users: UsersApiDeps;
 }
 
 /**
@@ -393,6 +415,8 @@ async function answers(check: () => Promise<unknown>, ms: number): Promise<boole
  */
 function frameworkError(error: FastifyError, request: FastifyRequest, reply: FastifyReply) {
   releaseUnreadBody(request, reply);
+  // No onSend hook runs for this answer, so the security headers are set here.
+  setSecurityHeaders(reply);
   if (routeClass(request.url) === "link") {
     return reply.code(403).header("cache-control", "no-store").send();
   }
@@ -403,6 +427,19 @@ function frameworkError(error: FastifyError, request: FastifyRequest, reply: Fas
     statusCode: status,
   });
 }
+
+/** Headers a failed route may have set that must not stay on the error answer. */
+const FAILED_ANSWER_HEADERS: readonly string[] = [
+  "content-type",
+  "content-length",
+  "content-disposition",
+  "content-range",
+  "content-encoding",
+  "accept-ranges",
+  "cache-control",
+  "etag",
+  "last-modified",
+];
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const { auth } = deps;
@@ -422,6 +459,49 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     frameworkErrors: frameworkError,
   });
 
+  // Errors on root routes (a static file that cannot be read, a hook that
+  // fails). Scopes with their own handler keep it. A 4xx keeps its status
+  // and message; a store outage is 503 as the scoped handlers answer it;
+  // anything else is logged and answered 500 with no detail, so no path,
+  // host or query reaches the client. The security headers are set by the
+  // onSend hook below, which also runs for these answers.
+  app.setErrorHandler(async (error: FastifyError, request, reply) => {
+    // The status as Fastify's default handler works it out: the error's own,
+    // else one the route already set, else 500.
+    const loose = error as FastifyError & {
+      status?: number;
+      headers?: Record<string, string | number | string[]>;
+    };
+    const own = loose.statusCode ?? loose.status;
+    const set = reply.statusCode;
+    const fromError = own !== undefined && own >= 400 && own <= 599;
+    const status = fromError ? own : set >= 400 && set <= 599 ? set : 500;
+    // What the failed route had set for its own answer (a static file's type,
+    // length, caching and validators) does not describe this one.
+    for (const name of FAILED_ANSWER_HEADERS) reply.removeHeader(name);
+    if (status < 500) {
+      if (loose.headers !== undefined) reply.headers(loose.headers);
+      // The error's own message and code are kept only when the error chose
+      // the status; an error the route did not mean as a 4xx says nothing.
+      return reply.code(status).send(
+        fromError
+          ? {
+              error: STATUS_CODES[status] ?? "Error",
+              code: error.code,
+              message: error.message,
+              statusCode: status,
+            }
+          : { error: STATUS_CODES[status] ?? "Error", statusCode: status },
+      );
+    }
+    request.log.error({ err: error }, "app: a request failed");
+    reply.header("cache-control", "no-store");
+    if (isStoreOutage(error)) return reply.code(503).send({ error: "unavailable" });
+    return reply.code(500).send({ error: "internal" });
+  });
+  // The CSP, Referrer-Policy and nosniff on every answer (web/security-headers.ts),
+  // added first so every route, scope, refusal and error answer gets them.
+  addSecurityHeaders(app);
   // Cookies are parsed before the gate runs; the login cookie is signed.
   await app.register(fastifyCookie, { secret: auth.cookieSecret });
   // The OpenAPI generator sees every route registered after it.
@@ -485,7 +565,6 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     sessions: auth.sessions,
     publicOrigin: auth.publicOrigin,
     absoluteUrl: auth.absoluteUrl,
-    group: auth.group,
     ...(auth.now === undefined ? {} : { now: auth.now }),
   });
 
@@ -495,19 +574,46 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     uploads: deps.uploads,
     // The web app shows a failure by its code, in its language.
     resultCodes: "all",
+    // Each session may hold only so many unfinished uploads (Uploads.reserve).
+    principalOf: (request) => {
+      const id = sessionOf(request)?.id;
+      return id === undefined ? undefined : `session:${id}`;
+    },
+    // Who the log names when uploads are refused for want of room: the
+    // session's user, which outlives the session row.
+    holderOf: (request) => {
+      const subject = sessionOf(request)?.subject;
+      return subject === undefined ? undefined : `user ${JSON.stringify(subject)}`;
+    },
   });
   await registerLibraryApi(app, deps.library ?? emptyAppLibrary);
   await registerModelApi(app, deps.model ?? emptyAppModel);
+  await registerPlateMeshApi(app, deps.plateMeshes ?? emptyPlateMeshes);
   await registerV1(app, api);
   await registerSettingsApi(app, deps.appApi?.settings);
   await registerTokensApi(app, deps.appApi?.tokens);
   await registerOrganiseApi(app, deps.appApi?.organise);
+  await registerUsersApi(app, deps.appApi?.users);
   await registerActivityApi(app, deps.activity);
   await registerLocalesApi(app, locales);
   await registerTus(app, {
     prefix: UPLOAD_PREFIXES.api,
     authHook: apiUploadHook(api),
     uploads: deps.uploads,
+    // Each API token may hold only so many unfinished uploads (Uploads.reserve).
+    principalOf: (request) => {
+      const id = tokenOf(request)?.id;
+      return id === undefined ? undefined : `token:${id}`;
+    },
+    // The token's row id and the user who made it, never the token itself.
+    holderOf: (request) => {
+      const token = tokenOf(request);
+      if (token === undefined) return undefined;
+      const maker = token.createdBySubject;
+      return maker === null
+        ? `token ${token.id} (its maker was not recorded)`
+        : `token ${token.id} made by user ${JSON.stringify(maker)}`;
+    },
   });
   // /healthz reads web, which is set here before the app can answer.
   const web = await registerWeb(app, webDeps, locales);

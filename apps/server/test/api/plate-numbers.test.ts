@@ -1,10 +1,10 @@
 // GET /api/v1/models/:id and GET /api/v1/files/:id carry every plate's
 // numbers. Like the library page (app-api/library.ts), the API reads the
 // display context (the settings row and the printer menu) once per request,
-// never once per plate, and runs at most PLATE_NUMBERS_CONCURRENCY plate
-// lookups at once, so a model with many plates neither sends the slicer one
-// /v1/profiles request per plate nor queues a burst of queries on the pool,
-// and every plate in one answer is shown for the same printer.
+// never once per plate, and reads every plate's numbers in one call
+// (plateNumbersMany), so a model with many plates neither sends the slicer
+// one /v1/profiles request per plate nor queues a burst of queries on the
+// pool, and every plate in one answer is shown for the same printer.
 //
 // Run against a scripted database built as the server builds its own
 // (CamelCasePlugin), answering the model, its files and their plates with
@@ -22,7 +22,6 @@ import {
 } from "kysely";
 import { describe, expect, test } from "vitest";
 import { createApiLibrary } from "../../src/api/v1.js";
-import { PLATE_NUMBERS_CONCURRENCY } from "../../src/app-api/library.js";
 import type { DB } from "../../src/db/types.js";
 import type { DisplayContext, PlateNumbers } from "../../src/estimates/display.js";
 
@@ -49,6 +48,8 @@ const FILES = Array.from({ length: FILE_COUNT }, (_, i) => ({
   parse_status: "ok",
   derived_status: null,
   derived_message: null,
+  preview_status: null,
+  preview_message: null,
   mesh_blob_id: null,
   render_stl_blob_id: null,
   render_png_blob_id: null,
@@ -96,7 +97,7 @@ function scriptedDb(plates: readonly (typeof PLATES)[number][] = PLATES): Kysely
         const byId = /"id" = \$1/.test(query.sql);
         rows = byId ? FILES.filter((f) => f.id === query.parameters[0]) : FILES;
       } else if (from === "plates") {
-        rows = plates.filter((p) => p.file_id === query.parameters[0]);
+        rows = plates.filter((p) => query.parameters.includes(p.file_id));
       }
       return { rows } as QueryResult<R>;
     },
@@ -139,9 +140,7 @@ const unusedStore = {
 function countedLibrary(plates: readonly (typeof PLATES)[number][] = PLATES) {
   const seen = {
     contexts: 0,
-    lookups: 0,
-    inFlight: 0,
-    maxInFlight: 0,
+    calls: [] as string[][],
     printers: new Set<string>(),
   };
   let reads = 0;
@@ -154,27 +153,30 @@ function countedLibrary(plates: readonly (typeof PLATES)[number][] = PLATES) {
       // A second read would see the default printer changed meanwhile.
       return { printerId: reads === 1 ? "P1S" : "X1C", orcaVersion: "2.3.1", printers: [] };
     },
-    async plateNumbers(ctx: DisplayContext, plateId: string): Promise<PlateNumbers> {
-      seen.lookups += 1;
+    async plateNumbersMany(
+      ctx: DisplayContext,
+      plateIds: readonly string[],
+    ): Promise<Map<string, PlateNumbers>> {
+      seen.calls.push([...plateIds]);
       seen.printers.add(ctx.printerId);
-      seen.inFlight += 1;
-      seen.maxInFlight = Math.max(seen.maxInFlight, seen.inFlight);
-      await new Promise((resolve) => setTimeout(resolve, 2));
-      seen.inFlight -= 1;
-      return { [ctx.printerId]: { plateId } } as unknown as PlateNumbers;
+      return new Map(
+        plateIds.map((plateId) => [
+          plateId,
+          { [ctx.printerId]: { plateId } } as unknown as PlateNumbers,
+        ]),
+      );
     },
   });
   return { library, seen };
 }
 
 describe("the Public API v1's plate numbers", () => {
-  test("a model reads the display context once and limits its plate lookups", async () => {
+  test("a model reads the display context once and looks up its plates in one call", async () => {
     const { library, seen } = countedLibrary();
     const model = await library.getModel(MODEL_ID);
     expect(model?.files).toHaveLength(FILE_COUNT);
-    expect(seen.lookups).toBe(FILE_COUNT * PLATES_PER_FILE);
+    expect(seen.calls).toEqual([PLATES.map((p) => p.id)]);
     expect(seen.contexts).toBe(1);
-    expect(seen.maxInFlight).toBeLessThanOrEqual(PLATE_NUMBERS_CONCURRENCY);
     expect([...seen.printers]).toEqual(["P1S"]);
   });
 
@@ -191,12 +193,12 @@ describe("the Public API v1's plate numbers", () => {
     }
   });
 
-  test("a file reads the display context once and limits its plate lookups", async () => {
+  test("a file reads the display context once and looks up its plates in one call", async () => {
     const { library, seen } = countedLibrary();
     const file = await library.getFile(FILES[0]?.id ?? "");
     expect(file?.plates).toHaveLength(PLATES_PER_FILE);
+    expect(seen.calls).toEqual([PLATES.filter((p) => p.file_id === FILES[0]?.id).map((p) => p.id)]);
     expect(seen.contexts).toBe(1);
-    expect(seen.maxInFlight).toBeLessThanOrEqual(PLATE_NUMBERS_CONCURRENCY);
   });
 
   // An STL, STEP or SCAD file, or a .3mf with no plate data, has no plate
@@ -210,6 +212,6 @@ describe("the Public API v1's plate numbers", () => {
     const file = await library.getFile(FILES[0]?.id ?? "");
     expect(file?.plates).toEqual([]);
     expect(seen.contexts).toBe(0);
-    expect(seen.lookups).toBe(0);
+    expect(seen.calls).toEqual([]);
   });
 });

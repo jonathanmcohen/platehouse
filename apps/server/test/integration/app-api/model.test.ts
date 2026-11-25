@@ -1,24 +1,25 @@
-// Build plan Task 20 (AC-030, AC-032 to AC-034 display, AC-040, AC-050,
-// AC-051, AC-072): the model page's app API, against Postgres 17 and the S3
+// Every plate in order, its numbers and where they came from, the Open in
+// slicer buttons and the 3D view's sources: the model page's app API, against Postgres 17 and the S3
 // test server. Models come in through ingest from generated files (no
-// designer file); plate numbers are Task 12's plateNumbers for a selected
+// designer file); plate numbers are the estimates module's plateNumbers for a selected
 // printer, the P1S with a 0.4 mm nozzle.
 //
 //   GET  /app/api/models/:id            the model page's data
 //   POST /app/api/estimates/:id/retry   queue a failed estimate again
 //
 // - Both routes are session-class; the retry changes state, so it also needs
-//   Origin to be PUBLIC_ORIGIN (Task 15's gate).
+//   Origin to be PUBLIC_ORIGIN (the route-class gate).
 // - A model's files come with their plates in plate order, each plate's
 //   thumbnail as /blobs/<id> of a stored thumbnail blob of the model, and
 //   its numbers: Bambu's own, labelled with the printer the file was sliced
 //   for, a Platehouse estimate for the selected printer (estimating while it
 //   runs), or the failure and its plain words.
 // - An STL is viewed from its own source blob, a STEP from its GLB mesh, a
-//   SCAD from its rendered STL (with its PNG preview); a .3mf has no 3D view.
+//   SCAD from its rendered STL (with its PNG preview); a .3mf's own view is
+//   null (a plate's 3D view is its own route, test/integration/plate-mesh).
 //   Only a stored blob of the model and of the right kind is ever named.
 // - A trashed, unknown or malformed model id is 404.
-// - The page's Open buttons mint a link at Task 17's POST
+// - The page's Open buttons mint a link at the slicer link route, POST
 //   /app/api/files/:id/slicer-link; for a file whose name has spaces, a
 //   slash, quotes and non-ASCII characters, the protocol URLs carry the link
 //   encoded exactly once, and the link itself opens the file without a
@@ -44,7 +45,7 @@ import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { createPool } from "../../../src/db/kysely.js";
 import type { DB } from "../../../src/db/types.js";
 import { createDeliveryLibrary } from "../../../src/delivery/download.js";
-import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
+import { type DisplayContext, plateNumbersMany } from "../../../src/estimates/display.js";
 import { REASON_WORDS } from "../../../src/estimates/reasons.js";
 import { createRename } from "../../../src/library/rename.js";
 import { createUploads } from "../../../src/uploads/tus.js";
@@ -200,7 +201,7 @@ beforeAll(async () => {
     db: env.db,
     store: env.store,
     displayContext: async () => CONTEXT,
-    plateNumbers: (ctx, plateId) => plateNumbers(env.db, ctx, plateId),
+    plateNumbersMany: (ctx, ids) => plateNumbersMany(env.db, ctx, ids),
   });
   app = await buildApp({
     health: { database: async () => 1, queuesRunning: () => true },
@@ -299,7 +300,7 @@ describe("the model page's routes", () => {
   });
 });
 
-describe("a .3mf's plates (AC-030, AC-051)", () => {
+describe("a .3mf's plates, every one in order with its thumbnail", () => {
   test("every plate in order with its name, thumbnail, numbers and the project filaments", async () => {
     const word = marker();
     const { modelId, fileId } = await ingest(
@@ -382,7 +383,7 @@ describe("a .3mf's plates (AC-030, AC-051)", () => {
   });
 });
 
-describe("numbers and where they came from (AC-032 to AC-034 display)", () => {
+describe("numbers, where they came from, and why a plate has none", () => {
   test("a file sliced for the X1C shows Bambu's numbers labelled X1C beside the P1S estimate", async () => {
     const { modelId, fileId } = await ingest(
       `Foreign ${marker()}.3mf`,
@@ -707,8 +708,8 @@ describe("POST /app/api/estimates/:id/retry", () => {
   });
 });
 
-describe("the 3D view's sources (AC-050, AC-051)", () => {
-  test("an STL is viewed from its own stored source blob", async () => {
+describe("the 3D view's sources (STL and STEP, and none for a .3mf)", () => {
+  test("an STL is viewed from its own stored source blob, and has no preview until one is rendered", async () => {
     const { modelId, fileId } = await ingest(`View ${marker()}.stl`, ASCII_STL);
     const file = await env.repos.files.get(fileId);
     const view = (await modelView(modelId)).files[0];
@@ -743,6 +744,105 @@ describe("the 3D view's sources (AC-050, AC-051)", () => {
     const view = (await modelView(modelId)).files[0];
     expect(view?.view).toEqual({ kind: "stl", url: `/blobs/${stl.id}` });
     expect(view?.preview).toBe(`/blobs/${png.id}`);
+  });
+
+  // Issue #316: an STL's and a STEP's rendered preview picture is named the
+  // way a SCAD's is, beside the 3D view it does not replace.
+  test("an STL and a STEP carry their rendered preview once it is stored", async () => {
+    const stl = await ingest(`Preview ${marker()}.stl`, ASCII_STL);
+    const step = await ingest(`Preview ${marker()}.step`, STEP_TEXT);
+    for (const f of [stl, step]) {
+      expect((await modelView(f.modelId)).files[0]?.preview).toBeNull();
+      const png = await storeBlob(env, f.modelId, "render_png", Buffer.from("png"));
+      await env.db
+        .updateTable("files")
+        .set({ renderPngBlobId: png.id, previewStatus: "ok" })
+        .where("id", "=", f.fileId)
+        .execute();
+      expect((await modelView(f.modelId)).files[0]?.preview).toBe(`/blobs/${png.id}`);
+    }
+    const file = await env.repos.files.get(stl.fileId);
+    expect((await modelView(stl.modelId)).files[0]?.view).toEqual({
+      kind: "stl",
+      url: `/blobs/${file?.blobId}`,
+    });
+  });
+
+  // Issue #380: the picture's own status and reason, beside derivedStatus,
+  // which keeps its 0.1.0 meaning (the STEP mesh; null for an STL).
+  test("a file carries its picture's status and reason, apart from its render or mesh", async () => {
+    const stl = await ingest(`Preview failed ${marker()}.stl`, ASCII_STL);
+    const step = await ingest(`Preview failed ${marker()}.step`, STEP_TEXT);
+    const said = "ERROR: STL import failed";
+    await env.db
+      .updateTable("files")
+      .set({
+        previewStatus: "failed",
+        previewMessage: `The preview picture could not be rendered. OpenSCAD said: ${said}`,
+      })
+      .where("id", "in", [stl.fileId, step.fileId])
+      .execute();
+    await env.db
+      .updateTable("files")
+      .set({ derivedStatus: "ok" })
+      .where("id", "=", step.fileId)
+      .execute();
+    const expected = {
+      previewStatus: "failed",
+      previewMessage: `The preview picture could not be rendered. OpenSCAD said: ${said}`,
+      previewCodes: ["previewRejected"],
+      previewDetail: said,
+      preview: null,
+    };
+    expect((await modelView(stl.modelId)).files[0]).toMatchObject({
+      ...expected,
+      derivedStatus: null,
+      derivedMessage: null,
+    });
+    expect((await modelView(step.modelId)).files[0]).toMatchObject({
+      ...expected,
+      derivedStatus: "ok",
+      derivedMessage: null,
+    });
+  });
+
+  test("a picture is named only while its status is ok", async () => {
+    const { modelId, fileId } = await ingest(`Preview shown ${marker()}.stl`, ASCII_STL);
+    const png = await storeBlob(env, modelId, "render_png", Buffer.from("png"));
+    for (const [previewStatus, shown] of [
+      ["ok", true],
+      ["pending", false],
+      ["failed", false],
+      [null, false],
+    ] as const) {
+      await env.db
+        .updateTable("files")
+        .set({ renderPngBlobId: png.id, previewStatus })
+        .where("id", "=", fileId)
+        .execute();
+      expect((await modelView(modelId)).files[0]?.preview, String(previewStatus)).toBe(
+        shown ? `/blobs/${png.id}` : null,
+      );
+    }
+  });
+
+  test("a preview of the wrong kind or of another model is never named", async () => {
+    const other = await ingest(`Other ${marker()}.stl`, ASCII_STL);
+    const { modelId, fileId } = await ingest(`Wrong preview ${marker()}.stl`, ASCII_STL);
+    const foreign = await storeBlob(env, other.modelId, "render_png", Buffer.from("png"));
+    await env.db
+      .updateTable("files")
+      .set({ renderPngBlobId: foreign.id, previewStatus: "ok" })
+      .where("id", "=", fileId)
+      .execute();
+    expect((await modelView(modelId)).files[0]?.preview).toBeNull();
+    const thumbnail = await storeBlob(env, modelId, "thumbnail", Buffer.from("png"));
+    await env.db
+      .updateTable("files")
+      .set({ renderPngBlobId: thumbnail.id })
+      .where("id", "=", fileId)
+      .execute();
+    expect((await modelView(modelId)).files[0]?.preview).toBeNull();
   });
 
   test("a blob of the wrong kind or of another model is never named as a view", async () => {
@@ -845,11 +945,11 @@ describe("View on MakerWorld", () => {
   });
 });
 
-describe("opening a file in a slicer from the model page (AC-040)", () => {
+describe("opening a file in a slicer from the model page", () => {
   test("a name with spaces, a slash, quotes and non-ASCII: the link is encoded exactly once and opens the file", async () => {
     const bytes = build3mf({ plates: 1, sliced: [1] });
     const { modelId, fileId } = await ingest(`Plain ${marker()}.3mf`, bytes);
-    // A rename (AC-060) can give a file and a model any name, a slash included.
+    // A rename can give a file and a model any name, a slash included.
     const hostile = `Big "box" / v2 ${U_UMLAUT}ber ${SNOWMAN}`;
     await env.db
       .updateTable("files")

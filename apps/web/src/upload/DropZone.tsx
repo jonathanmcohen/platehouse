@@ -1,13 +1,19 @@
-// A drop target for files (build plan Task 19, AC-020): the library page, and
-// the model page (Task 20), wrap their content in it. Dropping files on it
+// A drop target for files: the library page, and
+// the model page, wrap their content in it. Dropping files on it
 // hands them to onFiles, which opens the upload dialog. While files are
 // dragged over it, it is outlined in the accent colour. Text or links
 // dragged over it are left alone, so the browser's own handling stays.
+// While a modal dialog is open (a Select-mode dialog, say) the zone takes
+// no part: a drop on the dialog's backdrop would open the upload dialog
+// under it, and each dialog would make the other inert. The window-level
+// guard in UploadDialog (guardFileDrops) still stops the browser opening
+// the file.
 // Dropping is a pointer gesture. The keyboard routes to the same dialogs
 // are the top bar's Add, for new models, and the model page's Add files,
-// for that model (Task 20), each with the dialog's Choose files button
+// for that model, each with the dialog's Choose files button
 // (issue #202).
 import { type DragEvent, type ReactNode, useRef, useState } from "react";
+import { droppedFiles } from "./dropped";
 
 export interface DropZoneProps {
   onFiles(files: File[]): void;
@@ -17,6 +23,10 @@ export interface DropZoneProps {
 function carriesFiles(event: DragEvent): boolean {
   const types = event.dataTransfer?.types;
   return types !== undefined && Array.from(types).includes("Files");
+}
+
+function modalIsOpen(): boolean {
+  return document.querySelector('[aria-modal="true"]') !== null;
 }
 
 export function DropZone({ onFiles, children }: DropZoneProps) {
@@ -30,13 +40,13 @@ export function DropZone({ onFiles, children }: DropZoneProps) {
       className={active ? "ph-dropzone ph-dropzone-active" : "ph-dropzone"}
       data-dropzone=""
       onDragEnter={(event) => {
-        if (!carriesFiles(event)) return;
+        if (!carriesFiles(event) || modalIsOpen()) return;
         event.preventDefault();
         depth.current += 1;
         setActive(true);
       }}
       onDragOver={(event) => {
-        if (!carriesFiles(event)) return;
+        if (!carriesFiles(event) || modalIsOpen()) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "copy";
       }}
@@ -46,11 +56,11 @@ export function DropZone({ onFiles, children }: DropZoneProps) {
         if (depth.current === 0) setActive(false);
       }}
       onDrop={(event) => {
-        if (!carriesFiles(event)) return;
+        if (!carriesFiles(event) || modalIsOpen()) return;
         event.preventDefault();
         depth.current = 0;
         setActive(false);
-        const files = Array.from(event.dataTransfer.files ?? []);
+        const files = droppedFiles(event.dataTransfer);
         if (files.length > 0) onFiles(files);
       }}
     >

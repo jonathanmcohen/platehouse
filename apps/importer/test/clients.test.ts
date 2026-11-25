@@ -1,6 +1,6 @@
 // The two clients on their own, with no CLI and no redactor in front of
 // them, so each rule below is shown to hold in the client itself and not
-// only because the CLI's redactor would mask a slip (AC-003).
+// only because the CLI's redactor would mask a slip: no credential may reach the output.
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { createManyfold, type ManyfoldError } from "../src/manyfold.js";

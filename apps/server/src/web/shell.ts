@@ -1,4 +1,4 @@
-// The web shell (build plan Task 18, AC-070; the Route classes contract).
+// The web shell, which paints the chosen theme on the first frame with no flash.
 //
 // The web app (apps/web) is a Vite single-page app; vite build writes
 // index.html and its hashed files under assets/ into apps/web/dist. This
@@ -39,7 +39,7 @@
 // picks the build up. Until then a shell page answers 503 with one fixed
 // sentence and no path, and the server logs one warning at startup naming
 // the index.html it looked for. The server still starts, and /healthz
-// answers as Task 30 defines it unless WebDeps.required is set: then
+// answers as app.ts defines it unless WebDeps.required is set: then
 // app.ts also needs built(), so /healthz is 503 while the build is missing
 // and a health check sees what every page shows.
 // A built index.html without the two dark defaults the server rewrites is
@@ -67,10 +67,10 @@ export const DEFAULT_THEME: Theme = "dark";
 export const THEME_COOKIE = "ph_theme";
 
 /**
- * The paths that answer with the shell: the sidebar's sections. Tasks 19 to
- * 21 add their own pages here (the model page, trash, settings). A test
+ * The paths that answer with the shell: the sidebar's sections and the other
+ * pages (trash, activity, settings and the model page). A test
  * checks every SECTIONS path in the web app's Sidebar.tsx is listed here.
- * /models/:id is the model page (Task 20): any id answers with the shell,
+ * /models/:id is the model page: any id answers with the shell,
  * and the page itself asks the model's app API, which says 404 for a model
  * that is not in the library.
  */

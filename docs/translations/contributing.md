@@ -9,7 +9,7 @@ contributors. To add a language to your own server only, see
 The translations live in `packages/i18n/locales/` in the repository:
 
 - `en.json` is the source of truth. Every key is an English message.
-- `es.json` and `fr.json` are Spanish and French. In 0.1.0 both are machine translations, marked
+- `es.json` and `fr.json` are Spanish and French. Currently both are machine translations, marked
   `"status": "machine-draft"` with `"review": { "needed": true }` in their `$meta`.
 
 The web app and the server find every `<code>.json` in that folder by themselves, so there is no

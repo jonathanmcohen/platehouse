@@ -1,16 +1,16 @@
-// The web app's entry (build plan Task 18). React Router in library mode;
-// the shell wraps every page. The library (Task 19) is the page at /, and
-// Task 21's pages (creators, collections, tags, trash and settings) are
+// The web app's entry. React Router in library mode;
+// the shell wraps every page. The library is the page at /, and
+// the organising pages (creators, collections, tags, trash and settings) are
 // routed at their sections; a section without a page would show its
 // heading. The theme starts from what the server wrote into the html
 // element, so the first paint is already right.
 //
-// The upload dialog (Task 19) lives here, above the routes, so the top bar's
+// The upload dialog lives here, above the routes, so the top bar's
 // Add opens it on every page, files dropped on the library open it with
 // those files, and uploads keep going while it is hidden. When an upload
 // round finishes, the library reloads.
 //
-// The model page (Task 20) is at /models/:id. Files dropped on it open a
+// The model page is at /models/:id. Files dropped on it open a
 // dialog aimed at that model (modelId), where the Combine switch is not
 // shown (the maintainer, 2026-11-12), and so does the page's Add files button, with no
 // files, which is how a hidden model dialog is opened again; Add and a drop
@@ -60,7 +60,7 @@ const NEW_MODELS = "";
 /** A dialog with nothing dropped for it yet. */
 const NO_FILES: File[] = [];
 
-/** The page at each section path other than / that has one (Task 21). */
+/** The page at each section path other than / that has one. */
 const PAGES: Readonly<Record<string, ReactNode>> = {
   "/creators": <CreatorsPage />,
   "/collections": <CollectionsPage />,

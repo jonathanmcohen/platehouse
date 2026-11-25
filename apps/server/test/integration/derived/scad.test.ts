@@ -1,6 +1,6 @@
-// Build plan Task 13: OpenSCAD renders in the app (AC-052, AC-053). A .scad
+// OpenSCAD renders in the app, made in the slicer's sandbox, and made again when the .scad is replaced. A .scad
 // upload is stored as uploaded; after its row commits, ingest's afterCommit
-// queues a render job on Task 8's singleton slicer queue, and the job posts
+// queues a render job on the singleton slicer queue, and the job posts
 // the source to the slicer's /v1/scad/stl and /v1/scad/png (here a stub built
 // on packages/slicer-contract) and stores what comes back as new blobs. A
 // 409 busy or a dropped connection makes the job throw, and pg-boss retries
@@ -34,13 +34,14 @@ import {
   StoreUnavailable,
 } from "../../../src/storage/s3.js";
 import { type Reply, s3Error, startFakeS3 } from "../../storage/support/fake-s3.js";
-import { renderedBytes } from "../../support/slicer-stub.js";
+import { renderedBytes, sandboxOff } from "../../support/slicer-stub.js";
 import {
   blobsOf,
   type DerivedEnv,
   keysOf,
   readObject,
   settledFile,
+  settledJobs,
   startDerivedEnv,
   until,
 } from "../support/derived.js";
@@ -93,7 +94,7 @@ function derivedWith(overrides: Partial<DerivedDeps>) {
   });
 }
 
-describe("OpenSCAD renders (AC-052)", () => {
+describe("OpenSCAD renders", () => {
   test("a .scad upload produces an STL and a PNG blob", async () => {
     const text = unique("upload");
     const { modelId, fileId } = await uploadScad(text);
@@ -397,9 +398,6 @@ async function nothingListening(): Promise<string> {
   return `http://127.0.0.1:${port}`;
 }
 
-const SANDBOX_OFF_MESSAGE =
-  "OpenSCAD renders are off: the sandbox self-test failed (synthetic probe readable).";
-
 describe("a slicer that cannot render right now (uses no retry)", () => {
   test("a slicer that takes no connection: the job waits for it, and the render lands once it answers", async () => {
     const { fileId } = await storeScad(unique("refused"));
@@ -427,50 +425,60 @@ describe("a slicer that cannot render right now (uses no retry)", () => {
     expect(jobs[0]?.retryLimit).toBe(SLICER_RETRY.retryLimit - 1);
   });
 
-  test("a replacement sent while OpenSCAD renders are off keeps the previous version and renders once they are back", async () => {
+  test("a render the sandbox refuses is recorded once with its reason, with no wait and no retry", async () => {
+    env.stub.renders.reset();
+    env.stub.renders.always("/v1/scad/stl", sandboxOff("old_kernel"));
+    const { fileId } = await uploadScad(unique("sandbox off"));
+    const file = await settledFile(env, fileId);
+    expect(file).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.sandboxOffKernel,
+    });
+    expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
+    const jobs = await settledJobs(env, fileId);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.output).toMatchObject({ status: "failed", reason: "sandbox_off" });
+    expect(jobs[0]?.retryCount).toBe(0);
+    env.stub.renders.reset();
+  });
+
+  test("a failed sandbox check is its own message", async () => {
+    env.stub.renders.reset();
+    env.stub.renders.always("/v1/scad/stl", sandboxOff("check_failed"));
+    const { fileId } = await uploadScad(unique("sandbox check"));
+    expect(await settledFile(env, fileId)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.sandboxOffCheck,
+    });
+    env.stub.renders.reset();
+  });
+
+  test("a replacement sent while the sandbox is off is not saved: the previous version and its renders stay", async () => {
     const { modelId, fileId } = await uploadScad(unique("sandbox before"));
     const before = await settledFile(env, fileId);
     const oldBlobs = await blobsOf(env, modelId);
-    // Count only the replacement's calls below, not the upload's own render.
     env.stub.renders.reset();
 
-    env.stub.renders.always("/v1/scad/stl", { kind: "failed", message: SANDBOX_OFF_MESSAGE });
-    const second = unique("sandbox after");
-    const { sourceBlobId } = await env.derived.replaceFile(fileId, await writeUpload(env, second));
-
-    // The job asks again, waiting longer each time, and never records the
-    // slicer's message as the file's verdict or swaps the replacement in.
-    await until(
-      () => env.stub.renders.callsTo("/v1/scad/stl").length,
-      (n) => n >= 3,
+    env.stub.renders.always("/v1/scad/stl", sandboxOff("old_kernel"));
+    const { sourceBlobId } = await env.derived.replaceFile(
+      fileId,
+      await writeUpload(env, unique("sandbox after")),
     );
-    expect(await env.repos.files.get(fileId)).toMatchObject({
+    const after = await until(
+      () => env.repos.files.get(fileId),
+      (f) => f?.derivedStatus === "failed",
+    );
+    expect(after).toMatchObject({
       blobId: before.blobId,
       renderStlBlobId: before.renderStlBlobId,
       renderPngBlobId: before.renderPngBlobId,
-      derivedStatus: "pending",
-      derivedMessage: null,
+      derivedMessage: DERIVED_MESSAGES.sandboxOffKernel,
     });
-    const waiting = new Set((await blobsOf(env, modelId)).map((b) => b.id));
-    for (const old of oldBlobs) expect(waiting.has(old.id)).toBe(true);
-    expect(waiting.has(sourceBlobId)).toBe(true);
-
-    // The sandbox works again.
+    const kept = new Set((await blobsOf(env, modelId)).map((b) => b.id));
+    for (const old of oldBlobs) expect(kept.has(old.id)).toBe(true);
+    expect(kept.has(sourceBlobId)).toBe(false);
+    expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
     env.stub.renders.reset();
-    const after = await until(
-      () => env.repos.files.get(fileId),
-      (f) => f?.blobId === sourceBlobId && f?.derivedStatus === "ok",
-    );
-    const byId = new Map((await blobsOf(env, modelId)).map((b) => [b.id, b]));
-    expect(await readObject(env, byId.get(after?.renderStlBlobId ?? "")?.key ?? "")).toEqual(
-      renderedBytes("/v1/scad/stl", second),
-    );
-    const jobs = await jobsFor(fileId);
-    const waits = jobs.filter(
-      (j) => (j.output as { reason?: string } | null)?.reason === "slicer_down",
-    );
-    expect(waits.length).toBeGreaterThanOrEqual(3);
-    expect(jobs.every((j) => j.retryCount === 0)).toBe(true);
   });
 });
 
@@ -568,7 +576,7 @@ describe("a slicer that stays down (issue #100)", () => {
     await expect(env.store.getBlobStream(stagedBlob.key)).rejects.toBeInstanceOf(BlobNotFound);
 
     // It stopped waiting, and the wait used none of the job's retries.
-    const jobs = await jobsFor(fileId);
+    const jobs = await settledJobs(env, fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     const replacementJobs = jobs.filter((j) => j.data.sourceBlobId === staged.sourceBlobId);
     expect(replacementJobs).toHaveLength(3);
@@ -593,7 +601,7 @@ describe("a slicer that stays down (issue #100)", () => {
       renderStlBlobId: null,
       renderPngBlobId: null,
     });
-    const jobs = await jobsFor(fileId);
+    const jobs = await settledJobs(env, fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     expect(jobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
   });
@@ -629,7 +637,7 @@ describe("a slicer that stays down (issue #100)", () => {
       renderedBytes("/v1/scad/stl", second),
     );
 
-    const jobs = await jobsFor(fileId);
+    const jobs = await settledJobs(env, fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     expect(jobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
   });
@@ -728,7 +736,7 @@ describe("a store that cannot be reached (uses no retry)", () => {
     await expect(env.store.getBlobStream(stagedBlob.key)).rejects.toBeInstanceOf(BlobNotFound);
 
     // It stopped waiting, and the wait used none of the job's retries.
-    const jobs = await jobsFor(fileId);
+    const jobs = await settledJobs(env, fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     const replacementJobs = jobs.filter((j) => j.data.sourceBlobId === staged.sourceBlobId);
     expect(replacementJobs).toHaveLength(3);
@@ -753,7 +761,7 @@ describe("a store that cannot be reached (uses no retry)", () => {
       renderPngBlobId: null,
     });
     expect(env.stub.renders.calls).toHaveLength(0);
-    const jobs = await jobsFor(fileId);
+    const jobs = await settledJobs(env, fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     expect(jobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
   });
@@ -911,7 +919,7 @@ describe("a store that answers and refuses (issue #102)", () => {
     expect(await keysOf(env, modelId)).toEqual(oldKeys);
     await expect(env.store.getBlobStream(stagedBlob.key)).rejects.toBeInstanceOf(BlobNotFound);
     expect(env.stub.renders.calls).toHaveLength(0);
-    expect((await jobsFor(fileId)).filter((j) => LIVE.has(j.state))).toEqual([]);
+    expect((await settledJobs(env, fileId)).filter((j) => LIVE.has(j.state))).toEqual([]);
   });
 
   test("a source object that is gone gets the storage message on the first attempt, with no retry", async () => {
@@ -1005,11 +1013,22 @@ describe("the slicer queue's worker", () => {
     expect(env.stub.renders.calls).toHaveLength(0);
   });
 
-  test("the render and mesh kinds register into the slicer queue's one handler map", () => {
+  // Issue #316 added the two preview kinds beside the render and the mesh.
+  test("the render, mesh and preview kinds register into the slicer queue's one handler map", () => {
     expect(Object.keys(derivedJobHandlers(env.derived)).sort()).toEqual(
-      [DERIVED_KINDS.convertStep, DERIVED_KINDS.renderScad].sort(),
+      [
+        DERIVED_KINDS.convertStep,
+        DERIVED_KINDS.renderScad,
+        DERIVED_KINDS.renderStl,
+        DERIVED_KINDS.previewStep,
+      ].sort(),
     );
-    expect(DERIVED_KINDS).toEqual({ renderScad: "render-scad", convertStep: "convert-step" });
+    expect(DERIVED_KINDS).toEqual({
+      renderScad: "render-scad",
+      convertStep: "convert-step",
+      renderStl: "render-stl",
+      previewStep: "preview-step",
+    });
   });
 });
 
@@ -1021,7 +1040,7 @@ const PREVIOUS_RENDERS_SCAD =
 const REPLACE_FAILED_MESSAGE = "The slicer could not render the replacement, so it was not saved.";
 const REPLACE_LOST_MESSAGE = "The render of the replacement did not finish, so it was not saved.";
 
-describe("replacing a .scad (AC-053)", () => {
+describe("replacing a .scad", () => {
   test("replacing a .scad renders a new STL and preview and removes the old blobs", async () => {
     const first = unique("before");
     const { modelId, fileId } = await uploadScad(first);
@@ -1246,6 +1265,26 @@ describe("replacing a .scad (AC-053)", () => {
       renderPngBlobId: before.renderPngBlobId,
       derivedStatus: "failed",
       derivedMessage: `${PREVIOUS_RENDERS_SCAD} ${message}`,
+    });
+  });
+
+  // The slicer starts OpenSCAD's own words with "OpenSCAD said: ", which the
+  // previous-renders sentence already ends with: the stored message says it once.
+  test("a rejected replacement's message names OpenSCAD once after the previous-renders sentence", async () => {
+    const { fileId } = await uploadScad(unique("lead-in, before"));
+    const before = await settledFile(env, fileId);
+    expect(before.renderStlBlobId).not.toBeNull();
+    env.stub.renders.reset();
+
+    env.stub.renders.queue("/v1/scad/stl", {
+      kind: "failed",
+      message: "OpenSCAD said: ERROR: Parser error in file input.scad, line 2",
+    });
+    await env.derived.replaceFile(fileId, await writeUpload(env, unique("lead-in, replacement")));
+    expect(await settledFile(env, fileId)).toMatchObject({
+      renderStlBlobId: before.renderStlBlobId,
+      derivedStatus: "failed",
+      derivedMessage: `${PREVIOUS_RENDERS_SCAD} ERROR: Parser error in file input.scad, line 2`,
     });
   });
 
@@ -1981,7 +2020,7 @@ describe("after a rejected replacement, a later failure keeps the previous-versi
     });
 
     await expect(failing.renderScad(fileId)).rejects.toThrow("the queue refused the job");
-    expect((await jobsFor(fileId)).every((j) => j.state === "completed")).toBe(true);
+    expect((await settledJobs(env, fileId)).every((j) => j.state === "completed")).toBe(true);
     await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.queueFailed);
   });
 

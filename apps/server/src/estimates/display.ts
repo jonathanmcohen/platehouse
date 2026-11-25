@@ -1,4 +1,6 @@
-// What a plate shows for its numbers (build plan Task 12, AC-031 to AC-034).
+// What a plate shows for its numbers: the file's own numbers labelled with
+// their printer, a Platehouse estimate for the selected printer, the
+// estimating state, or the plain reason a plate could not be sliced.
 //
 // A plate can have two sets of numbers:
 // - file: Bambu's own numbers from the .3mf, labelled with the printer the
@@ -12,9 +14,9 @@
 //     stale       that estimate is queued or slicing (or failed), and the
 //                 newest older estimate is shown meanwhile, with staleFor
 //                 naming what it was made for: the previous printer, or the
-//                 previous Orca version when the printer is the same
-//                 (AC-031: "its old one stays visible, marked as for the
-//                 previous printer").
+//                 previous Orca version when the printer is the same, so
+//                 the plate keeps showing numbers, marked with what they
+//                 were made for, while the new estimate runs.
 // A failed estimate for the selected printer gives failure: the slicer's
 // reason, its plain words and Orca's detail for the Details toggle. The
 // detail is stored as the slicer sent it, so it is cleaned here, as it is
@@ -25,7 +27,7 @@
 // Each filament line names the preset that produced its grams and where the
 // preset came from: "bambu" (Bambu's own preset for the printer), "generic"
 // (Orca's Generic preset) or "file" (the file's own filament was kept).
-// Slicer contract v1 reports the preset name per slot but not its source, so
+// Slicer contract 2 reports the preset name per slot but not its source, so
 // the source is read from the name by the slicer's own rule
 // (apps/slicer/src/profiles.ts pickFilament): it only ever picks a preset
 // named "Bambu ..." or "Generic ...", and reports null where it kept the
@@ -202,15 +204,35 @@ function fileIsFor(row: EstimateRow, selected: Printer | undefined): boolean {
   return printerForFile(row, [selected]) !== undefined;
 }
 
-export async function plateNumbers(
+interface FilamentRow {
+  estimateId: string;
+  slot: number;
+  type: string;
+  color: string | null;
+  grams: number | null;
+  profile: string | null;
+  profileSource: string | null;
+}
+
+/**
+ * Every plate's numbers for the one display context, in two queries however
+ * many plates there are: the plates' estimates, then those estimates'
+ * filaments. Every requested id is a key; an id that is not a UUID, or a
+ * plate with no estimates, maps to {}. No query runs when no id is a UUID.
+ */
+export async function plateNumbersMany(
   db: Kysely<DB>,
   ctx: DisplayContext,
-  plateId: string,
-): Promise<PlateNumbers> {
-  if (!isUuid(plateId)) return {};
-  const rows: EstimateRow[] = await db
+  plateIds: readonly string[],
+): Promise<Map<string, PlateNumbers>> {
+  const out = new Map<string, PlateNumbers>();
+  for (const id of plateIds) out.set(id, {});
+  const valid = [...new Set(plateIds.filter(isUuid))];
+  if (valid.length === 0) return out;
+  const rows = await db
     .selectFrom("estimates")
     .select([
+      "plateId",
       "id",
       "source",
       "printerId",
@@ -227,22 +249,52 @@ export async function plateNumbers(
       "createdAt",
       "finishedAt",
     ])
-    .where("plateId", "=", plateId)
+    .where("plateId", "=", sql<string>`any(${valid}::uuid[])`)
+    .orderBy("plateId")
     .orderBy("createdAt", "desc")
     .orderBy("id", "desc")
     .execute();
-  if (rows.length === 0) return {};
-  const filaments = await db
+  if (rows.length === 0) return out;
+  const filaments: FilamentRow[] = await db
     .selectFrom("estimateFilaments")
     .select(["estimateId", "slot", "type", "color", "grams", "profile", "profileSource"])
-    .where(
-      "estimateId",
-      "in",
-      rows.map((r) => r.id),
-    )
+    .where("estimateId", "=", sql<string>`any(${rows.map((r) => r.id)}::uuid[])`)
     .orderBy("slot")
     .execute();
 
+  const rowsOf = new Map<string, EstimateRow[]>();
+  for (const { plateId, ...row } of rows) {
+    const own = rowsOf.get(plateId);
+    if (own === undefined) rowsOf.set(plateId, [row]);
+    else own.push(row);
+  }
+  const filamentsOf = new Map<string, FilamentRow[]>();
+  for (const f of filaments) {
+    const own = filamentsOf.get(f.estimateId);
+    if (own === undefined) filamentsOf.set(f.estimateId, [f]);
+    else own.push(f);
+  }
+  for (const [plateId, own] of rowsOf) {
+    out.set(plateId, numbersOfPlate(ctx, own, filamentsOf));
+  }
+  return out;
+}
+
+/** One plate's numbers: the same as plateNumbersMany([plateId]).get(plateId). */
+export async function plateNumbers(
+  db: Kysely<DB>,
+  ctx: DisplayContext,
+  plateId: string,
+): Promise<PlateNumbers> {
+  return (await plateNumbersMany(db, ctx, [plateId])).get(plateId) ?? {};
+}
+
+/** A plate's numbers from its estimates (newest first) and their filaments by estimate id. */
+function numbersOfPlate(
+  ctx: DisplayContext,
+  rows: readonly EstimateRow[],
+  filamentsOf: ReadonlyMap<string, readonly FilamentRow[]>,
+): PlateNumbers {
   const numbers = (
     row: EstimateRow,
     printerId: string,
@@ -261,19 +313,17 @@ export async function plateNumbers(
     weightGrams: row.status === "ok" ? row.weightGrams : null,
     filaments:
       row.status === "ok"
-        ? filaments
-            .filter((f) => f.estimateId === row.id)
-            .map((f) => ({
-              slot: f.slot,
-              type: f.type,
-              color: f.color,
-              grams: f.grams,
-              // Stored when the slice landed; null where the slot could not
-              // be matched to the slicer's preset list.
-              profile: row.source === "file" ? null : f.profile,
-              profileSource:
-                row.source !== "file" && isProfileSource(f.profileSource) ? f.profileSource : null,
-            }))
+        ? (filamentsOf.get(row.id) ?? []).map((f) => ({
+            slot: f.slot,
+            type: f.type,
+            color: f.color,
+            grams: f.grams,
+            // Stored when the slice landed; null where the slot could not
+            // be matched to the slicer's preset list.
+            profile: row.source === "file" ? null : f.profile,
+            profileSource:
+              row.source !== "file" && isProfileSource(f.profileSource) ? f.profileSource : null,
+          }))
         : [],
   });
 
@@ -337,7 +387,8 @@ export async function plateNumbers(
 }
 
 /**
- * The AC-032 query: every plate of a live .3mf that has neither the file's
+ * The every-plate-has-numbers query (each plate must show numbers or a
+ * recorded reason): every plate of a live .3mf that has neither the file's
  * own numbers for the selected printer nor a finished or failed Platehouse
  * estimate for the selected printer and the current Orca version. Empty once
  * the slicer queue has drained.

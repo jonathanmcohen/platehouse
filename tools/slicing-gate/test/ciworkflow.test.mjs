@@ -1,14 +1,12 @@
 // Pins ci.yml: the CI job that builds the gate image on GitHub, so the next
 // image build failure is found there and not on the test server (run 2, 2026-11-08,
 // failed at the fetch stage's first Node call), the changes job that decides
-// when that job runs, and the workspace jobs with their zero-test guard (build
-// plan Task 3). Read as text: the gate has no YAML parser and needs no install
+// when that job runs, and the workspace jobs with their zero-test guard. Read as text: the gate has no YAML parser and needs no install
 // step. Shell steps are run in bash with their tools stubbed. The tests at the
-// end pin release.yml's pushed-image check and slicer-image.yml (build plan
-// Task 25) the same way.
+// end pin release.yml's pushed-image check and slicer-image.yml the same way.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -21,6 +19,15 @@ const text = () => readFileSync(WORKFLOW, "utf8");
 
 // The on: block, from "on:" up to the next top-level key.
 const onBlock = (t) => t.slice(t.indexOf("\non:\n")).split(/\n(?=[a-z])/)[1];
+
+// The release gate needs a successful push run for the tagged commit, so a
+// newer push to main or a release branch must not cancel a running one.
+test("ci: only a pull request run is cancelled by a newer one, and push runs are grouped by commit", () => {
+  assert.match(
+    text(),
+    /\nconcurrency:\n {2}group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.event_name == 'pull_request' && github\.ref \|\| github\.sha \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n/,
+  );
+});
 
 // Issue #16: both triggers carried a paths filter for the gate and this file,
 // so no CI ran on a product PR. The triggers now carry no paths filter; the
@@ -41,7 +48,7 @@ test("the workflow reads the repo only, holds no secrets and pushes nothing", ()
   assert.match(t, /persist-credentials: false/, "checkout keeps no token on disk");
 });
 
-// The one exception is the app image job (build plan Task 24, approved by the maintainer
+// The one exception is the app image job (approved by the maintainer
 // 2026-11-13): it builds and runs the image for amd64 and arm64 natively, so
 // its runs-on is its matrix's runner, and that matrix lists exactly
 // ubuntu-24.04 and ubuntu-24.04-arm.
@@ -62,15 +69,17 @@ test("every job runs on ubuntu-24.04 with a timeout, the app image's arm64 leg o
   for (const m of timeouts) assert.ok(m > 0 && m <= 90, `timeout ${m}`);
 });
 
-// Actions pin to an exact release tag (the maintainer, 2026-09-05, locked),
-// never a floating major such as @v7, so a moved tag cannot change a build.
-test("every action is pinned to an exact release tag", () => {
-  const uses = [...text().matchAll(/uses: (\S+)/g)].map((m) => m[1]);
+// Actions pin to a commit SHA with the exact release tag as a comment (issue
+// #420; the maintainer locked exact tags on 2026-09-05), never a floating major
+// such as @v7, so a moved tag cannot change a build. workflowpins.test.mjs holds
+// every workflow to it; this holds ci.yml's tags to exact releases too.
+test("every action is pinned to a commit SHA and an exact release tag", () => {
+  const uses = [...text().matchAll(/uses: (\S+ # \S+)/g)].map((m) => m[1]);
   assert.ok(uses.length >= 2, uses.join("\n"));
-  for (const u of uses) assert.match(u, /^[\w.-]+\/[\w.-]+@v\d+\.\d+\.\d+$/, `not an exact release tag: ${u}`);
+  for (const u of uses) assert.match(u, /^[\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/, `not a SHA pin with a release tag: ${u}`);
 });
 
-// The maintainer, 2026-11-08 (build plan Task 3): every job takes its Node version from
+// The maintainer, 2026-11-08: every job takes its Node version from
 // .node-version, the one the workspace pins, instead of a hardcoded one.
 test("every setup-node step reads .node-version, which pins Node 26", () => {
   const t = text();
@@ -246,7 +255,7 @@ function jobBlock(t, id) {
   return jobs.slice(at + 1).split(/\n(?= {2}[\w-]+:\n)/)[0];
 }
 
-// Build plan Task 3: lint, typecheck, unit and integration in a chain, and
+// Lint, typecheck, unit and integration in a chain, and
 // every job after the first carries its own !cancelled() condition, because a
 // skip propagates down a needs chain unless a job says otherwise.
 test("lint, typecheck, unit and integration run in a chain, each gated on the one before", () => {
@@ -328,7 +337,7 @@ function stepBlock(block, name) {
 
 // A step's uses: line and its with: inputs as a key -> value map.
 function stepInputs(step) {
-  const uses = step.match(/\n {8}uses: (\S+)\n/)?.[1];
+  const uses = step.match(/\n {8}uses: (\S+ # \S+)\n/)?.[1];
   const withAt = step.indexOf("\n        with:\n");
   assert.ok(withAt !== -1, `with: in\n${step}`);
   const inputs = {};
@@ -340,12 +349,12 @@ function stepInputs(step) {
   return { uses, inputs };
 }
 
-test("the app image job runs the release workflow's Trivy gate on the image it built, last", () => {
+test("the app image job runs the release workflow's Trivy gate on the image it built, then the library gate, last", () => {
   const app = jobBlock(text(), "app-image");
   const release = readFileSync(RELEASE, "utf8");
   const ours = stepInputs(stepBlock(app, TRIVY_GATE));
   const theirs = stepInputs(stepBlock(release, TRIVY_GATE));
-  assert.match(theirs.uses, /^aquasecurity\/trivy-action@v\d+\.\d+\.\d+$/, "release.yml's gate step");
+  assert.match(theirs.uses, /^aquasecurity\/trivy-action@[0-9a-f]{40} # v\d+\.\d+\.\d+$/, "release.yml's gate step");
   assert.equal(ours.uses, theirs.uses, "the same action at the same tag as release.yml");
   assert.equal(ours.inputs["image-ref"], "${{ env.IMAGE }}", "it scans the image this job built");
   const { "image-ref": _ours, ...oursRest } = ours.inputs;
@@ -363,9 +372,11 @@ test("the app image job runs the release workflow's Trivy gate on the image it b
     assert.equal(ours.inputs[k], v, `${k}: ${v}`);
   }
   assert.doesNotMatch(stepBlock(app, TRIVY_GATE), /\n {8}(if|continue-on-error):/, "nothing softens the gate");
-  // After both image checks, and the job's last step.
+  // After both image checks, and the job's last two steps: the OS gate, then
+  // the library gate (issue #453), which baseimages.test.mjs pins.
   const steps = app.split(/\n(?= {6}- )/).slice(1);
-  assert.ok(steps.at(-1).startsWith(`      - name: ${TRIVY_GATE}\n`), "the gate is the last step");
+  assert.ok(steps.at(-2).startsWith(`      - name: ${TRIVY_GATE}\n`), "the gate is the second to last step");
+  assert.ok(steps.at(-1).startsWith("      - name: Trivy library gate (fail on fixable CRITICAL)\n"), "the library gate is the last step");
   assert.ok(app.indexOf("test-app-image.sh \"$NO_WEB_IMAGE\" unhealthy") < app.indexOf(`name: ${TRIVY_GATE}`));
   assert.ok(app.indexOf("test-app-image.sh \"$IMAGE\" healthy") < app.indexOf(`name: ${TRIVY_GATE}`));
 });
@@ -378,7 +389,11 @@ test("every Trivy step in ci.yml and release.yml sets the same exact Trivy versi
   const steps = [text(), readFileSync(RELEASE, "utf8")].flatMap((t) =>
     t.split(/\n(?= {6}- )/).filter((s) => /\n {8}uses: aquasecurity\/trivy-action@/.test(s)),
   );
-  assert.equal(steps.length, 4, "the CI gate, the CI slicer report, the release gate and the release full report");
+  assert.equal(
+    steps.length,
+    6,
+    "the CI OS and library gates, the CI slicer report, the release OS and library gates and the release full report",
+  );
   const versions = steps.map((s) => stepInputs(s).inputs.version);
   for (const v of versions) assert.match(v ?? "", /^v\d+\.\d+\.\d+$/, `an exact version: ${v}`);
   assert.equal(new Set(versions).size, 1, `one version in all of them: ${versions.join(", ")}`);
@@ -424,6 +439,29 @@ test("the snapshot-pins job runs the shared leftover check on every pull request
   // The shared script has the command.
   const script = readFileSync(join(ROOT, ".github", "scripts", "apt-snapshot.mjs"), "utf8");
   assert.match(script, /if \(cmd === "leftovers"\)/);
+});
+
+// Issue #453, the same lesson as #391 for the base image and Node pins: the
+// check that the pins agree and that no file but the four digest files names
+// their digests runs on every pull request, as a job nothing scopes or gates,
+// and runs the command the weekly base-images workflow runs after its rewrite.
+test("the base-image-pins job runs the shared pin and leftover check on every pull request (issue #453)", () => {
+  const t = text();
+  const job = jobBlock(t, "base-image-pins");
+  assert.match(job, /\n {4}name: Base image pin check\n/);
+  assert.match(job, /\n {4}runs-on: ubuntu-24\.04\n/);
+  assert.doesNotMatch(job, /\n {4}(needs|if):/, "no needs and no condition: it runs on every run");
+  assert.match(onBlock(t), /^ {2}pull_request:\n(?! {4})/m, "pull_request with nothing nested under it");
+  assert.deepEqual(
+    jobSteps(job).map((s) => s.match(/^ {6}- name: (.+)$/m)[1]),
+    ["Check out", "Set up Node", "Pins agree and no file but the pins names their digests"],
+  );
+  const script = stepScript(job, "Pins agree and no file but the pins names their digests");
+  assert.match(script, /^pins="\$\(node \.github\/scripts\/base-images\.mjs read\)"$/m, "reads (and so cross-checks) the pins");
+  assert.match(script, /^node \.github\/scripts\/base-images\.mjs leftovers "\$\{app##\*@sha256:\}" "\$\{ubuntu##\*@sha256:\}" "\$\(get old_node_sha\)"$/m);
+  assert.doesNotMatch(job, /run: .*(pnpm|npm|curl|wget)|git grep/, "no install, no network, no grep of its own");
+  const weekly = readFileSync(join(ROOT, ".github", "workflows", "base-images.yml"), "utf8");
+  assert.ok(stepScript(jobBlock(weekly, "refresh"), "Push the branch and open the pull request").includes("node .github/scripts/base-images.mjs leftovers"), "the weekly run calls the same check");
 });
 
 const SLICER_REPORT = "Trivy report (informational, does not fail the job)";
@@ -803,9 +841,11 @@ for (const [name, input, want] of [
   // ciworkflow.test.mjs reads README.md, so a README-only change runs the
   // tests; the image is not built from it, so the image build is skipped.
   ["a push touching only the README runs the tests, not the image build", { event: "push", before: SHA, changed: ["README.md"] }, TESTS],
+  // RELEASING.md holds the rollback section ciworkflow.test.mjs reads.
+  ["a push touching only RELEASING.md runs the tests, not the image build", { event: "push", before: SHA, changed: ["RELEASING.md"] }, TESTS],
   ["a push touching the gate runs both", { event: "push", before: SHA, changed: ["tools/slicing-gate/README.md"] }, RUN],
   // PR #17 review: git diff --name-only lists only the new path of a rename, so
-  // a module moved out of the gate (say into packages/threemf/ in Task 6) left
+  // a module moved out of the gate (say into packages/threemf/) left
   // no gate path in the list and the gate job was skipped. The job passes
   // --no-renames so a move lists its old path too.
   [
@@ -937,11 +977,17 @@ for (const [file, want] of [
   [".github/scripts/rc-target.mjs", TESTS],
   [".github/workflows/apt-snapshot.yml", TESTS],
   [".github/scripts/apt-snapshot.mjs", TESTS],
+  [".github/workflows/base-images.yml", TESTS],
+  [".github/scripts/base-images.mjs", TESTS],
+  ["pnpm-workspace.yaml", TESTS],
+  ["e2e/compose.yml", TESTS],
   ["docker/app.Dockerfile", TESTS],
+  ["docker/check-image-labels.sh", TESTS],
   ["apps/slicer/Dockerfile", TESTS],
   ["apps/slicer/test/container/smoke.test.ts", TESTS],
   ["apps/slicer/test/container/support/slicer.ts", TESTS],
   ["README.md", TESTS],
+  ["RELEASING.md", TESTS],
   ["CHANGELOG.md", TESTS],
 ]) {
   test(`gate jobs decision: a PR touching only ${file} runs the gate tests`, () => {
@@ -1173,11 +1219,17 @@ test("gate jobs decision: every file the gate tests read outside tools/slicing-g
     ".github/scripts/rc-target.mjs",
     ".github/workflows/apt-snapshot.yml",
     ".github/scripts/apt-snapshot.mjs",
+    ".github/workflows/base-images.yml",
+    ".github/scripts/base-images.mjs",
+    "pnpm-workspace.yaml",
+    "e2e/compose.yml",
     "docker/app.Dockerfile",
+    "docker/check-image-labels.sh",
     "apps/slicer/Dockerfile",
     "apps/slicer/test/container/smoke.test.ts",
     "apps/slicer/test/container/support/slicer.ts",
     "README.md",
+    "RELEASING.md",
     "CHANGELOG.md",
   ]) {
     assert.ok(reads.has(known), `the scan finds ${known}: ${[...reads.keys()].join(", ")}`);
@@ -1193,7 +1245,7 @@ test("gate jobs decision: every file the gate tests read outside tools/slicing-g
 
 // PR #227 review, round 2: an import from outside tools/slicing-gate is a read
 // too, and the likeliest one, as gate modules are due to move to
-// packages/threemf (Task 6). The sources below are fakes handed to the scan.
+// packages/threemf. The sources below are fakes handed to the scan.
 // Each is one line with \n escapes, and the dynamic import is built by
 // dynImport, so that the scan, reading this file, does not take them for real
 // imports of its own.
@@ -1373,7 +1425,7 @@ const vitestReport = (total, passed, failed, pending, todo = 0) => ({
   numTodoTests: todo,
 });
 
-// AC-094: CI fails when zero tests ran. Measured with Vitest 5.1.0 on
+// CI fails when zero tests ran. Measured with Vitest 5.1.0 on
 // 2026-11-08: vitest run -t no-such-test skips all 65 tests, exits 0, and
 // still reports numTotalTests 65, so a guard on numTotalTests alone passes.
 for (const [stepName, label] of [
@@ -1435,13 +1487,13 @@ for (const [stepName, label] of [
 }
 
 // ---------------------------------------------------------------------------
-// slicer-image.yml (build plan Task 25; AC-037). Watches OrcaSlicer's releases,
+// slicer-image.yml, which keeps the slicer image current. Watches OrcaSlicer's releases,
 // builds apps/slicer/Dockerfile for a version, smoke-slices generated plates in
 // the built image and, only on a pass, pushes orca-X.Y.Z, orca-X.Y.Z-r<run> and
 // moves stable to that digest; on a failure it opens an issue. Each shell step
 // is run in bash with gh, git, docker and pnpm stubbed. None of this runs the
 // workflow on GitHub: a dispatch or a schedule needs the file on main, and the
-// plan's Steps 1 and 2 are the live proof.
+// first manual run and a run forced to fail are the live proof.
 const SLICER = join(ROOT, ".github", "workflows", "slicer-image.yml");
 const slicerText = () => readFileSync(SLICER, "utf8");
 const SLICER_DOCKERFILE = readFileSync(join(ROOT, "apps", "slicer", "Dockerfile"), "utf8");
@@ -1552,10 +1604,10 @@ test("slicer-image: runs daily at 05:00 UTC, by hand with orca_version and force
   assert.doesNotMatch(on, /branches:|pull_request/, "no branch pushes and no pull requests");
 });
 
-// The plan's permissions are contents: read, packages: write and issues: write.
+// The workflow's permissions are contents: read, packages: write and issues: write.
 // Each job takes only what it uses: the registry check reads packages, only
 // the build job writes them, and only the failure report writes issues.
-test("slicer-image: each job holds only the permissions it uses, within the plan's three", () => {
+test("slicer-image: each job holds only the permissions it uses, within those three", () => {
   const t = slicerText();
   assert.match(t, /^permissions:\n {2}contents: read\n(?! {2}\S)/m, "top-level permissions are contents: read alone");
   const perms = (id) => {
@@ -1563,12 +1615,14 @@ test("slicer-image: each job holds only the permissions it uses, within the plan
     assert.ok(m, `${id} sets its own permissions`);
     return Object.fromEntries(m[1].trimEnd().split("\n").map((l) => l.trim().split(": ")));
   };
+  assert.deepEqual(perms("gate"), { contents: "read", actions: "read" });
   assert.deepEqual(perms("detect"), { contents: "read", packages: "read" });
   assert.deepEqual(perms("build"), { contents: "read", packages: "write" });
+  assert.deepEqual(perms("stable"), { contents: "read", packages: "write" });
   assert.deepEqual(perms("report-failure"), { issues: "write" });
   const jobs = [...t.slice(t.indexOf("\njobs:\n")).matchAll(/\n {2}([\w-]+):\n/g)].map((m) => m[1]);
-  assert.deepEqual(jobs, ["detect", "build", "report-failure"]);
-  assert.doesNotMatch(t, /\bactions: (read|write)|\bwrite-all|\bread-all/, "nothing else is granted");
+  assert.deepEqual(jobs, ["gate", "detect", "build", "stable", "report-failure"]);
+  assert.doesNotMatch(t.replace(jobBlock(t, "gate"), ""), /\bactions: (read|write)|\bwrite-all|\bread-all/, "nothing else is granted");
   for (const s of t.matchAll(/secrets\.(\w+)/g)) assert.equal(s[1], "GITHUB_TOKEN", "no secret but the job token");
 });
 
@@ -1577,7 +1631,7 @@ test("slicer-image: each job holds only the permissions it uses, within the plan
 test("slicer-image: every action is pinned to the exact tag release.yml or ci.yml uses", () => {
   const pins = (t) => {
     const out = {};
-    for (const [, u] of t.matchAll(/uses: (\S+)/g)) {
+    for (const [, u] of t.matchAll(/uses: (\S+ # \S+)/g)) {
       const [name, tag] = u.split("@");
       (out[name] ??= new Set()).add(tag);
     }
@@ -1590,7 +1644,7 @@ test("slicer-image: every action is pinned to the exact tag release.yml or ci.ym
   for (const [name, tags] of Object.entries(ours)) {
     assert.equal(tags.size, 1, `${name} at one tag: ${[...tags].join(", ")}`);
     const [tag] = tags;
-    assert.match(tag, /^v\d+\.\d+\.\d+$/, `${name}@${tag} is not an exact release tag`);
+    assert.match(tag, /^[0-9a-f]{40} # v\d+\.\d+\.\d+$/, `${name}@${tag} is not a commit SHA with its release tag`);
     const theirs = release[name] ?? ci[name];
     assert.ok(theirs, `${name} is used by release.yml or ci.yml`);
     assert.deepEqual([...theirs], [tag], `${name} at the tag ${release[name] ? "release.yml" : "ci.yml"} uses`);
@@ -1599,7 +1653,7 @@ test("slicer-image: every action is pinned to the exact tag release.yml or ci.ym
 
 test("slicer-image: jobs run on ubuntu-24.04 with timeouts, chained with !cancelled()", () => {
   const t = slicerText();
-  for (const id of ["detect", "build", "report-failure"]) {
+  for (const id of ["detect", "build", "stable", "report-failure"]) {
     const b = jobBlock(t, id);
     assert.match(b, /\n {4}runs-on: ubuntu-24\.04\n/, `${id} runs on ubuntu-24.04`);
     const m = b.match(/\n {4}timeout-minutes: (\d+)\n/);
@@ -1614,12 +1668,18 @@ test("slicer-image: jobs run on ubuntu-24.04 with timeouts, chained with !cancel
     "build runs only after detect succeeded and said to build",
   );
   const report = jobBlock(t, "report-failure");
-  assert.match(report, /\n {4}needs: \[detect, build\]\n/);
+  assert.match(report, /\n {4}needs: \[gate, detect, build, stable\]\n/);
   assert.ok(
-    report.includes("if: ${{ !cancelled() && (needs.detect.result == 'failure' || needs.build.result == 'failure') }}"),
-    "the report runs when either job failed",
+    report.includes(
+      "if: ${{ always() && (needs.gate.result == 'failure' || needs.detect.result == 'failure' || needs.build.result == 'failure' || needs.stable.result == 'failure' || (github.event_name == 'push' && (needs.gate.result == 'cancelled' || needs.detect.result == 'cancelled' || needs.build.result == 'cancelled' || needs.stable.result == 'cancelled'))) }}",
+    ),
+    "the report runs when a job failed, or was cancelled on a push (issue #451)",
   );
-  assert.match(t, /\nconcurrency:\n {2}group: slicer-image\n {2}cancel-in-progress: false\n/, "no publish is cancelled part way");
+  // Issue #451: each ref has its own group, so a tag run is never the pending
+  // run another trigger replaces; only moving stable is serialised across refs.
+  assert.match(t, /\nconcurrency:\n {2}group: slicer-image-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: false\n/, "no publish is cancelled part way, and each ref has its own group");
+  assert.match(jobBlock(t, "stable"), /\n {4}concurrency:\n {6}group: slicer-image-stable\n {6}cancel-in-progress: false\n/, "stable moves one run at a time");
+  assert.equal([...t.matchAll(/^\s*concurrency:/gm)].length, 2, "the workflow and the stable job only");
   assert.doesNotMatch(t, /[^\x00-\x7F]/, "ASCII only");
 });
 
@@ -1630,12 +1690,22 @@ const GH_RELEASES_STUB = [
   '  echo "gh $*" >> "$CALLS"',
   '  if [ "${GH_STATUS:-0}" != 0 ]; then echo "gh: Not Found (HTTP 404)" >&2; return "$GH_STATUS"; fi',
   '  case "$2" in',
+  // The repository's tags (the release gate's live check); by default only the ref's own.
+  '    --paginate) printf "%s" "${MATCHING_REFS-$REF}" ;;',
   '    repos/OrcaSlicer/OrcaSlicer/releases/latest) printf "%s" "$LATEST" ;;',
   '    repos/OrcaSlicer/OrcaSlicer/releases/tags/*) printf "%s" "$BYTAG" ;;',
   "    *) return 99 ;;",
   "  esac",
   "}",
 ];
+// The pick step runs .github/scripts/release-gate.mjs from its cwd; copying it
+// (and rc-target.mjs, which it imports) keeps the step out of the repo root.
+const withGateScripts = (work) => {
+  mkdirSync(join(work, ".github", "scripts"), { recursive: true });
+  const to = join(work, ".github", "scripts");
+  copyFileSync(join(ROOT, ".github", "scripts", "release-gate.mjs"), join(to, "release-gate.mjs"));
+  copyFileSync(join(ROOT, ".github", "scripts", "rc-target.mjs"), join(to, "rc-target.mjs"));
+};
 const release = (tag, extra = {}) => JSON.stringify({ tag_name: tag, draft: false, prerelease: false, assets: [], ...extra });
 
 for (const [name, env, want] of [
@@ -1668,7 +1738,7 @@ for (const [name, env, want] of [
   ["a failed API call fails the step", { EVENT: "schedule", GH_STATUS: "1" }, { fail: /HTTP 404/ }],
 ]) {
   test(`slicer-image version pick: ${name}`, () => {
-    const r = runSlicerStep("detect", "Pick the version", { stubs: GH_RELEASES_STUB, env: { REF: "refs/heads/main", ...env } });
+    const r = runSlicerStep("detect", "Pick the version", { setup: withGateScripts, stubs: GH_RELEASES_STUB, env: { REF: "refs/heads/main", ...env } });
     if (want.fail) {
       assert.notEqual(r.status, 0, r.log);
       assert.match(r.log, want.fail);
@@ -1679,10 +1749,54 @@ for (const [name, env, want] of [
       assert.equal(r.status, 0, r.log);
       assert.equal(r.outputs.version, want.version);
       assert.equal(r.outputs.stable, want.stable, "whether stable moves");
+      assert.equal(r.outputs.orca, want.stable, "orca-X.Y.Z moves exactly when stable does: a prerelease tag moves neither");
       assert.match(r.calls, new RegExp(`^gh api repos/OrcaSlicer/OrcaSlicer/${want.call.replace(/\./g, "\\.")}$`, "m"));
     }
   });
 }
+
+// A plain tag below a higher release (a backport) builds and gets its version
+// tags but never moves stable, and a failed tag lookup fails the step.
+test("slicer-image version pick: a backport tag leaves stable alone but still builds", () => {
+  const r = runSlicerStep("detect", "Pick the version", {
+    setup: withGateScripts,
+    stubs: GH_RELEASES_STUB,
+    env: { EVENT: "push", REF: "refs/tags/v0.1.2", LATEST: release("v2.5.1"), MATCHING_REFS: "refs/tags/v0.2.0\nrefs/tags/v0.1.2\n" },
+  });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(r.outputs.stable, "false");
+  assert.equal(r.outputs.orca, "false", "orca-X.Y.Z moves exactly when stable does");
+  assert.equal(r.outputs.release, "0.1.2");
+});
+
+test("slicer-image version pick: a daily run and a run from main never look at the repository's tags", () => {
+  for (const env of [{ EVENT: "schedule", REF: "refs/heads/main" }, { EVENT: "workflow_dispatch", INPUT_VERSION: "", REF: "refs/heads/main" }]) {
+    const r = runSlicerStep("detect", "Pick the version", { setup: withGateScripts, stubs: GH_RELEASES_STUB, env: { LATEST: release("v2.5.1"), ...env } });
+    assert.equal(r.status, 0, r.log);
+    assert.doesNotMatch(r.calls, /matching-refs/);
+    assert.equal(r.outputs.stable, "true");
+  }
+});
+
+test("slicer-image version pick: a dispatch from a backport tag leaves stable alone", () => {
+  const r = runSlicerStep("detect", "Pick the version", {
+    setup: withGateScripts,
+    stubs: GH_RELEASES_STUB,
+    env: { EVENT: "workflow_dispatch", INPUT_VERSION: "", REF: "refs/tags/v0.1.2", LATEST: release("v2.5.1"), MATCHING_REFS: "refs/tags/v0.2.0\nrefs/tags/v0.1.2\n" },
+  });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(r.outputs.stable, "false");
+});
+
+test("slicer-image version pick: a failed tag lookup on a plain tag fails the step, never moves stable", () => {
+  const r = runSlicerStep("detect", "Pick the version", {
+    setup: withGateScripts,
+    stubs: ["gh() { echo boom >&2; return 1; }"],
+    env: { EVENT: "push", REF: "refs/tags/v0.1.0", GITHUB_REPOSITORY: "o/r" },
+  });
+  assert.notEqual(r.status, 0, r.log);
+  assert.equal(r.outputs.stable, undefined);
+});
 
 // The release's version tag (PR #360): a run started from a release tag, by
 // a push, a re-run of it or a run by hand from it, tags the image with the
@@ -1699,7 +1813,7 @@ for (const [name, env, want] of [
   ["a daily run", { EVENT: "schedule", REF: "refs/heads/main" }, ""],
 ]) {
   test(`slicer-image version pick: the release version for ${name} is '${want}'`, () => {
-    const r = runSlicerStep("detect", "Pick the version", { stubs: GH_RELEASES_STUB, env: { LATEST: release("v2.5.1"), ...env } });
+    const r = runSlicerStep("detect", "Pick the version", { setup: withGateScripts, stubs: GH_RELEASES_STUB, env: { LATEST: release("v2.5.1"), ...env } });
     assert.equal(r.status, 0, r.log);
     assert.equal(r.outputs.release, want);
   });
@@ -1881,8 +1995,12 @@ test("slicer-image: detect logs in to GHCR on daily runs only, and hands its sta
   const login = stepBlock(detect, "Log in to GHCR");
   assert.match(login, /\n {8}if: \$\{\{ github\.event_name == 'schedule' \}\}\n/);
   assert.ok(detect.includes("\n      stable: ${{ steps.pick.outputs.stable }}\n"), "detect outputs stable");
-  const tag = stepBlock(jobBlock(slicerText(), "build"), "Tag the image and move stable");
+  const stable = jobBlock(slicerText(), "stable");
+  assert.ok(stable.includes("needs.detect.outputs.stable == 'true'"), "the stable job runs on detect's decision");
+  const tag = stepBlock(jobBlock(slicerText(), "build"), "Tag the image");
+  // The tag step checks the decision, so an empty one fails the build instead of skipping stable silently.
   assert.match(tag, /\n {10}MOVE_STABLE: \$\{\{ needs\.detect\.outputs\.stable \}\}\n/);
+  assert.doesNotMatch(tag, /:stable/, "the tag step never moves stable");
   assert.ok(detect.includes("\n      release: ${{ steps.pick.outputs.release }}\n"), "detect outputs release");
   assert.match(tag, /\n {10}RELEASE: \$\{\{ needs\.detect\.outputs\.release \}\}\n/);
 });
@@ -1939,7 +2057,7 @@ test("slicer-image: both builds pass ORCA_VERSION, ORCA_SHA256 and ORCA_SRC_SHA 
     assert.equal(inputs.file, "apps/slicer/Dockerfile");
     assert.equal(inputs.context, ".");
     assert.equal(inputs.platforms, "linux/amd64", "amd64 only");
-    assert.equal(inputs.provenance, "false", "no build attestation (AC-094)");
+    assert.equal(inputs.provenance, "false", "no build attestation");
     // stepInputs stops at the multi-line build-args, so the cache lines are
     // read directly.
     assert.match(b, /\n {10}cache-from: type=gha,scope=slicer-image\n/);
@@ -1964,6 +2082,119 @@ test("slicer-image: both builds pass ORCA_VERSION, ORCA_SHA256 and ORCA_SRC_SHA 
   }
 });
 
+// The slicer image's OCI labels (the 0.1.1-rc.1 live check): its
+// org.opencontainers.image.version read 24.04, inherited from the Ubuntu
+// base, and its revision was empty. Both builds now take the labels
+// docker/metadata-action computes, as release.yml's app image does (issue
+// #317): the version is the release's on a run from a release tag (the
+// semver entry, as in release.yml) and the Orca version on any other run
+// (the raw entry, enabled only when detect found no release tag). The title
+// and description are the slicer's own, not the repository's.
+const SLICER_LABELS = "Labels for this image";
+const SLICER_LABEL_CHECK = "Check the labels";
+
+test("slicer-image labels: both builds carry metadata-action's labels, the version from the release tag or the Orca version", () => {
+  const job = jobBlock(slicerText(), "build");
+  const step = stepBlock(job, SLICER_LABELS);
+  assert.match(step, /\n {8}id: labels\n/);
+  assert.match(step, /\n {8}uses: docker\/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6\.2\.0\n/, "the action and tag release.yml uses");
+  assert.match(step, /\n {10}images: \$\{\{ env\.IMAGE \}\}\n/);
+  const block = (key) => {
+    const m = step.match(new RegExp(`\\n {10}${key}: \\|\\n((?: {12}.+\\n)+)`));
+    assert.ok(m, `${key}: | in\n${step}`);
+    return m[1].trimEnd().split("\n").map((l) => l.trim());
+  };
+  assert.deepEqual(block("tags"), [
+    "type=semver,pattern={{version}}",
+    "type=raw,value=${{ needs.detect.outputs.version }},enable=${{ needs.detect.outputs.release == '' }}",
+  ]);
+  const labels = block("labels");
+  assert.deepEqual(
+    labels.map((l) => l.split("=")[0]),
+    ["org.opencontainers.image.title", "org.opencontainers.image.description"],
+  );
+  assert.equal(labels[0], "org.opencontainers.image.title=platehouse-slicer");
+  assert.doesNotMatch(step, /\n {8}(if|continue-on-error):/);
+  const builds = jobSteps(job).filter((s) => /\n {8}uses: docker\/build-push-action@/.test(s));
+  assert.equal(builds.length, 2);
+  for (const b of builds) {
+    assert.equal(stepInputs(b).inputs.labels, "${{ steps.labels.outputs.labels }}", "the same labels on the tested build and the push");
+  }
+  const steps = jobSteps(job);
+  const at = (name) => steps.findIndex((s) => s.startsWith(`      - name: ${name}\n`));
+  assert.ok(at(SLICER_LABELS) < at("Build (load)"), "the labels are computed before the first build");
+});
+
+test("slicer-image labels: the loaded image's labels are checked after the smoke slice and before anything is pushed", () => {
+  const job = jobBlock(slicerText(), "build");
+  const step = stepBlock(job, SLICER_LABEL_CHECK);
+  assert.match(step, /\n {8}id: labelcheck\n/);
+  assert.doesNotMatch(step, /\n {8}(if|continue-on-error):/, "nothing softens the check");
+  assert.match(step, /\n {10}LABELS_VERSION: \$\{\{ steps\.labels\.outputs\.version \}\}\n/);
+  assert.match(step, /\n {10}RELEASE: \$\{\{ needs\.detect\.outputs\.release \}\}\n/);
+  assert.match(stepScript(job, SLICER_LABEL_CHECK), /docker\/check-image-labels\.sh local "\$LOCAL" "\$want" "\$GITHUB_SHA"/);
+  const ids = stepIds(job);
+  assert.ok(ids.indexOf("smoke") < ids.indexOf("labelcheck"), "after the smoke slice");
+  assert.ok(ids.indexOf("labelcheck") < ids.indexOf("login"), "before the login");
+  assert.ok(ids.indexOf("labelcheck") < ids.indexOf("push"), "before the push");
+});
+
+// The check step, run in bash at the repo root with a stub docker (exported,
+// so docker/check-image-labels.sh, a script of its own, runs it too) that
+// answers the loaded image's labels.
+const SLICER_SOURCE = "https://github.com/jonathanmcohen/platehouse";
+const SLICER_REVISION = "0123456789abcdef0123456789abcdef01234567";
+const slicerLabels = (version, over = {}) => ({
+  "org.opencontainers.image.created": "2026-11-22T05:00:00.000Z",
+  "org.opencontainers.image.description": "OrcaSlicer and OpenSCAD behind the Platehouse slicer API",
+  "org.opencontainers.image.licenses": "AGPL-3.0",
+  "org.opencontainers.image.revision": SLICER_REVISION,
+  "org.opencontainers.image.source": SLICER_SOURCE,
+  "org.opencontainers.image.title": "platehouse-slicer",
+  "org.opencontainers.image.url": SLICER_SOURCE,
+  "org.opencontainers.image.version": version,
+  ...over,
+});
+// The step's name is written out, not SLICER_LABEL_CHECK, so the gate's path
+// scan (STEP_RUNNERS) can read which step runs at the repo root.
+const labelCheck = (env, labels) =>
+  runSlicerStep("build", "Check the labels", {
+    cwd: ROOT,
+    stubs: [
+      `docker() { echo "docker $*" >> "$CALLS"; printf '%s' '${JSON.stringify(labels)}'; }`,
+      "export -f docker",
+    ],
+    env: {
+      LOCAL: "platehouse-slicer:smoke",
+      GITHUB_SHA: SLICER_REVISION,
+      GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_REPOSITORY: "jonathanmcohen/platehouse",
+      ...env,
+    },
+  });
+
+for (const [name, env, labels, want] of [
+  ["a release tag's run passes with the release's version", { RELEASE: "0.1.1-rc.2", VERSION: "2.5.0", LABELS_VERSION: "0.1.1-rc.2" }, slicerLabels("0.1.1-rc.2"), { ok: true }],
+  ["a daily run passes with the Orca version", { RELEASE: "", VERSION: "2.5.0", LABELS_VERSION: "2.5.0" }, slicerLabels("2.5.0"), { ok: true }],
+  ["the Ubuntu base's 24.04 fails, naming the version label", { RELEASE: "0.1.1-rc.2", VERSION: "2.5.0", LABELS_VERSION: "0.1.1-rc.2" }, slicerLabels("24.04"), { fail: /org\.opencontainers\.image\.version is '24\.04', not '0\.1\.1-rc\.2'/ }],
+  ["an empty revision fails, naming it", { RELEASE: "", VERSION: "2.5.0", LABELS_VERSION: "2.5.0" }, slicerLabels("2.5.0", { "org.opencontainers.image.revision": "" }), { fail: /org\.opencontainers\.image\.revision is '', not '0123456789abcdef/ }],
+  ["a release tag's run whose labels say the Orca version fails before docker", { RELEASE: "0.1.1-rc.2", VERSION: "2.5.0", LABELS_VERSION: "2.5.0" }, slicerLabels("2.5.0"), { fail: /gave the version '2\.5\.0', not '0\.1\.1-rc\.2'/, noDocker: true }],
+  ["no version from metadata-action fails before docker", { RELEASE: "", VERSION: "2.5.0", LABELS_VERSION: "" }, slicerLabels("2.5.0"), { fail: /gave the version '', not '2\.5\.0'/, noDocker: true }],
+]) {
+  test(`slicer-image label check: ${name}`, () => {
+    const r = labelCheck(env, labels);
+    if (want.ok) {
+      assert.equal(r.status, 0, r.log);
+      assert.match(r.calls, /^docker image inspect --format \{\{json \.Config\.Labels\}\} platehouse-slicer:smoke\n$/);
+    } else {
+      assert.notEqual(r.status, 0, r.log);
+      assert.match(r.log, want.fail);
+      if (want.noDocker) assert.equal(r.calls, "", "docker is not asked");
+      assert.match(r.logs["labelcheck.log"] ?? "", want.fail, "the step keeps its log for the failure issue");
+    }
+  });
+}
+
 // Nothing reaches the registry before the smoke slice passed, test code never
 // runs with registry credentials on disk, and no tag exists before the
 // pushed-image check passed.
@@ -1977,13 +2208,46 @@ test("slicer-image: build, smoke slice, login, push, check, then tag, in that or
   );
   const at = (id) => job.indexOf(`\n        id: ${id}\n`);
   for (let i = 1; i < order.length; i++) assert.ok(at(order[i - 1]) < at(order[i]), `${order[i - 1]} before ${order[i]}`);
-  assert.equal((slicerText().match(/docker buildx imagetools create/g) ?? []).length, 2, "the tag step alone creates tags");
-  const tag = stepBlock(job, "Tag the image and move stable");
-  assert.equal((tag.match(/docker buildx imagetools create/g) ?? []).length, 2);
+  assert.equal((slicerText().match(/docker buildx imagetools create/g) ?? []).length, 2, "the tag step and the stable job alone create tags");
+  const tag = stepBlock(job, "Tag the image");
+  assert.equal((tag.match(/docker buildx imagetools create/g) ?? []).length, 1);
   for (const id of ["smoke", "check", "tag"]) {
     const s = jobSteps(job).find((x) => x.includes(`\n        id: ${id}\n`));
     assert.doesNotMatch(s, /\n {8}(if|continue-on-error):/, `nothing softens ${id}`);
   }
+});
+
+// New OrcaSlicer versions pass the whole container suite before anything is
+// published (issue #440): the smoke step stays as it is, and a step after it
+// fetches the STEP sample and runs every container test against the built image.
+test("slicer-image: the whole container suite runs on the built image before anything is pushed (issue #440)", () => {
+  const job = jobBlock(slicerText(), "build");
+  const steps = jobSteps(job);
+  const at = (name) => steps.findIndex((s) => s.startsWith(`      - name: ${name}\n`));
+  // Comment lines between steps belong to the step before; drop them.
+  const code = (b) => b.split("\n").filter((l) => !/^ {6}#/.test(l)).join("\n").trimEnd();
+  const fetchStep = code(stepBlock(job, "Fetch the STEP sample"));
+  const ciFetch = code(stepBlock(jobBlock(text(), "slicer-image"), "Fetch the STEP sample"));
+  assert.equal(fetchStep, ciFetch, "the STEP sample is fetched exactly as ci.yml does");
+  const suite = stepBlock(job, "Whole container suite");
+  assert.match(suite, /\n {10}SLICER_IMAGE: \$\{\{ env\.LOCAL \}\}\n/);
+  assert.match(suite, /\n {10}SLICER_IMAGE_PREBUILT: "1"\n/);
+  // The suite checks the image reports the Orca version this run built, not
+  // the Dockerfile's pin (apps/slicer/test/support/orca-version.ts).
+  assert.match(suite, /\n {10}EXPECTED_ORCA_VERSION: \$\{\{ needs\.detect\.outputs\.version \}\}\n/);
+  assert.match(suite, /vitest run --project container --reporter=default --reporter=json --outputFile=suite-report\.json/);
+  assert.doesNotMatch(suite, /vitest run --project container \S*\.test\.ts/, "no file filter");
+  assert.match(suite, /No tests ran \(vitest wrote no report\)/);
+  assert.match(suite, /if \[ "\$ran" -eq 0 \]/);
+  assert.doesNotMatch(suite, /\n {8}(if|continue-on-error):/);
+  assert.ok(at("Smoke slice") < at("Fetch the STEP sample"), "after the smoke slice");
+  assert.ok(at("Fetch the STEP sample") < at("Whole container suite"), "the sample is fetched first");
+  for (const later of [SLICER_TRIVY, "Log in to GHCR", "Push by digest", "Tag the image"]) {
+    assert.ok(at("Whole container suite") < at(later), `before ${later}`);
+  }
+  // The smoke step keeps force_fail.
+  assert.match(stepBlock(job, "Smoke slice"), /FORCE_FAIL: \$\{\{ inputs\.force_fail \}\}/);
+  assert.doesNotMatch(suite, /FORCE_FAIL/);
 });
 
 // The pushed-image check, as in release.yml: manifest digests from the digest
@@ -2034,9 +2298,9 @@ const DOCKER_TAG_STUB = [
 const IMG = "ghcr.io/jonathanmcohen/platehouse-slicer";
 const DIGEST = `sha256:${sha("d")}`;
 const tagRun = (env) =>
-  runSlicerStep("build", "Tag the image and move stable", {
+  runSlicerStep("build", "Tag the image", {
     stubs: DOCKER_TAG_STUB,
-    env: { VERSION: "2.5.1", RUN_NUMBER: "42", RUN_ATTEMPT: "1", MOVE_STABLE: "true", RELEASE: "", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_STABLE: DIGEST, D_RELEASE: DIGEST, ...env },
+    env: { VERSION: "2.5.1", RUN_NUMBER: "42", RUN_ATTEMPT: "1", MOVE_ORCA: "true", MOVE_STABLE: "true", RELEASE: "", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_RELEASE: DIGEST, ...env },
   });
 
 // Issue #221: a re-run keeps github.run_number, so attempt 1 keeps
@@ -2052,9 +2316,9 @@ test("slicer-image tag: a re-run tags orca-X.Y.Z-r<run>.<attempt>, never the fir
     `docker buildx imagetools inspect ${IMG}:orca-2.5.1-r42.2 --format {{.Manifest.Digest}}`,
   ]);
   assert.doesNotMatch(r.calls, /orca-2\.5\.1-r42 /, "the first attempt's tag is not touched");
-  assert.equal(r.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42.2, stable");
-  assert.match(r.summary, /- tags: orca-2\.5\.1, orca-2\.5\.1-r42\.2, stable/);
-  assert.equal(tagRun({ RUN_ATTEMPT: "10" }).outputs.tagged, "orca-2.5.1, orca-2.5.1-r42.10, stable");
+  assert.equal(r.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42.2");
+  assert.match(r.summary, /- tags: orca-2\.5\.1, orca-2\.5\.1-r42\.2\n/);
+  assert.equal(tagRun({ RUN_ATTEMPT: "10" }).outputs.tagged, "orca-2.5.1, orca-2.5.1-r42.10");
 });
 
 test("slicer-image tag: a missing or malformed run attempt tags nothing", () => {
@@ -2068,11 +2332,11 @@ test("slicer-image tag: a missing or malformed run attempt tags nothing", () => 
 });
 
 test("slicer-image tag: the step reads the run attempt from github.run_attempt", () => {
-  const tag = stepBlock(jobBlock(slicerText(), "build"), "Tag the image and move stable");
+  const tag = stepBlock(jobBlock(slicerText(), "build"), "Tag the image");
   assert.match(tag, /\n {10}RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}\n/);
 });
 
-test("slicer-image tag: version tags, then stable, every one a carbon copy of the tested digest", () => {
+test("slicer-image tag: the version tags are carbon copies of the tested digest, and stable is left to its own job", () => {
   const r = tagRun({});
   assert.equal(r.status, 0, r.log);
   const calls = r.calls.trim().split("\n");
@@ -2080,16 +2344,15 @@ test("slicer-image tag: version tags, then stable, every one a carbon copy of th
     `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1 -t ${IMG}:orca-2.5.1-r42 ${IMG}@${DIGEST}`,
     `docker buildx imagetools inspect ${IMG}:orca-2.5.1 --format {{.Manifest.Digest}}`,
     `docker buildx imagetools inspect ${IMG}:orca-2.5.1-r42 --format {{.Manifest.Digest}}`,
-    `docker buildx imagetools create --prefer-index=false -t ${IMG}:stable ${IMG}@${DIGEST}`,
-    `docker buildx imagetools inspect ${IMG}:stable --format {{.Manifest.Digest}}`,
   ]);
-  assert.match(r.summary, new RegExp(`orca-2\\.5\\.1, orca-2\\.5\\.1-r42, stable`));
+  assert.doesNotMatch(r.calls, /:stable/, "the tag step never touches stable");
+  assert.match(r.summary, /- tags: orca-2\.5\.1, orca-2\.5\.1-r42\n/);
 });
 
 // The release's version tag goes in the same create as the orca tags, is
 // read back, and is listed in tagged for the failure issue.
 test("slicer-image tag: a run from a release tag also tags the release's version, read back", () => {
-  const r = tagRun({ MOVE_STABLE: "false", RELEASE: "0.2.0-rc.1" });
+  const r = tagRun({ RELEASE: "0.2.0-rc.1" });
   assert.equal(r.status, 0, r.log);
   assert.deepEqual(r.calls.trim().split("\n"), [
     `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1 -t ${IMG}:orca-2.5.1-r42 -t ${IMG}:0.2.0-rc.1 ${IMG}@${DIGEST}`,
@@ -2101,15 +2364,14 @@ test("slicer-image tag: a run from a release tag also tags the release's version
   assert.match(r.summary, /- tags: orca-2\.5\.1, orca-2\.5\.1-r42, 0\.2\.0-rc\.1\n/);
   const plain = tagRun({ RELEASE: "0.2.0" });
   assert.equal(plain.status, 0, plain.log);
-  assert.equal(plain.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42, 0.2.0, stable");
+  assert.equal(plain.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42, 0.2.0");
 });
 
 test("slicer-image tag: the release's version tag read back at another digest fails", () => {
   const r = tagRun({ RELEASE: "0.2.0-rc.1", D_RELEASE: `sha256:${sha("e")}` });
   assert.notEqual(r.status, 0, r.log);
   assert.match(r.log, /::error::.*:0\.2\.0-rc\.1 is sha256:e+, not/);
-  assert.doesNotMatch(r.calls, /:stable/, "stable is not moved after a failed readback");
-  assert.equal(r.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42, 0.2.0-rc.1");
+    assert.equal(r.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42, 0.2.0-rc.1");
 });
 
 for (const release of ["v0.2.0", "0.2", "0.2.0;id", "01.2.0", "0.2.0 -t x", `0.2.0-${"a".repeat(130)}`]) {
@@ -2122,29 +2384,73 @@ for (const release of ["v0.2.0", "0.2", "0.2.0;id", "01.2.0", "0.2.0 -t x", `0.2
   });
 }
 
-test("slicer-image tag: a prerelease tag's run pushes the version tags and leaves stable alone", () => {
-  const r = tagRun({ MOVE_STABLE: "false" });
+test("slicer-image tag: a prerelease tag's run pushes the run tag and the release version and leaves orca-X.Y.Z and stable alone", () => {
+  const r = tagRun({ MOVE_ORCA: "false", RELEASE: "0.2.0-rc.1" });
   assert.equal(r.status, 0, r.log);
   assert.deepEqual(r.calls.trim().split("\n"), [
-    `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1 -t ${IMG}:orca-2.5.1-r42 ${IMG}@${DIGEST}`,
-    `docker buildx imagetools inspect ${IMG}:orca-2.5.1 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1-r42 -t ${IMG}:0.2.0-rc.1 ${IMG}@${DIGEST}`,
     `docker buildx imagetools inspect ${IMG}:orca-2.5.1-r42 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools inspect ${IMG}:0.2.0-rc.1 --format {{.Manifest.Digest}}`,
   ]);
   assert.doesNotMatch(r.calls, /:stable/, "stable is neither moved nor read");
-  assert.match(r.summary, /- tags: orca-2\.5\.1, orca-2\.5\.1-r42\n- stable not moved \(prerelease tag\)/);
-  // The daily run will not promote it either, so the summary says what will.
-  assert.match(r.summary, /daily run will not move it/);
+  assert.doesNotMatch(r.calls, /:orca-2\.5\.1[ \n]/, "orca-X.Y.Z is neither moved nor read");
+  assert.match(r.summary, /- tags: orca-2\.5\.1-r42, 0\.2\.0-rc\.1\n- orca-2\.5\.1 and stable not moved \(a prerelease tag, or a release below the highest one\)/);
+  // The summary says what will move them.
+  assert.match(r.summary, /next daily run builds orca-2\.5\.1 if it does not exist yet/);
   assert.match(r.summary, /plain release tag or a run by hand/);
 });
+
+// Issue #435: an rc tag's run built the latest Orca release and moved
+// orca-X.Y.Z, which a deployment pins, onto the rc's slicer. A prerelease tag
+// now leaves orca-X.Y.Z alone as well as stable; a plain release tag, a run by
+// hand and the daily run move it as before.
+test("slicer-image: detect decides whether orca-X.Y.Z moves, and the tag step reads it (issue #435)", () => {
+  const detect = jobBlock(slicerText(), "detect");
+  assert.ok(detect.includes("\n      orca: ${{ steps.pick.outputs.orca }}\n"), "detect outputs orca");
+  const pick = stepBlock(detect, "Pick the version");
+  assert.match(pick, /echo "orca=\$\{orca\}" >>"\$GITHUB_OUTPUT"/, "the pick step writes orca= to GITHUB_OUTPUT");
+  const prerelease = pick.slice(pick.indexOf("stable=false"));
+  assert.match(prerelease.slice(0, prerelease.indexOf("fi")), /orca=false/, "the prerelease branch sets orca=false");
+  const tag = stepBlock(jobBlock(slicerText(), "build"), "Tag the image");
+  assert.match(tag, /\n {10}MOVE_ORCA: \$\{\{ needs\.detect\.outputs\.orca \}\}\n/);
+  assert.doesNotMatch(tag, /-t "\$\{IMAGE\}:orca-\$\{VERSION\}"/, "the orca tag is never passed unconditionally");
+});
+
+test("slicer-image tag: a prerelease tag's run leaves orca-X.Y.Z alone and reads back only what it made (issue #435)", () => {
+  const r = tagRun({ MOVE_ORCA: "false", RELEASE: "0.2.0-rc.1" });
+  assert.equal(r.status, 0, r.log);
+  assert.deepEqual(r.calls.trim().split("\n"), [
+    `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1-r42 -t ${IMG}:0.2.0-rc.1 ${IMG}@${DIGEST}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1-r42 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools inspect ${IMG}:0.2.0-rc.1 --format {{.Manifest.Digest}}`,
+  ]);
+  assert.equal(r.outputs.tagged, "orca-2.5.1-r42, 0.2.0-rc.1");
+  assert.match(r.summary, /- tags: orca-2\.5\.1-r42, 0\.2\.0-rc\.1\n/);
+});
+
+test("slicer-image tag: a plain release tag's run still moves orca-X.Y.Z", () => {
+  const r = tagRun({ MOVE_ORCA: "true", RELEASE: "0.2.0" });
+  assert.equal(r.status, 0, r.log);
+  assert.match(r.calls, new RegExp(`-t ${IMG}:orca-2\\.5\\.1 -t ${IMG}:orca-2\\.5\\.1-r42 -t ${IMG}:0\\.2\\.0 `));
+  assert.equal(r.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42, 0.2.0");
+});
+
+for (const bad of ["", "yes"]) {
+  test(`slicer-image tag: an orca decision of '${bad}' from detect tags nothing`, () => {
+    const r = tagRun({ MOVE_ORCA: bad });
+    assert.notEqual(r.status, 0, r.log);
+    assert.match(r.log, /::error::detect gave no orca decision/);
+    assert.equal(r.calls, "", "no docker call");
+  });
+}
 
 // The tags the step pointed (or was pointing) at the digest, as the output the
 // failure issue reads. Each is recorded before its imagetools create, so a
 // create that fails part way still counts.
 for (const [name, env, want] of [
-  ["a full run records every tag", {}, "orca-2.5.1, orca-2.5.1-r42, stable"],
-  ["a prerelease run records the two version tags", { MOVE_STABLE: "false" }, "orca-2.5.1, orca-2.5.1-r42"],
+  ["a full run records every tag", {}, "orca-2.5.1, orca-2.5.1-r42"],
+  ["a prerelease run records the run tag and the release version", { MOVE_ORCA: "false", RELEASE: "0.2.0-rc.1" }, "orca-2.5.1-r42, 0.2.0-rc.1"],
   ["a version tag read back wrong records the two version tags", { D_ORCA: `sha256:${sha("e")}` }, "orca-2.5.1, orca-2.5.1-r42"],
-  ["stable read back wrong records stable too", { D_STABLE: `sha256:${sha("e")}` }, "orca-2.5.1, orca-2.5.1-r42, stable"],
   ["no digest records nothing", { DIGEST: "" }, undefined],
   ["no stable decision records nothing", { MOVE_STABLE: "" }, undefined],
 ]) {
@@ -2161,7 +2467,10 @@ test("slicer-image: the build job hands the tags and digest to the failure issue
   assert.ok(build.includes("\n      tagged: ${{ steps.tag.outputs.tagged }}\n"), "build outputs tagged");
   assert.ok(build.includes("\n      digest: ${{ steps.push.outputs.digest }}\n"), "build outputs digest");
   const issue = stepBlock(jobBlock(t, "report-failure"), "Open or update the issue");
-  assert.match(issue, /\n {10}TAGGED: \$\{\{ needs\.build\.outputs\.tagged \}\}\n/);
+  assert.ok(
+    issue.includes("\n          TAGGED: ${{ needs.stable.outputs.tagged || needs.build.outputs.tagged }}\n"),
+    "the stable job's list, which ends with stable, wins once it began",
+  );
   assert.match(issue, /\n {10}DIGEST: \$\{\{ needs\.build\.outputs\.digest \}\}\n/);
   assert.match(issue, /\n {10}STABLE: \$\{\{ needs\.detect\.outputs\.stable \}\}\n/);
 });
@@ -2169,7 +2478,6 @@ test("slicer-image: the build job hands the tags and digest to the failure issue
 for (const [name, env, want] of [
   ["a version tag read back at another digest leaves stable alone", { D_ORCA: `sha256:${sha("e")}` }, { stable: false }],
   ["a run tag read back at another digest leaves stable alone", { D_RUN: `sha256:${sha("e")}` }, { stable: false }],
-  ["stable read back at another digest fails", { D_STABLE: `sha256:${sha("e")}` }, { stable: true }],
   ["no digest fails before any tag", { DIGEST: "" }, { stable: false, noCall: true }],
   ["a malformed version fails before any tag", { VERSION: "2.5.1-beta" }, { stable: false, noCall: true }],
   ["no stable decision from detect fails before any tag", { MOVE_STABLE: "" }, { stable: false, noCall: true }],
@@ -2181,6 +2489,91 @@ for (const [name, env, want] of [
     assert.match(r.log, /::error::/);
     assert.equal(r.calls.includes(`-t ${IMG}:stable`), want.stable, "whether stable was moved");
     if (want.noCall) assert.equal(r.calls, "", "no docker call");
+  });
+}
+
+// Issue #451: stable moves in a job of its own, after the build and the tags,
+// in a group shared by every ref, so two runs never move it together while a
+// tag run no longer waits behind (or replaces) a scheduled one.
+test("slicer-image: the stable job runs after a successful build that detect said moves stable (issue #451)", () => {
+  const stable = jobBlock(slicerText(), "stable");
+  assert.match(stable, /\n {4}needs: \[detect, build\]\n/);
+  assert.ok(
+    stable.includes("if: ${{ !cancelled() && needs.build.result == 'success' && needs.detect.outputs.stable == 'true' }}"),
+    "only after the build succeeded, and only when detect says stable moves",
+  );
+  const move = stepBlock(stable, "Move stable");
+  assert.match(move, /\n {10}DIGEST: \$\{\{ needs\.build\.outputs\.digest \}\}\n/);
+  assert.ok(stepIds(stable).indexOf("login") < stepIds(stable).indexOf("move"), "log in before the move");
+  assert.equal((stable.match(/docker buildx imagetools create/g) ?? []).length, 1, "one create, for stable");
+  assert.doesNotMatch(move, /\n {8}continue-on-error:/, "nothing softens the move");
+  assert.match(move, /\n {8}if: \$\{\{ steps\.recheck\.outputs\.move != 'false' \}\}\n/, "only the live highest-release check can skip it");
+  // A failed move keeps its log tail for the issue, as the build does.
+  assert.match(stepBlock(stable, "Keep the failing step's log tail"), /failure\/stable\.txt/);
+  assert.match(stepBlock(stable, "Upload the log tail"), /\n {10}name: failure-stable\n {10}path: failure\/stable\.txt\n/);
+  const issue = stepBlock(jobBlock(slicerText(), "report-failure"), "Open or update the issue");
+  assert.ok(issue.includes("failure/detect.txt failure/build.txt failure/stable.txt"), "the issue reads the stable tail");
+});
+
+const stableRun = (env) =>
+  runSlicerStep("stable", "Move stable", {
+    stubs: DOCKER_TAG_STUB,
+    env: { DIGEST, BUILD_TAGGED: "orca-2.5.1, orca-2.5.1-r42", D_STABLE: DIGEST, ...env },
+  });
+
+test("slicer-image stable: stable becomes a carbon copy of the tested digest, read back, and is listed for the failure issue", () => {
+  const r = stableRun({});
+  assert.equal(r.status, 0, r.log);
+  assert.deepEqual(r.calls.trim().split("\n"), [
+    `docker buildx imagetools create --prefer-index=false -t ${IMG}:stable ${IMG}@${DIGEST}`,
+    `docker buildx imagetools inspect ${IMG}:stable --format {{.Manifest.Digest}}`,
+  ]);
+  assert.equal(r.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42, stable");
+  assert.match(r.summary, new RegExp(`stable now points at \`${DIGEST}\``));
+});
+
+// The recheck, from the live tags just before stable moves: a tag run moves
+// stable only while it is still the highest release.
+const recheck = (env) =>
+  runSlicerStep("stable", "Still the highest release", {
+    cwd: ROOT,
+    stubs: GH_RELEASES_STUB,
+    env: { TAG: "v0.2.0", REPO: "o/r", ...env },
+  });
+
+test("slicer-image stable: the recheck lets the highest release move stable", () => {
+  const r = recheck({ MATCHING_REFS: "refs/tags/v0.1.0\nrefs/tags/v0.2.0\nrefs/tags/v0.3.0-rc.1\n" });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(r.outputs.move, "true");
+});
+
+test("slicer-image stable: the recheck stops a tag a higher release has passed since detect", () => {
+  const r = recheck({ MATCHING_REFS: "refs/tags/v0.2.0\nrefs/tags/v0.3.0\n" });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(r.outputs.move, "false");
+  assert.match(r.log, /no longer the highest release/);
+});
+
+test("slicer-image stable: a failed tag lookup fails the recheck, so nothing moves", () => {
+  const r = recheck({ GH_STATUS: "1" });
+  assert.notEqual(r.status, 0, r.log);
+  assert.equal(r.outputs.move, undefined);
+});
+
+test("slicer-image stable: stable read back at another digest fails, and is still listed as touched", () => {
+  const r = stableRun({ D_STABLE: `sha256:${sha("e")}` });
+  assert.notEqual(r.status, 0, r.log);
+  assert.match(r.log, /::error::.*:stable is sha256:e+, not/);
+  assert.equal(r.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42, stable");
+});
+
+for (const digest of ["", "sha256:abc", `${DIGEST};id`]) {
+  test(`slicer-image stable: a digest of '${digest.slice(0, 12)}' moves nothing`, () => {
+    const r = stableRun({ DIGEST: digest });
+    assert.notEqual(r.status, 0, r.log);
+    assert.match(r.log, /::error::/);
+    assert.equal(r.calls, "", "no docker call");
+    assert.equal(r.outputs.tagged, undefined);
   });
 }
 
@@ -2356,9 +2749,56 @@ test("slicer-image issue: opens 'Slicer image failed for OrcaSlicer X.Y.Z' with 
   assert.match(body, /or let the next daily run retry it\./);
 });
 
+// Issue #451: a job cancelled on a release tag's push leaves the release
+// without its slicer image, so the issue says so; a plain failure does not.
+test("slicer-image issue: a cancelled job is named, and a plain failure does not mention cancelling (issue #451)", () => {
+  const cancelled = reportRun({ EVENT: "push", CANCELLED: "true" });
+  assert.equal(cancelled.status, 0, cancelled.log);
+  assert.match(cancelled.files["posted.md"], /A job of this run was cancelled, by a person or by GitHub/);
+  assert.match(cancelled.files["posted.md"], /Re-run the cancelled jobs/);
+  const failed = reportRun({ EVENT: "push", CANCELLED: "false" });
+  assert.equal(failed.status, 0, failed.log);
+  assert.doesNotMatch(failed.files["posted.md"], /was cancelled/);
+});
+
+// The release gate refusing a tag is not a failed Orca build: the issue is
+// titled for the tag and says how to get the gate to pass, without the Orca
+// version or the daily run.
+test("slicer-image issue: a refused release gate is titled for the tag and says how to fix the gate", () => {
+  for (const gate of ["failure", "cancelled"]) {
+    const r = reportRun({ EVENT: "push", GATE_RESULT: gate, REF_NAME: "v0.1.1", VERSION: "", CANCELLED: gate === "cancelled" ? "true" : "false" });
+    assert.equal(r.status, 0, r.log);
+    assert.match(
+      r.calls,
+      /^gh issue create --repo jonathanmcohen\/platehouse --title Slicer image release gate refused v0\.1\.1 --body-file body\.md$/m,
+    );
+    const body = r.files["posted.md"];
+    assert.match(body, /not on main or a release\/ branch/);
+    assert.match(body, /no successful push or dispatch ci run/);
+    assert.match(body, /did not finish/);
+    assert.match(body, /gh workflow run ci\.yml --ref <branch at that commit>/);
+    assert.match(body, /re-run the failed jobs/i);
+    assert.match(body, /Run: https:\/\/github\.com\/jonathanmcohen\/platehouse\/actions\/runs\/1/);
+    assert.doesNotMatch(body, /Orca|daily run|orca-/);
+  }
+  const ok = reportRun({ EVENT: "push", GATE_RESULT: "success", REF_NAME: "v0.1.1" });
+  assert.match(ok.calls, /--title Slicer image failed for OrcaSlicer 2\.5\.1 /);
+});
+
+test("slicer-image: the report is told the gate's result and the ref", () => {
+  const issue = stepBlock(jobBlock(slicerText(), "report-failure"), "Open or update the issue");
+  assert.ok(issue.includes("\n          GATE_RESULT: ${{ needs.gate.result }}\n"));
+  assert.ok(issue.includes("\n          REF_NAME: ${{ github.ref_name }}\n"));
+});
+
+test("slicer-image: the report is told whether a job was cancelled", () => {
+  const issue = stepBlock(jobBlock(slicerText(), "report-failure"), "Open or update the issue");
+  assert.ok(issue.includes("\n          CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}\n"));
+});
+
 // A failure after the tag step began: the orca tags may already point at the
 // new digest, and the daily run will then see orca-X.Y.Z and never retry.
-const TAG_FAIL = { "build.txt": "step: Tag the image and move stable\n::error::x\n" };
+const TAG_FAIL = { "build.txt": "step: Tag the image\n::error::x\n" };
 test("slicer-image issue: a failure after the version tags lists them and says the daily run will not retry", () => {
   const r = reportRun({ TAGGED: "orca-2.5.1, orca-2.5.1-r42", DIGEST: `sha256:${sha("d")}`, STABLE: "true" }, TAG_FAIL);
   assert.equal(r.status, 0, r.log);
@@ -2392,6 +2832,9 @@ test("slicer-image issue: a prerelease tag's failure after tagging says Re-run f
   // build and keeps detect's outputs (version, pins, stable=false), so it
   // builds 2.5.1 itself and leaves stable alone (PR #302 review).
   assert.match(body, /keeps detect's outputs, so it builds 2\.5\.1 again and leaves stable alone/);
+  // A prerelease run never creates orca-X.Y.Z, so the daily run is not shut out of the version.
+  assert.doesNotMatch(body, /may have left it/);
+  assert.match(body, /does not move orca-2\.5\.1, so the daily run builds 2\.5\.1 itself if orca-2\.5\.1 is not in the registry yet/);
   // Issue #221: Re-run all jobs runs detect again, which reads Orca's latest
   // release, so the body warns against it.
   assert.match(body, /not Re-run all jobs/);
@@ -2487,10 +2930,10 @@ test("slicer-image issue: with no kept tail it says so, and a tail cannot break 
   assert.doesNotMatch(stepBlock(report, "Open or update the issue"), /\n {8}(if|continue-on-error):/);
 });
 
-// The rollback the plan puts in the README, as a carbon copy so stable's
+// The rollback RELEASING.md gives, as a carbon copy so stable's
 // digest is the old version's.
-test("slicer-image: the README holds the rollback command, and the workflow points to it", () => {
-  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+test("slicer-image: RELEASING.md holds the rollback command, and the workflow points to it", () => {
+  const readme = readFileSync(join(ROOT, "RELEASING.md"), "utf8");
   assert.ok(
     readme.includes(
       [
@@ -2501,24 +2944,24 @@ test("slicer-image: the README holds the rollback command, and the workflow poin
     ),
     "the rollback command",
   );
-  assert.match(slicerText(), /^# Rollback: README\.md, "Slicer image"\./m);
+  assert.match(slicerText(), /^# Rollback: RELEASING\.md, "Slicer image"\./m);
   assert.match(readme, /^## Slicer image$/m);
 });
 
 // A failure in the tag step can leave the orca tags in place, and the daily run
 // never builds a version whose orca-X.Y.Z exists, prerelease-published ones
-// included. The README, the CHANGELOG and the workflow header must not say
+// included. RELEASING.md, the CHANGELOG and the workflow header must not say
 // otherwise.
 test("slicer-image: the docs do not claim a failure never tags, and say what the daily run will not do", () => {
-  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+  const readme = readFileSync(join(ROOT, "RELEASING.md"), "utf8");
   const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
   assert.doesNotMatch(readme, /When a run fails, no tag is created or moved/);
   assert.doesNotMatch(changelog, /A failure tags nothing/);
   assert.doesNotMatch(slicerText(), /On any failure stable is not touched/);
   const section = readme.slice(readme.indexOf("## Slicer image"), readme.indexOf("### Rolling the slicer back"));
   assert.match(section, /lists the tags it had already pointed at the new digest/);
-  assert.match(section, /first published by a prerelease tag/);
-  // Issue #221: the run tag rule, in both README sections.
+  assert.match(section, /A prerelease tag leaves `orca-X\.Y\.Z` and `stable` where they were/);
+  // Issue #221: the run tag rule, in both RELEASING.md sections.
   assert.match(section, /`orca-X\.Y\.Z-r<run number>\.<attempt>`/);
   assert.match(section, /reads OrcaSlicer's latest release again/);
   // A prerelease tag's tag-step failure is fixed with Re-run failed jobs,
@@ -2527,7 +2970,7 @@ test("slicer-image: the docs do not claim a failure never tags, and say what the
   assert.match(section, /the issue suggests Re-run failed jobs/);
   assert.match(section, /warns against Re-run all jobs/);
   assert.doesNotMatch(section, /roll `stable` back/);
-  const rollback = readme.slice(readme.indexOf("### Rolling the slicer back"), readme.indexOf("## Layout"));
+  const rollback = readme.slice(readme.indexOf("### Rolling the slicer back"), readme.indexOf("### The rc tag"));
   assert.match(rollback, /`orca-X\.Y\.Z-r<run number>` tag, or `orca-X\.Y\.Z-r<run number>\.<attempt>` for a re-run/);
   assert.match(changelog, /lists any tag the run had already pointed at the new digest/);
 });
@@ -2596,7 +3039,7 @@ test("rc-tag: runs after every release or slicer-image run and by hand, one run 
 test("rc-tag: every action is pinned to the exact tag release.yml or ci.yml uses", () => {
   const pins = (t) => {
     const out = {};
-    for (const [, u] of t.matchAll(/uses: (\S+)/g)) {
+    for (const [, u] of t.matchAll(/uses: (\S+ # \S+)/g)) {
       const [name, tag] = u.split("@");
       (out[name] ??= new Set()).add(tag);
     }
@@ -2609,7 +3052,7 @@ test("rc-tag: every action is pinned to the exact tag release.yml or ci.yml uses
   for (const [name, tags] of Object.entries(ours)) {
     const [tag] = tags;
     assert.equal(tags.size, 1);
-    assert.match(tag, /^v\d+\.\d+\.\d+$/);
+    assert.match(tag, /^[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
     assert.deepEqual([...(release[name] ?? ci[name])], [tag], `${name}@${tag}`);
   }
   assert.equal(stepInputs(stepBlock(jobBlock(rcText(), "rc"), "Set up Node")).inputs["node-version-file"], ".node-version");

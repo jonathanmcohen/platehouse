@@ -1,12 +1,12 @@
-// The slicer server (build plan Task 11): Slicer HTTP contract v1 on port
+// The slicer server: Slicer HTTP contract v2 on port
 // 8080, inside the slicer container. It sits on the internal network only,
-// has no auth and holds no secrets (AC-035): the app sends it a file and gets
+// has no auth and holds no secrets, because it opens untrusted files: the app sends it a file and gets
 // numbers, a render or a mesh back. Plain node:http, no web framework: the
-// surface is five routes, and the container opens untrusted files, so it
+// surface is seven routes, and the container opens untrusted files, so it
 // carries as little as it can.
 //
-// - One heavy job at a time: a slice, an OpenSCAD render or a STEP
-//   conversion. The container's 4g is sized from a single slice, so a
+// - One heavy job at a time: a slice, an OpenSCAD render (a .scad's, or an
+//   STL's preview picture) or a STEP conversion. The container's 4g is sized from a single slice, so a
 //   request for any of them while one runs is 409 busy, answered before its
 //   body is read and with the connection closed, so no socket waits. The
 //   close lingers (closeLingering, guard.ts): the server drains a body still
@@ -22,8 +22,21 @@
 //   no job runs and WORK_DIR still has less free space than
 //   WORK_MIN_FREE_MIB after that sweep, so Docker's health check sees a
 //   /work that leftovers have filled.
+// - The sandbox self-test runs once at start-up, holding the heavy-job lock
+//   like a job (so health shows busy and a request is 409 busy meanwhile),
+//   and health reports where it stands (health.sandbox). A job never runs it.
+//   A check that fails for any reason but an old kernel runs again after a
+//   back-off (SANDBOX_RETRY), never while a job holds the lock; an old
+//   kernel is final until restart. While the sandbox is off, a heavy route
+//   answers 503 sandbox_off before reading its body, except that a slice or a
+//   STEP conversion runs without the sandbox when SLICER_ALLOW_UNSANDBOXED
+//   is set (sandboxGate).
 // - Every external program runs in its own process group, killed whole at
 //   its time cap (SLICE_TIMEOUT_SECONDS, default SLICE_PLATE_SECONDS + 60).
+//   OpenSCAD, OrcaSlicer and the STEP worker each run under prlimit and
+//   landrun with their own rules (sandbox.ts); a slice or conversion that
+//   SLICER_ALLOW_UNSANDBOXED lets run while the sandbox is off runs under
+//   prlimit alone.
 // - An error in a request costs that request, never the process (guard.ts):
 //   it is answered 500, or its connection is closed, and its job is undone
 //   (program killed, folder deleted, lock freed). The 500 closes with the
@@ -39,7 +52,7 @@ import {
 } from "node:fs";
 import { open } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import {
@@ -47,33 +60,67 @@ import {
   type ErrorBody,
   LIMITS,
   type Limits,
+  type SandboxOffBody,
+  type SandboxState,
   slicerContract,
 } from "@platehouse/slicer-contract";
 import { readProject } from "@platehouse/threemf";
 import { z } from "zod";
 import { closeLingering, guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
-import { orcaArgs, SCRATCH_DIRS, scratchEnv, sliceOutcome } from "./orca.js";
+import {
+  bedTooSmall,
+  isCleanOffBed,
+  ORCA_FOLDER,
+  orcaArgs,
+  SCRATCH_DIRS,
+  sliceOutcome,
+} from "./orca.js";
 import { loadProfiles } from "./profiles.js";
-import { reapOrphans, runGroup, runsUnderTini } from "./sandbox.js";
-import { renderScad, type SandboxCheck, SCAD_INPUT, sandboxSelfTest } from "./scad.js";
+import {
+  prlimitCommand,
+  reapLeftovers,
+  runGroup,
+  runsUnderTini,
+  sandboxPaths,
+  sandboxRules,
+} from "./sandbox.js";
+import {
+  renderScad,
+  type SandboxCheck,
+  SCAD_INPUT,
+  STL_INPUT,
+  sandboxSelfTest,
+  stlProblem,
+  writeStlImport,
+} from "./scad.js";
 import { runStepWorker, STEP_INPUT } from "./step.js";
 
 export interface SlicerConfig {
   port: number;
   workDir: string;
   profilesDir: string;
+  /**
+   * OrcaSlicer's own binary, bin/orca-slicer in its AppImage tree, run with
+   * its launcher's environment (launcherEnv in orca.ts), not AppRun.
+   */
   orcaBin: string;
+  /** OrcaSlicer's extracted AppImage tree, which its sandbox may run code from. */
+  orcaDir: string;
   /** GNU time, which reports Orca's peak RSS (time -v). */
   timeBin: string;
   openscadBin: string;
   openscadDir: string;
   landrunBin: string;
-  /** util-linux prlimit, which sets OpenSCAD's resource limits (sandbox.ts). */
+  /** util-linux prlimit, which sets each sandboxed program's resource limits (sandbox.ts). */
   prlimitBin: string;
   /** A file outside every job folder that the sandbox self-test imports. */
   sandboxProbe: string;
   /** The STEP worker module, run with this Node (normally dist/src/step.js). */
   stepWorker: string;
+  /** This Node's folder (bin/node inside it), which the STEP worker's sandbox may run code from. */
+  nodeDir: string;
+  /** The built app, which the STEP worker's sandbox may read (step.js, occt-import-js). */
+  appDir: string;
   /** Orca's own per-plate cap, --mstpp. */
   slicePlateSeconds: number;
   /** When the server kills a plate's process group. */
@@ -89,13 +136,55 @@ export interface SlicerConfig {
   workMinFreeBytes: number;
   limits: Limits;
   /**
-   * Kill every process re-parented to PID 1 once a job is released
-   * (reapOrphans in sandbox.ts, issue #153). loadConfig turns it on only
-   * where the server runs under tini as in the image (runsUnderTini), never
-   * on a host where PID 1 has children of its own.
+   * SLICER_ALLOW_UNSANDBOXED: while the sandbox is off, a slice or a STEP
+   * conversion still runs (without the sandbox); renders never do.
+   */
+  allowUnsandboxed: boolean;
+  /** The start-up check's retry delays; tests shorten them. Default SANDBOX_RETRY. */
+  sandboxRetry?: SandboxRetry;
+  /**
+   * Kill the processes left behind once a job is released (reapLeftovers
+   * in sandbox.ts, issue #153). loadConfig turns it on only where the
+   * server runs under tini as in the image (runsUnderTini), never on a host
+   * where PID 1 has children of its own.
    */
   reapOrphans?: boolean;
+  /**
+   * What release() runs to clean up processes left behind; tests pass a
+   * spy. Default: reapLeftovers when reapOrphans is on,
+   * nothing otherwise.
+   */
+  reap?: () => number[];
 }
+
+/** The delays of the start-up sandbox check's retries, in milliseconds. */
+export interface SandboxRetry {
+  /** The wait after the first check_failed; it doubles after each one. */
+  initialMs: number;
+  /** The longest wait. */
+  maxMs: number;
+  /** The wait when a retry is due but a job holds the lock. */
+  busyMs: number;
+}
+
+export const SANDBOX_RETRY: SandboxRetry = Object.freeze({
+  initialMs: 60_000,
+  maxMs: 900_000,
+  busyMs: 5_000,
+});
+
+/** The wait before the retry that follows the `failures`-th check_failed (1 for the first). */
+export function retryDelayMs(failures: number, retry: SandboxRetry = SANDBOX_RETRY): number {
+  return Math.min(retry.initialMs * 2 ** Math.max(0, failures - 1), retry.maxMs);
+}
+
+/**
+ * What a heavy route does while it holds the lock: "run" in the sandbox,
+ * "unsandboxed" (a slice or STEP conversion with SLICER_ALLOW_UNSANDBOXED,
+ * the program run under prlimit alone, without landrun), or the 503 body to
+ * answer.
+ */
+export type SandboxGate = "run" | "unsandboxed" | SandboxOffBody;
 
 const seconds = (key: string) =>
   z
@@ -124,7 +213,9 @@ const envSchema = z.object({
     .default(8080),
   WORK_DIR: z.string().min(1).default("/work"),
   PROFILES_DIR: z.string().min(1).default("/opt/platehouse/profiles"),
-  ORCA_BIN: z.string().min(1).default("/opt/orca/AppRun"),
+  ORCA_BIN: z.string().min(1).default("/opt/orca/bin/orca-slicer"),
+  ORCA_DIR: z.string().min(1).default("/opt/orca"),
+  APP_DIR: z.string().min(1).default("/opt/platehouse/app"),
   TIME_BIN: z.string().min(1).default("/usr/bin/time"),
   OPENSCAD_BIN: z.string().min(1).default("/opt/openscad/AppRun"),
   OPENSCAD_DIR: z.string().min(1).default("/opt/openscad"),
@@ -139,6 +230,9 @@ const envSchema = z.object({
   SLICE_TIMEOUT_SECONDS: seconds("SLICE_TIMEOUT_SECONDS").optional(),
   SCAD_TIMEOUT_SECONDS: seconds("SCAD_TIMEOUT_SECONDS").default(120),
   STEP_TIMEOUT_SECONDS: seconds("STEP_TIMEOUT_SECONDS").default(120),
+  SLICER_ALLOW_UNSANDBOXED: z
+    .enum(["true", "false"], { error: "SLICER_ALLOW_UNSANDBOXED must be true or false" })
+    .default("false"),
   WORK_MIN_FREE_MIB: z
     .string()
     .regex(/^\d+$/, "WORK_MIN_FREE_MIB must be a whole number of MiB")
@@ -154,19 +248,121 @@ export class ConfigError extends Error {
   override name = "ConfigError";
 }
 
-/** Reads the slicer's configuration from the environment; names a bad key, never a value. */
-export function loadConfig(env: NodeJS.ProcessEnv): SlicerConfig {
+/**
+ * Folders no sandbox rule may name, by real path: each would let a program
+ * run every system command (/usr/bin, /bin, /usr/local/bin) or read and run
+ * every system library (/usr/lib, /lib, /lib64), far more than the rules
+ * mean to give. Their ancestors are listed too. Only these exact folders are
+ * refused: the image's own trees are under /opt.
+ */
+const TOO_WIDE = new Set([
+  "/",
+  "/usr",
+  "/usr/bin",
+  "/bin",
+  "/usr/lib",
+  "/usr/lib/x86_64-linux-gnu",
+  "/lib",
+  "/lib64",
+  "/usr/local",
+  "/usr/local/bin",
+]);
+
+/**
+ * The real path of `folder` when it exists (its links resolved, as landrun
+ * resolves them when it adds the rule), else the path itself, normalised.
+ */
+function realFolder(folder: string): string {
+  try {
+    return realpathSync(folder);
+  } catch {
+    return resolve(folder);
+  }
+}
+
+/**
+ * Why a path cannot go into a landrun rule, or null when it can: it must be
+ * absolute (landrun would resolve a relative one from the job folder) and
+ * hold no comma (landrun takes each rule list joined with commas).
+ */
+function rulePathProblem(path: string): string | null {
+  if (!isAbsolute(path)) return "must be an absolute path";
+  if (path.includes(",")) return "must not contain a comma";
+  return null;
+}
+
+/**
+ * Why `folder` cannot be a sandbox folder, or null when it can: a valid rule
+ * path (rulePathProblem) that, by its path and by its real path, is none of
+ * TOO_WIDE and neither is WORK_DIR, sits under it, nor holds it, so no rule
+ * reaches another job's folder.
+ */
+function sandboxFolderProblem(folder: string, workDir: string): string | null {
+  const problem = rulePathProblem(folder);
+  if (problem) return problem;
+  const forms = [resolve(folder), realFolder(folder)];
+  const works = [resolve(workDir), realFolder(workDir)];
+  if (forms.some((f) => TOO_WIDE.has(f))) {
+    return "must not be a system folder such as /, /usr, /usr/bin, /usr/lib or /usr/local";
+  }
+  const within = (inner: string, outer: string) =>
+    inner === outer || inner.startsWith(outer === "/" ? "/" : `${outer}/`);
+  if (forms.some((f) => works.some((w) => within(f, w) || within(w, f)))) {
+    return "must not be WORK_DIR, sit under it, or hold it";
+  }
+  return null;
+}
+
+/**
+ * Reads the slicer's configuration from the environment; names a bad key,
+ * never a value. `execPath` is the Node that runs the server and the STEP
+ * worker (process.execPath); its folder is a sandbox folder too.
+ */
+export function loadConfig(
+  env: NodeJS.ProcessEnv,
+  execPath: string = process.execPath,
+): SlicerConfig {
   const parsed = envSchema.safeParse(env);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
     throw new ConfigError(`invalid slicer configuration: ${issues.join("; ")}`);
   }
   const e = parsed.data;
+  // The Node running this server runs the worker too (/opt/node/bin/node in
+  // the image, so /opt/node).
+  const nodeDir = dirname(dirname(execPath));
+  const issues: string[] = [];
+  // Each job folder, WORK_DIR/<uuid>, is a landrun --rw rule.
+  const workProblem = rulePathProblem(e.WORK_DIR);
+  if (workProblem) issues.push(`WORK_DIR: ${workProblem}`);
+  const folders: [string, string][] = [
+    ["ORCA_DIR", e.ORCA_DIR],
+    ["APP_DIR", e.APP_DIR],
+    ["PROFILES_DIR", e.PROFILES_DIR],
+    ["OPENSCAD_DIR", e.OPENSCAD_DIR],
+  ];
+  for (const [key, folder] of folders) {
+    const problem = sandboxFolderProblem(folder, e.WORK_DIR);
+    if (problem) issues.push(`${key}: ${problem}`);
+  }
+  const nodeProblem = sandboxFolderProblem(nodeDir, e.WORK_DIR);
+  if (nodeProblem) {
+    issues.push(
+      `the folder of the Node that runs the slicer (two levels above its binary) ${nodeProblem}`,
+    );
+  }
+  if (!resolve(e.ORCA_BIN).startsWith(`${resolve(e.ORCA_DIR)}/`)) {
+    issues.push("ORCA_BIN: must be inside ORCA_DIR");
+  }
+  if (issues.length > 0) {
+    throw new ConfigError(`invalid slicer configuration: ${issues.join("; ")}`);
+  }
   return {
     port: e.PORT,
     workDir: e.WORK_DIR,
     profilesDir: e.PROFILES_DIR,
     orcaBin: e.ORCA_BIN,
+    orcaDir: e.ORCA_DIR,
     timeBin: e.TIME_BIN,
     openscadBin: e.OPENSCAD_BIN,
     openscadDir: e.OPENSCAD_DIR,
@@ -174,6 +370,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): SlicerConfig {
     prlimitBin: e.PRLIMIT_BIN,
     sandboxProbe: e.SANDBOX_PROBE,
     stepWorker: e.STEP_WORKER,
+    nodeDir,
+    appDir: e.APP_DIR,
     slicePlateSeconds: e.SLICE_PLATE_SECONDS,
     sliceTimeoutSeconds: e.SLICE_TIMEOUT_SECONDS ?? e.SLICE_PLATE_SECONDS + 60,
     scadTimeoutSeconds: e.SCAD_TIMEOUT_SECONDS,
@@ -181,6 +379,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SlicerConfig {
     orcaVersion: e.ORCA_VERSION,
     openscadVersion: e.OPENSCAD_VERSION,
     workMinFreeBytes: e.WORK_MIN_FREE_MIB * MIB,
+    allowUnsandboxed: e.SLICER_ALLOW_UNSANDBOXED === "true",
     limits: LIMITS,
     reapOrphans: runsUnderTini(),
   };
@@ -220,7 +419,7 @@ function sendBytes(res: ServerResponse, contentType: string, bytes: Buffer): voi
  * request, Node has already set req.socket to null, and calling destroy() on
  * it threw in this callback, outside any try, and ended the process.
  */
-function refuseEarly(res: ServerResponse, status: number, body: ErrorBody): void {
+function refuseEarly(res: ServerResponse, status: number, body: ErrorBody | SandboxOffBody): void {
   const socket = res.socket;
   if (socket) socket.destroySoon = () => closeLingering(socket);
   const text = JSON.stringify(body);
@@ -295,7 +494,10 @@ const ZIP_MAGIC = [Buffer.from("PK\x03\x04", "latin1"), Buffer.from("PK\x05\x06"
 
 export interface Slicer {
   server: Server;
-  /** Kills any running program and stops the server. */
+  /**
+   * Kills any running program, cancels a pending sandbox check and stops the
+   * server.
+   */
   close(): Promise<void>;
 }
 
@@ -325,13 +527,23 @@ export function createSlicer(config: SlicerConfig): Slicer {
 
   const track = (): Tracker => {
     let current: (() => void) | null = null;
+    // Once killNow has run, the job is over: a program registered after it
+    // is killed at once, so nothing starts outside the lock.
+    let over = false;
     const set = (kill: (() => void) | null) => {
       if (current) running.delete(current);
+      current = null;
+      if (!kill) return;
+      if (over) {
+        kill();
+        return;
+      }
       current = kill;
-      if (kill) running.add(kill);
+      running.add(kill);
     };
     return Object.assign(set, {
       killNow: () => {
+        over = true;
         current?.();
         set(null);
       },
@@ -427,6 +639,21 @@ export function createSlicer(config: SlicerConfig): Slicer {
     return dir;
   };
 
+  const reap = config.reap ?? (config.reapOrphans ? () => reapLeftovers() : null);
+
+  /**
+   * Kills the processes left behind (reap), when the clean-up is on, and
+   * logs what it killed. Run only by a job's release(), while that job
+   * still holds the lock.
+   */
+  const reapLeftBehind = (): void => {
+    if (!reap) return;
+    const reaped = reap();
+    if (reaped.length > 0) {
+      log(`killed ${reaped.length} process(es) left behind by the job: ${reaped.join(", ")}`);
+    }
+  };
+
   /**
    * Takes the heavy-job lock and makes the job's folder, or returns null when
    * another job holds the lock. If the folder cannot be made (a full tmpfs,
@@ -452,14 +679,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
           // A program that called setsid() left the group killNow kills and
           // was re-parented to tini; nothing of the job may outlive it, or a
           // sleeping process holds /work files open until a restart.
-          if (config.reapOrphans) {
-            const reaped = reapOrphans();
-            if (reaped.length > 0) {
-              log(
-                `killed ${reaped.length} process(es) left behind by the job: ${reaped.join(", ")}`,
-              );
-            }
-          }
+          reapLeftBehind();
           if (dir) removeJobDir(dir);
           if (holder === job) sweepJobDirs(dir);
         } finally {
@@ -479,39 +699,143 @@ export function createSlicer(config: SlicerConfig): Slicer {
     return job;
   };
 
-  // The sandbox self-test runs before the first render, and every render
-  // waits for it. Only a pass is remembered: a failed or inconclusive check
-  // refuses the renders waiting on it, and the next render checks again.
-  // If the render's request fails while the check runs, the check is
-  // forgotten too, so a check the guard cut short cannot hang later renders.
-  let sandbox: Promise<SandboxCheck> | null = null;
-  const sandboxReady = (job: Job): Promise<SandboxCheck> => {
-    if (sandbox) return sandbox;
-    const check = (async (): Promise<SandboxCheck> => {
-      let dir: string | null = null;
+  /**
+   * Stops the job when its client goes away: if the response is destroyed
+   * before it finished, the job is released at once, which kills its program
+   * and deletes its folder, instead of running on to its time cap while every
+   * later request answers 409 busy. After a normal finish this does nothing,
+   * and a release that already ran is not repeated (see takeJob).
+   */
+  const releaseWhenClientGoes = (res: ServerResponse, job: Job): void => {
+    res.on("close", () => {
+      if (!res.writableFinished) job.release();
+    });
+  };
+
+  // The sandbox self-test runs at start-up and holds the heavy-job lock while
+  // it does, like a job: health shows busy, and a request is 409 busy, never
+  // a sandbox answer. The state it records is what every heavy route checks
+  // (sandboxGate). A job never runs the check, so a client going away cannot
+  // cut it short.
+  let sandbox: SandboxState = {
+    state: "checking",
+    reason: null,
+    detail: null,
+    allowUnsandboxed: config.allowUnsandboxed,
+  };
+  const retry = config.sandboxRetry ?? SANDBOX_RETRY;
+  let closed = false;
+  let retryTimer: NodeJS.Timeout | null = null;
+  let checkFailures = 0;
+  let sandboxCheck: Promise<void> = Promise.resolve();
+
+  const sandboxState = (): SandboxState => ({ ...sandbox });
+
+  const sandboxOff = (): SandboxOffBody => ({
+    error: "sandbox_off",
+    reason: sandbox.reason ?? "check_failed",
+    detail: sandbox.detail ?? "the sandbox check has not finished",
+  });
+
+  const sandboxGate = (kind: "render" | "program"): SandboxGate => {
+    if (sandbox.state === "on") return "run";
+    if (sandbox.state === "off" && kind === "program" && config.allowUnsandboxed) {
+      return "unsandboxed";
+    }
+    return sandboxOff();
+  };
+
+  /**
+   * Runs for a job that holds the lock, before it reads its body: answers 503
+   * and returns null while the sandbox is off, else the gate's answer. An
+   * unsandboxed run is logged once, here.
+   */
+  const passSandboxGate = (
+    res: ServerResponse,
+    kind: "render" | "program",
+    what: string,
+  ): "run" | "unsandboxed" | null => {
+    const gate = sandboxGate(kind);
+    if (typeof gate === "object") {
+      refuseEarly(res, 503, gate);
+      return null;
+    }
+    if (gate === "unsandboxed") {
+      log(`${what} runs without the sandbox: it is off and SLICER_ALLOW_UNSANDBOXED is set`);
+    }
+    return gate;
+  };
+
+  const failedCheck = (detail: string): SandboxCheck => ({
+    ok: false,
+    reason: "check_failed",
+    detail,
+  });
+
+  const scheduleSandboxCheck = (delayMs: number): void => {
+    if (closed) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      startSandboxCheck();
+    }, delayMs);
+    retryTimer.unref();
+  };
+
+  const recordSandboxCheck = (result: SandboxCheck): void => {
+    log(`sandbox self-test: ${result.ok ? "ok" : "FAILED"}: ${result.detail}`);
+    if (result.ok) {
+      sandbox = { ...sandbox, state: "on", reason: null, detail: null };
+      return;
+    }
+    sandbox = {
+      ...sandbox,
+      state: "off",
+      reason: result.reason ?? "check_failed",
+      detail: result.detail,
+    };
+    // An old kernel stays old until a restart; anything else may pass later.
+    if (result.reason !== "old_kernel") {
+      checkFailures += 1;
+      scheduleSandboxCheck(retryDelayMs(checkFailures, retry));
+    }
+  };
+
+  const runSandboxCheck = async (): Promise<void> => {
+    if (closed) return;
+    let job: Job | null = null;
+    let result: SandboxCheck | null = null;
+    try {
+      job = takeJob();
+    } catch (err) {
+      result = failedCheck(
+        `the self-test could not start: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!result) {
+      // A retry that falls due while a job runs waits for it, shortly.
+      if (!job) return scheduleSandboxCheck(retry.busyMs);
       try {
-        dir = jobDir();
-        const result = await sandboxSelfTest(config, dir, config.sandboxProbe, job.track);
-        log(`sandbox self-test: ${result.ok ? "ok" : "FAILED"}: ${result.detail}`);
-        return result;
+        result = await sandboxSelfTest(config, job.dir, config.sandboxProbe, job.track);
       } catch (err) {
-        const detail = `the self-test could not run: ${err instanceof Error ? err.message : String(err)}`;
-        log(`sandbox self-test: FAILED: ${detail}`);
-        return { ok: false, detail };
-      } finally {
-        // Best effort, like every job folder delete: a folder that will not
-        // go must not turn a passed check into a 500 for the render.
-        if (dir) removeJobDir(dir);
+        result = failedCheck(
+          `the self-test could not run: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
-    })().then((result) => {
-      if (!result.ok && sandbox === check) sandbox = null;
-      return result;
+    }
+    try {
+      // A check cut short by close() says nothing about the sandbox.
+      if (!closed) recordSandboxCheck(result);
+    } finally {
+      job?.release();
+    }
+  };
+
+  const startSandboxCheck = (): void => {
+    sandboxCheck = runSandboxCheck().catch((err) => {
+      log(
+        `sandbox self-test: could not finish: ${err instanceof Error ? err.message : String(err)}`,
+      );
     });
-    sandbox = check;
-    whenRequestFails(() => {
-      if (sandbox === check) sandbox = null;
-    });
-    return check;
   };
 
   async function slice(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -538,14 +862,20 @@ export function createSlicer(config: SlicerConfig): Slicer {
     if (!job) return refuseEarly(res, 409, { error: "busy" });
     const dir = job.dir;
     try {
-      for (const sub of SCRATCH_DIRS) mkdirSync(join(dir, sub), { recursive: true });
-      const input = join(dir, "input.3mf");
+      const gate = passSandboxGate(res, "program", "a slice");
+      if (!gate) return;
+      // Orca's sandbox may write only its own folder, ORCA_FOLDER; GNU
+      // time's report stays in the job folder above it, out of its reach.
+      const box = join(dir, ORCA_FOLDER);
+      for (const sub of SCRATCH_DIRS) mkdirSync(join(box, sub), { recursive: true });
+      const input = join(box, "input.3mf");
       try {
         await saveBody(req, input, config.limits.sliceBodyBytes);
       } catch (err) {
         if (err instanceof TooLarge) return refuseEarly(res, 413, { error: "too_large" });
         throw err;
       }
+      releaseWhenClientGoes(res, job);
       const head = Buffer.alloc(4);
       const fd = await open(input, "r");
       try {
@@ -556,27 +886,46 @@ export function createSlicer(config: SlicerConfig): Slicer {
       if (!ZIP_MAGIC.some((m) => head.equals(m))) return sendError(res, 422, { error: "not_3mf" });
       const project = await readProject(input);
       if (!project) return sendError(res, 422, { error: "not_3mf" });
+      // The client may have gone while the project was read; its job is
+      // already released, so there is nothing to run and nobody to answer.
+      if (res.destroyed) return;
 
       const slots = [...project.projectFilaments].sort((a, b) => a.slot - b.slot);
       const picks = slots.map((f) => profiles.filamentFor(printer, f.type));
-      const outDir = join(dir, "out");
+      const outDir = join(box, "out");
       const timeFile = join(dir, "time.txt");
       const args = orcaArgs({
         plate,
         mstpp: config.slicePlateSeconds,
-        dataDir: join(dir, "data"),
+        dataDir: join(box, "data"),
         outDir,
         machineFile,
         filamentFiles: picks.map((p) => p?.file ?? ""),
         input,
       });
-      const run = await runGroup(config.timeBin, ["-v", "-o", timeFile, config.orcaBin, ...args], {
-        cwd: dir,
-        env: scratchEnv(dir),
+      // prlimit, then GNU time, outside the sandbox so it can write its
+      // report to the job folder, then landrun with Orca's rules, then Orca
+      // (prlimitCommand). Unsandboxed, landrun is left out. Orca's
+      // environment (its rules' env: scratchEnv plus its launcher's) is
+      // what landrun passes it, and what it inherits without landrun.
+      // prlimit and GNU time see its LD_LIBRARY_PATH too: both link glibc,
+      // which the AppImage never bundles (Orca's appimage_lib_policy.sh),
+      // and prlimit also util-linux's libsmartcols; landrun is static.
+      const rules = sandboxRules("orca", sandboxPaths(config, box));
+      const command = prlimitCommand({
+        program: "orca",
+        timeoutSeconds: config.sliceTimeoutSeconds,
+        outside: [config.timeBin, "-v", "-o", timeFile],
+        landrun: gate === "run" ? { bin: config.landrunBin, rules } : null,
+        command: [config.orcaBin, ...args],
+      });
+      const run = await runGroup(config.prlimitBin, command, {
+        cwd: box,
+        env: rules.env,
         timeoutMs: config.sliceTimeoutSeconds * 1000,
         track: job.track,
       });
-      const result = sliceOutcome(
+      let result = sliceOutcome(
         {
           orcaVersion: config.orcaVersion,
           plate,
@@ -589,6 +938,14 @@ export function createSlicer(config: SlicerConfig): Slicer {
         run,
         { outDir, timeFile },
       );
+      // A clean -50 on a plate that has objects: they sit off this printer's
+      // bed (a project laid out for a bigger one), so say the plate is too big.
+      if (
+        isCleanOffBed(result, run) &&
+        (project.plates.find((p) => p.index === plate)?.objectCount ?? 0) > 0
+      ) {
+        result = bedTooSmall(result);
+      }
       log(
         `slice plate ${plate} on ${printer}: ${result.status === "ok" ? `ok ${result.timeSeconds} s ${result.weightGrams} g` : `${result.reason} (${result.code})`} in ${run.wallMs} ms`,
       );
@@ -600,8 +957,10 @@ export function createSlicer(config: SlicerConfig): Slicer {
 
   /**
    * Takes the heavy-job lock (or answers 409 busy before reading the body),
-   * saves the body as dir/<input> in a fresh job folder and hands the folder
-   * to `work`, which runs its program on that file. The body is never read
+   * answers 503 sandbox_off, also before reading it, while the sandbox is off
+   * (sandboxGate), saves the body as dir/<input> in a fresh job folder and hands the folder
+   * to `work`, which runs its program on that file, sandboxed unless the gate
+   * said "unsandboxed" (only ever for kind "program"). The body is never read
    * into the server's memory.
    */
   async function withBody(
@@ -609,20 +968,26 @@ export function createSlicer(config: SlicerConfig): Slicer {
     res: ServerResponse,
     limit: number,
     input: string,
-    work: (job: Job) => Promise<void>,
+    kind: "render" | "program",
+    what: string,
+    work: (job: Job, gate: "run" | "unsandboxed") => Promise<void>,
   ): Promise<void> {
     const declared = declaredLength(req);
     if (declared !== null && declared > limit) return refuseEarly(res, 413, { error: "too_large" });
     const job = takeJob();
     if (!job) return refuseEarly(res, 409, { error: "busy" });
     try {
+      const gate = passSandboxGate(res, kind, what);
+      if (!gate) return;
       try {
         await saveBody(req, join(job.dir, input), limit);
       } catch (err) {
         if (err instanceof TooLarge) return refuseEarly(res, 413, { error: "too_large" });
         throw err;
       }
-      await work(job);
+      releaseWhenClientGoes(res, job);
+      if (res.destroyed) return;
+      await work(job, gate);
     } finally {
       job.release();
     }
@@ -652,6 +1017,13 @@ export function createSlicer(config: SlicerConfig): Slicer {
           orca: config.orcaVersion,
           openscad: config.openscadVersion,
           busy: holder !== null,
+          sandbox: sandboxState(),
+          timeouts: {
+            sliceSeconds: config.sliceTimeoutSeconds,
+            scadSeconds: config.scadTimeoutSeconds,
+            stepSeconds: config.stepTimeoutSeconds,
+            uploadSeconds: UPLOAD_SECONDS,
+          },
         });
       }
       case "GET /v1/profiles":
@@ -666,33 +1038,76 @@ export function createSlicer(config: SlicerConfig): Slicer {
       case "POST /v1/scad/stl":
       case "POST /v1/scad/png": {
         const kind = url.pathname.endsWith("png") ? "png" : "stl";
-        return withBody(req, res, config.limits.scadBodyBytes, SCAD_INPUT, async (job) => {
-          const check = await sandboxReady(job);
-          if (!check.ok) {
-            return send(res, 422, {
-              error: "render_failed",
-              message: `OpenSCAD renders are off: the sandbox self-test failed (${check.detail}).`,
-            });
-          }
-          const r = await renderScad(config, job.dir, kind, job.track);
-          if (r.ok) return sendBytes(res, kind === "png" ? "image/png" : "model/stl", r.bytes);
-          return send(res, 422, { error: "render_failed", message: r.message });
-        });
+        return withBody(
+          req,
+          res,
+          config.limits.scadBodyBytes,
+          SCAD_INPUT,
+          "render",
+          "a render",
+          async (job) => {
+            if (res.destroyed) return;
+            const r = await renderScad(config, job.dir, kind, job.track);
+            if (r.ok) return sendBytes(res, kind === "png" ? "image/png" : "model/stl", r.bytes);
+            return send(res, 422, { error: "render_failed", message: r.message });
+          },
+        );
       }
+      // An STL's preview picture (issue #316): the body is saved as
+      // input.stl, the server writes a .scad that imports it, and OpenSCAD
+      // renders the PNG exactly as for /v1/scad/png: the same sandbox gate,
+      // landrun rules, prlimit limits and time cap.
+      case "POST /v1/stl/png":
+        return withBody(
+          req,
+          res,
+          config.limits.stlBodyBytes,
+          STL_INPUT,
+          "render",
+          "an STL picture",
+          async (job) => {
+            if (res.destroyed) return;
+            // No triangles would render as a blank picture (stlProblem).
+            const problem = stlProblem(job.dir);
+            if (problem !== null) {
+              return send(res, 422, { error: "render_failed", message: problem });
+            }
+            writeStlImport(job.dir);
+            const r = await renderScad(config, job.dir, "png", job.track);
+            if (r.ok) return sendBytes(res, "image/png", r.bytes);
+            return send(res, 422, { error: "render_failed", message: r.message });
+          },
+        );
       case "POST /v1/step/glb":
-        return withBody(req, res, config.limits.stepBodyBytes, STEP_INPUT, async (job) => {
-          const r = await runStepWorker(
-            { worker: config.stepWorker, timeoutSeconds: config.stepTimeoutSeconds },
-            job.dir,
-            job.track,
-          );
-          if (r.ok) return sendBytes(res, "model/gltf-binary", r.bytes);
-          return send(res, 422, { error: "convert_failed", message: r.message });
-        });
+        return withBody(
+          req,
+          res,
+          config.limits.stepBodyBytes,
+          STEP_INPUT,
+          "program",
+          "a STEP conversion",
+          async (job, gate) => {
+            const r = await runStepWorker(
+              {
+                ...config,
+                worker: config.stepWorker,
+                timeoutSeconds: config.stepTimeoutSeconds,
+                maxOutputBytes: config.limits.stepOutputBytes,
+                sandboxed: gate === "run",
+              },
+              job.dir,
+              job.track,
+            );
+            if (r.ok) return sendBytes(res, "model/gltf-binary", r.bytes);
+            return send(res, 422, { error: "convert_failed", message: r.message });
+          },
+        );
       default:
         return refuseEarly(res, 404, { error: "not_found" });
     }
   }
+
+  startSandboxCheck();
 
   // A handler that throws or rejects is answered 500, or its connection is
   // closed if the answer has started, and its job is undone (guard.ts).
@@ -701,14 +1116,30 @@ export function createSlicer(config: SlicerConfig): Slicer {
   return {
     server,
     close: async () => {
+      closed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
       for (const kill of running) kill();
       running.clear();
+      // The check a kill cut short releases its job and folder.
+      await sandboxCheck;
       await new Promise<void>((resolve) => {
         server.close(() => resolve());
         server.closeAllConnections();
       });
     },
   };
+}
+
+/**
+ * The start-up line saying the clean-up of processes left behind is off, or
+ * null when it is on. It is on only when the server's parent is tini as PID
+ * 1, the image's own entrypoint; an init added in front of it (Compose's
+ * init: true, docker run --init) turns it off.
+ */
+export function reapOffNotice(config: Pick<SlicerConfig, "reapOrphans">): string | null {
+  if (config.reapOrphans) return null;
+  return "the clean-up of processes left behind by a job is off: the server is not running under tini as PID 1, the image's own entrypoint";
 }
 
 function log(line: string): void {
@@ -743,6 +1174,8 @@ if (isMain()) {
       log(
         `slicer contract ${CONTRACT_VERSION} listening on ${config.port}: orca ${config.orcaVersion}, openscad ${config.openscadVersion}, --mstpp ${config.slicePlateSeconds} s, kill at ${config.sliceTimeoutSeconds} s`,
       );
+      const notice = reapOffNotice(config);
+      if (notice) log(notice);
     });
     const stop = () => {
       slicer.close().then(() => process.exit(0));

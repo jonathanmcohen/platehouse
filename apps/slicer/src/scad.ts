@@ -1,4 +1,4 @@
-// OpenSCAD renders (AC-052, build plan Task 11): POST /v1/scad/stl and
+// OpenSCAD renders, with no TCP and no access to user, app or job data: POST /v1/scad/stl and
 // /v1/scad/png. The .scad text is written alone into a fresh job folder and
 // OpenSCAD 2026.11-RC0 renders it under prlimit and landrun (see
 // sandbox.ts), with a time cap and OPENSCADPATH unset. What Landlock cannot
@@ -14,7 +14,6 @@ import {
   constants,
   existsSync,
   fstatSync,
-  lstatSync,
   openSync,
   readSync,
   realpathSync,
@@ -24,23 +23,22 @@ import {
 import { join } from "node:path";
 import {
   type GroupResult,
-  landrunArgs,
+  ledInMessage,
   MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
-  prlimitArgs,
+  prlimitCommand,
   readLandlockAbi,
+  readOutputFile,
   runGroup,
+  type SandboxConfig,
   type ScadOutput,
+  sandboxPaths,
+  sandboxRules,
   scadArgs,
-  tailLines,
 } from "./sandbox.js";
 
-export interface ScadConfig {
-  landrunBin: string;
-  /** util-linux prlimit, which sets OpenSCAD's resource limits (sandbox.ts). */
-  prlimitBin: string;
+export interface ScadConfig extends SandboxConfig {
   openscadBin: string;
-  openscadDir: string;
   scadTimeoutSeconds: number;
 }
 
@@ -57,66 +55,57 @@ export type RenderResult =
 /** The name the .scad takes inside its job folder. */
 export const SCAD_INPUT = "input.scad";
 
-const MIB = 1024 * 1024;
+/** The name an STL to preview takes inside its job folder (POST /v1/stl/png). */
+export const STL_INPUT = "input.stl";
 
-// The render output cap lives in sandbox.ts beside the prlimit limits it
-// also sets; it is exported here too, where the server's tests read it.
-export { MAX_RENDER_OUTPUT_BYTES };
+/** What /v1/stl/png answers for a body stlProblem refuses. */
+export const NOT_AN_STL =
+  "The file is not an STL with at least one triangle, so there is nothing to render.";
+
+/** How much of an STL stlProblem reads to find an ASCII STL's first facet. */
+const STL_HEAD_BYTES = 64 * 1024;
 
 /**
- * Reads a finished render's output, or reports its size when it is over
- * `limit` without reading it. The size is taken from the open file, so the
- * file read is the file measured. The file is opened without following a
- * symlink (O_NOFOLLOW) and without blocking (O_NONBLOCK, so a FIFO cannot
- * hang the server), and anything fstat does not call a regular file is
- * refused unread: code running inside OpenSCAD could swap its output for a
- * link to any file the server can read, and the server, which is not
- * sandboxed, would send that file back as the render (issue #153). A name
- * that cannot be opened at all, such as a symlink (ELOOP) or a Unix socket
- * (ENXIO on Linux), is refused the same way rather than thrown, since a throw
- * answers 500 and the app records that as a slicer fault, not a failed render
- * (PR #154 review). Only a name that is gone (ENOENT) still throws.
+ * Why dir/STL_INPUT cannot be previewed, or null when it can. OpenSCAD
+ * writes a PNG of an empty scene when an import gives it nothing to draw (as
+ * the image did for a body of plain text, CI run 44975403164), so a body
+ * with no triangles would come back as a blank picture. This passes an
+ * ASCII STL ("solid", then a "facet" in its first 64 KiB) and a binary STL
+ * with at least one whole 50-byte facet after its 84-byte header, whatever
+ * its count field says, as the app's own STL check does
+ * (apps/server/src/ingest/detect.ts); anything else is refused before
+ * OpenSCAD runs. The file is read without following a symlink.
  */
-export function readRenderOutput(
-  file: string,
-  limit: number,
-): { ok: true; bytes: Buffer } | { ok: false; size: number } | { ok: false; notRegular: true } {
-  let fd: number;
+export function stlProblem(dir: string): string | null {
+  const fd = openSync(join(dir, STL_INPUT), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch (err) {
-    // ELOOP: the name is a symlink; ENXIO: a Unix socket. EISDIR is not
-    // raised for O_RDONLY, so a folder is caught by fstat below.
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") throw err;
-    return { ok: false, notRegular: true };
-  }
-  try {
-    const st = fstatSync(fd);
-    if (!st.isFile()) return { ok: false, notRegular: true };
-    const { size } = st;
-    if (size > limit) return { ok: false, size };
-    const bytes = Buffer.alloc(size);
-    let at = 0;
-    while (at < size) {
-      const n = readSync(fd, bytes, at, size - at, at);
-      if (n === 0) break;
-      at += n;
-    }
-    return { ok: true, bytes: bytes.subarray(0, at) };
+    const { size } = fstatSync(fd);
+    const head = Buffer.alloc(Math.min(size, STL_HEAD_BYTES));
+    const read = readSync(fd, head, 0, head.length, 0);
+    const text = head.subarray(0, read).toString("latin1");
+    if (/^\s*solid/.test(text) && /\bfacet\b/.test(text)) return null;
+    if (size > 84 && (size - 84) % 50 === 0) return null;
+    return NOT_AN_STL;
   } finally {
     closeSync(fd);
   }
 }
 
-/** True when something, a symlink included, has this name. */
-function lexists(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * Writes the .scad an STL preview renders: one import of STL_INPUT, beside
+ * it in the same job folder (issue #316). The text is fixed, so nothing in
+ * the request body is ever read as OpenSCAD code; the STL is only ever data
+ * that import() reads, under the same sandbox as any render.
+ */
+export function writeStlImport(dir: string): void {
+  writeFileSync(join(dir, SCAD_INPUT), `import(${JSON.stringify(STL_INPUT)});\n`);
 }
+
+const MIB = 1024 * 1024;
+
+// The render output cap lives in sandbox.ts beside the prlimit limits it
+// also sets; it is exported here too, where the server's tests read it.
+export { MAX_RENDER_OUTPUT_BYTES };
 
 /**
  * Runs `command` (OpenSCAD and its arguments) in `dir` the way every render
@@ -132,15 +121,15 @@ function runSandboxed(
   command: string[],
   opts: { timeoutMs: number; strict?: boolean; track?: (kill: (() => void) | null) => void },
 ): Promise<GroupResult> {
-  const landrun = landrunArgs({
-    dir,
-    openscadDir: config.openscadDir,
-    command,
-    strict: opts.strict ?? false,
-  });
+  const rules = sandboxRules("openscad", sandboxPaths(config, dir));
   return runGroup(
     config.prlimitBin,
-    [...prlimitArgs(config.scadTimeoutSeconds), "--", config.landrunBin, ...landrun],
+    prlimitCommand({
+      program: "openscad",
+      timeoutSeconds: config.scadTimeoutSeconds,
+      landrun: { bin: config.landrunBin, rules, strict: opts.strict ?? false },
+      command,
+    }),
     {
       cwd: dir,
       env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dir, TMPDIR: dir, LANG: "C.UTF-8" },
@@ -185,11 +174,9 @@ export async function renderScad(
       output,
     };
   }
-  const out = join(dir, outputName);
-  // lstat, not stat: the output is looked at as it is, never through a link
-  // (readRenderOutput says why).
-  if (run.code === 0 && lexists(out)) {
-    const read = readRenderOutput(out, MAX_RENDER_OUTPUT_BYTES);
+  // Never read through a link, or past the cap (readOutputFile says why).
+  if (run.code === 0) {
+    const read = readOutputFile(join(dir, outputName), MAX_RENDER_OUTPUT_BYTES);
     if (read.ok && read.bytes.length > 0) return { ok: true, bytes: read.bytes };
     if (!read.ok && "notRegular" in read) {
       return {
@@ -198,7 +185,7 @@ export async function renderScad(
         output,
       };
     }
-    if (!read.ok) {
+    if (!read.ok && "size" in read) {
       return {
         ok: false,
         message: `OpenSCAD wrote a ${Math.ceil(read.size / MIB)} MiB ${kind.toUpperCase()}, over the ${MAX_RENDER_OUTPUT_BYTES / MIB} MiB limit for a render.`,
@@ -206,11 +193,11 @@ export async function renderScad(
       };
     }
   }
-  const message = tailLines(output);
+  // OpenSCAD's output is always led in; its exit status is the slicer's own.
   return {
     ok: false,
     message:
-      message ||
+      ledInMessage("OpenSCAD said: ", output) ||
       `OpenSCAD exited with ${run.signal ?? run.code} and wrote no ${kind.toUpperCase()}.`,
     output,
   };
@@ -219,6 +206,12 @@ export async function renderScad(
 export interface SandboxCheck {
   ok: boolean;
   detail: string;
+  /**
+   * Why a failed check failed: old_kernel exactly when landrun reported a
+   * Landlock ABI below MIN_LANDLOCK_ABI, and check_failed for every other
+   * failure, inconclusive ones included. null when the check passed.
+   */
+  reason: "old_kernel" | "check_failed" | null;
 }
 
 /** OpenSCAD's warning for a file import() cannot open (src/io/import_stl.cc). */
@@ -232,7 +225,7 @@ const CANNOT_OPEN = "Can't open import file";
 const ABI_CHECK_SECONDS = 30;
 
 /**
- * Proves the sandbox works before a render runs. landrun runs best effort,
+ * Proves the sandbox works; the server runs it at start-up. landrun runs best effort,
  * which would sandbox OpenSCAD with whatever an older kernel offers, or not
  * at all, so this checks three things, in order, and passes only when all
  * three do:
@@ -252,8 +245,7 @@ const ABI_CHECK_SECONDS = 30;
  *    start, a full /work) proves nothing, so it is inconclusive too.
  *
  * Every failure, inconclusive or not, refuses renders; the detail says why
- * in plain words, and the server puts it in its log and in the render's
- * error.
+ * in plain words, and the server puts it in its log and in health.
  */
 export async function sandboxSelfTest(
   config: ScadConfig,
@@ -264,6 +256,7 @@ export async function sandboxSelfTest(
   if (!existsSync(probe) || statSync(probe).size === 0) {
     return {
       ok: false,
+      reason: "check_failed",
       detail: `the sandbox probe ${probe} is missing, so the sandbox cannot be checked`,
     };
   }
@@ -273,6 +266,7 @@ export async function sandboxSelfTest(
     const code = (err as NodeJS.ErrnoException).code ?? "an error";
     return {
       ok: false,
+      reason: "check_failed",
       detail: `the check was inconclusive: the sandbox probe ${probe} cannot be read by the server (${code}), so OpenSCAD failing to open it would prove nothing`,
     };
   }
@@ -286,12 +280,14 @@ export async function sandboxSelfTest(
   if (abi.abi === null) {
     return {
       ok: false,
+      reason: "check_failed",
       detail: `the check was inconclusive: landrun did not report the kernel's Landlock ABI (${abi.detail})`,
     };
   }
   if (abi.abi < MIN_LANDLOCK_ABI) {
     return {
       ok: false,
+      reason: "old_kernel",
       detail: `the kernel's Landlock ABI is ${abi.abi}, below the ${MIN_LANDLOCK_ABI} this sandbox needs, so OpenSCAD would run with fewer restrictions than it is built for`,
     };
   }
@@ -302,6 +298,7 @@ export async function sandboxSelfTest(
   if (r.ok) {
     return {
       ok: false,
+      reason: "check_failed",
       detail: `OpenSCAD read ${probe} from outside its job folder under landrun`,
     };
   }
@@ -312,11 +309,13 @@ export async function sandboxSelfTest(
   if (refusal) {
     return {
       ok: true,
+      reason: null,
       detail: `${abiText}; landrun blocked a read of ${probe}: ${refusal.trim()}`,
     };
   }
   return {
     ok: false,
+    reason: "check_failed",
     detail: `the check was inconclusive: OpenSCAD did not report that it could not open ${probe} (${r.message.split("\n").at(-1) ?? ""})`,
   };
 }

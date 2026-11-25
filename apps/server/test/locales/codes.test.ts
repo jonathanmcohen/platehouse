@@ -18,6 +18,7 @@ import {
 import { OTHER_PRINTER_LABEL, printerName } from "../../src/estimates/display.js";
 import {
   CHANGED_REASON,
+  CONTROL_CHARS_REASON,
   HELD_REASON,
   NON_UTF8_REASON,
   parseReasonFile,
@@ -66,6 +67,7 @@ describe("inbox reason files", () => {
     [STILL_WRITING_REASON, "still_writing"],
     [HELD_REASON, "held"],
     [NON_UTF8_REASON, "non_utf8"],
+    [CONTROL_CHARS_REASON, "control_chars"],
     [TOO_LARGE_REASON, "too_large"],
     [tooLargeReason(1024), "too_large"],
     [repeatedErrorReason(new Error("boom")), "retries_exhausted"],
@@ -121,9 +123,16 @@ describe("LOCALES_DIR in the configuration", () => {
   });
 
   test("refuses a relative path, naming the key and not the value", () => {
-    expect(() => loadConfig({ ...BASE, LOCALES_DIR: "locales" })).toThrow(
-      "LOCALES_DIR must be an absolute path",
-    );
+    // A value made for this run, so a message that echoed it would show.
+    const value = `relative-${process.pid}-${Date.now()}`;
+    let message = "";
+    try {
+      loadConfig({ ...BASE, LOCALES_DIR: value });
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).toContain("LOCALES_DIR must be an absolute path");
+    expect(message).not.toContain(value);
   });
 });
 
@@ -174,10 +183,10 @@ describe("the login pages", () => {
           },
           find: async () => undefined,
           end: async () => {},
+          signOutEverywhere: async () => ({ sessionsEnded: 0, tokensRevoked: 0 }),
         },
         publicOrigin: "https://platehouse.test",
         absoluteUrl: (path) => `https://platehouse.test${path}`,
-        group: "platehouse",
         locales: createLocales(),
       });
       return (await app.inject({ method: "GET", url: "/auth/login", headers })).body;

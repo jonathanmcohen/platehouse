@@ -1,10 +1,10 @@
-// AC-033: estimating happens in the background and must not block an upload.
+// Estimating happens in the background and must not block an upload.
 // Ingest meets that by having no way to reach the slicer at all, which this
 // test checks from the source: ingest.ts, and every server module it imports
 // directly or through another, imports nothing that talks to the slicer or to
 // the network, never calls fetch, and never reads the configuration or the
 // environment, which is where the slicer's address (SLICER_URL) lives.
-// Estimates are queued after the commit by Task 12, outside ingest.
+// Estimates are queued after the commit by the estimates module, outside ingest.
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,7 +44,7 @@ const graph = moduleGraph(ENTRY);
 const REACHES_THE_SLICER =
   /slicer|^(node:)?(http|https|http2|net|tls|dgram)$|^undici$|^axios$|^got$|^node-fetch$/i;
 
-describe("ingest has no way to reach the slicer (AC-033)", () => {
+describe("ingest has no way to reach the slicer, so an upload never waits on a slice", () => {
   test("the module walk sees ingest.ts and the server modules it uses", () => {
     const files = [...graph.keys()].map((f) => f.slice(SRC.length + 1));
     expect(files).toContain("ingest/ingest.ts");

@@ -1,0 +1,440 @@
+// Issue #358: a .3mf plate's 3D view, against Postgres 17 and the S3 test
+// server. Files come in through ingest from generated .3mf files (no
+// designer file). GET /app/api/plates/:id/mesh makes the plate's GLB the
+// first time a plate is opened, stores it as a mesh_glb blob of the model
+// and records it on the plate (plates.mesh_blob_id, migration 0015); every
+// later open answers the same blob. The browser then loads the GLB from
+// /blobs/<id>, never the whole .3mf.
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Readable } from "node:stream";
+import { fileURLToPath } from "node:url";
+import { buildSliceable } from "@platehouse/threemf/test/sliceable";
+import Fastify, { type FastifyInstance } from "fastify";
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { registerPlateMeshApi } from "../../../src/app-api/plate-mesh.js";
+import { memoryGate, PLATE_MESH_BUILDS, PLATE_MESH_WAITING } from "../../../src/memory/gate.js";
+import {
+  createPlateMeshes,
+  PLATE_MESH_BUSY_RETRY_MS,
+  type PlateMeshStore,
+} from "../../../src/plate-mesh/plate-mesh.js";
+import { PLATE_MESH_TIMEOUT_MS } from "../../../src/plate-mesh/worker-read.js";
+import { StoreUnavailable } from "../../../src/storage/s3.js";
+import { build3mf, type IngestEnv, startIngestEnv, writeUpload } from "../support/ingest.js";
+import { trashDaysAgo } from "../support/library.js";
+
+/**
+ * The worker the plate is read in runs the TypeScript source, as the server
+ * does from source in e2e; the built image runs the compiled worker.
+ */
+const WORKER = {
+  execArgv: [
+    "--conditions=source",
+    "--import",
+    fileURLToPath(new URL("../../support/ts-hooks.ts", import.meta.url)),
+  ],
+};
+
+let env: IngestEnv;
+let tmpDir: string;
+let app: FastifyInstance;
+/** How many times the service opened a source .3mf from the store. */
+let sourceReads = 0;
+/** While true, the store's reads fail as an unreachable store does. */
+let storeDown = false;
+/** While set, every source read waits for it; readsHeld counts the reads waiting. */
+let readGate: Promise<void> | null = null;
+let readsHeld = 0;
+
+async function ingest(name: string, bytes: Buffer) {
+  const tmpPath = await writeUpload(env, bytes);
+  return env.ingest.ingestFile({ tmpPath, originalName: name, target: "new" });
+}
+
+async function platesOf(fileId: string) {
+  return env.db
+    .selectFrom("plates")
+    .select(["id", "index", "meshBlobId", "thumbnailBlobId"])
+    .where("fileId", "=", fileId)
+    .orderBy("index")
+    .execute();
+}
+
+async function meshOf(plateId: string) {
+  return app.inject({ method: "GET", url: `/app/api/plates/${plateId}/mesh` });
+}
+
+async function bytesOf(key: string): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of await env.store.getBlobStream(key)) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks);
+}
+
+function gltfJson(glb: Buffer) {
+  expect(glb.readUInt32LE(0)).toBe(0x46546c67);
+  const length = glb.readUInt32LE(12);
+  return JSON.parse(glb.subarray(20, 20 + length).toString("utf8")) as {
+    nodes: Array<{ children?: number[]; matrix?: number[] }>;
+    materials: Array<{ pbrMetallicRoughness: { baseColorFactor: number[] } }>;
+  };
+}
+
+beforeAll(async () => {
+  env = await startIngestEnv();
+  tmpDir = await mkdtemp(join(tmpdir(), "platehouse-plate-mesh-"));
+  const store: PlateMeshStore = {
+    putBlob: (stream, opts) => env.store.putBlob(stream, opts),
+    deleteBlobs: (keys) => env.store.deleteBlobs(keys),
+    async getBlobStream(key): Promise<Readable> {
+      sourceReads += 1;
+      if (storeDown) throw new StoreUnavailable("GetObject", "ECONNREFUSED");
+      if (readGate !== null) {
+        readsHeld += 1;
+        await readGate;
+        readsHeld -= 1;
+      }
+      return env.store.getBlobStream(key);
+    },
+  };
+  app = Fastify();
+  await registerPlateMeshApi(app, createPlateMeshes({ db: env.db, store, tmpDir, worker: WORKER }));
+  await app.ready();
+});
+
+afterAll(async () => {
+  await app?.close();
+  await rm(tmpDir, { recursive: true, force: true });
+  await env?.stop();
+});
+
+beforeEach(() => {
+  sourceReads = 0;
+  storeDown = false;
+});
+
+describe("GET /app/api/plates/:id/mesh", () => {
+  test("makes the plate's GLB from its objects, stores it as a blob of the model and names it", async () => {
+    const stored = await ingest("Cubes.3mf", buildSliceable({ plates: 3, filaments: 2 }));
+    const plates = await platesOf(stored.fileId);
+    const plate2 = plates[1];
+    if (plate2 === undefined) throw new Error("no plate 2");
+
+    const res = await meshOf(plate2.id);
+    expect(res.statusCode, res.body).toBe(200);
+    const { url } = res.json() as { url: string };
+    const blobId = url.replace(/^\/blobs\//, "");
+    expect(url).toBe(`/blobs/${blobId}`);
+
+    const blob = await env.repos.blobs.get(blobId);
+    expect(blob).toMatchObject({
+      modelId: stored.modelId,
+      kind: "mesh_glb",
+      contentType: "model/gltf-binary",
+      state: "stored",
+    });
+    expect((await platesOf(stored.fileId))[1]?.meshBlobId).toBe(blobId);
+
+    // Plate 2's two cubes, white and near-black (the sliceable file's colours).
+    const json = gltfJson(await bytesOf(blob?.key ?? ""));
+    expect(json.nodes[0]?.children).toHaveLength(2);
+    expect(json.materials.map((m) => m.pbrMetallicRoughness.baseColorFactor[0])).toEqual([
+      1,
+      expect.closeTo(0.0137, 3),
+    ]);
+  });
+
+  test("answers the same blob on every later open, without reading the .3mf again", async () => {
+    const stored = await ingest("Again.3mf", buildSliceable({ plates: 2, filaments: 1 }));
+    const [plate1] = await platesOf(stored.fileId);
+    if (plate1 === undefined) throw new Error("no plate 1");
+    const first = (await meshOf(plate1.id)).json() as { url: string };
+    const reads = sourceReads;
+    const blobsBefore = await env.db.selectFrom("blobs").select("id").execute();
+    const second = await meshOf(plate1.id);
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual(first);
+    expect(sourceReads).toBe(reads);
+    expect(await env.db.selectFrom("blobs").select("id").execute()).toHaveLength(
+      blobsBefore.length,
+    );
+  });
+
+  test("two opens at once store one mesh, and no object is left without a row", async () => {
+    const stored = await ingest("Twice.3mf", buildSliceable({ plates: 1, filaments: 3 }));
+    const [plate] = await platesOf(stored.fileId);
+    if (plate === undefined) throw new Error("no plate");
+    const [a, b] = await Promise.all([meshOf(plate.id), meshOf(plate.id)]);
+    expect(a.statusCode).toBe(200);
+    expect(b.json()).toEqual(a.json());
+    const meshes = await env.db
+      .selectFrom("blobs")
+      .select("key")
+      .where("modelId", "=", stored.modelId)
+      .where("kind", "=", "mesh_glb")
+      .execute();
+    expect(meshes).toHaveLength(1);
+    const objects = await env.store.listPrefix(`models/${stored.modelId}/`);
+    const rows = await env.db
+      .selectFrom("blobs")
+      .select("key")
+      .where("modelId", "=", stored.modelId)
+      .execute();
+    expect(objects.map((o) => o.key).sort()).toEqual(rows.map((r) => r.key).sort());
+  });
+
+  test("a file with no readable mesh says why with 422, keeps its pictures and stores nothing", async () => {
+    const stored = await ingest("Pictures only.3mf", build3mf({ plates: 2, nonce: "no-mesh" }));
+    const before = await platesOf(stored.fileId);
+    const plate = before[0];
+    if (plate === undefined) throw new Error("no plate");
+    expect(plate.thumbnailBlobId).not.toBeNull();
+
+    const res = await meshOf(plate.id);
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toMatchObject({ error: "no_mesh", code: "no_mesh" });
+    expect(await platesOf(stored.fileId)).toEqual(before);
+    const meshes = await env.db
+      .selectFrom("blobs")
+      .select("id")
+      .where("modelId", "=", stored.modelId)
+      .where("kind", "=", "mesh_glb")
+      .execute();
+    expect(meshes).toEqual([]);
+
+    // The answer is remembered: the file is not read again for it.
+    const reads = sourceReads;
+    expect((await meshOf(plate.id)).statusCode).toBe(422);
+    expect(sourceReads).toBe(reads);
+  });
+
+  test("a store that is down is 503, records nothing, and the next open after it is back works", async () => {
+    const stored = await ingest("Outage.3mf", buildSliceable({ plates: 1, filaments: 2 }));
+    const [plate] = await platesOf(stored.fileId);
+    if (plate === undefined) throw new Error("no plate");
+    storeDown = true;
+    const down = await meshOf(plate.id);
+    expect(down.statusCode).toBe(503);
+    expect((await platesOf(stored.fileId))[0]?.meshBlobId).toBeNull();
+    storeDown = false;
+    const up = await meshOf(plate.id);
+    expect(up.statusCode).toBe(200);
+  });
+
+  test("a plate of a model in the trash, or an unknown plate, is 404", async () => {
+    const stored = await ingest("Binned.3mf", buildSliceable({ plates: 1, filaments: 1 }));
+    const [plate] = await platesOf(stored.fileId);
+    if (plate === undefined) throw new Error("no plate");
+    await trashDaysAgo(env.db, stored.modelId, 0);
+    expect((await meshOf(plate.id)).statusCode).toBe(404);
+    expect((await meshOf("01900000-0000-7000-8000-00000000dead")).statusCode).toBe(404);
+  });
+
+  test("makes at most PLATE_MESH_BUILDS plates' meshes at once, and the others wait their turn", async () => {
+    const stored = await ingest("Many plates.3mf", buildSliceable({ plates: 4, filaments: 1 }));
+    const plates = await platesOf(stored.fileId);
+    expect(plates.length).toBeGreaterThan(PLATE_MESH_BUILDS);
+    let release: () => void = () => undefined;
+    readGate = new Promise((resolve) => {
+      release = resolve;
+    });
+    try {
+      const opens = plates.map((p) => meshOf(p.id));
+      await vi.waitFor(() => expect(readsHeld).toBe(PLATE_MESH_BUILDS));
+      // Time for a run past the limit to reach the store, if one could.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(readsHeld).toBe(PLATE_MESH_BUILDS);
+      expect(await readdir(tmpDir)).toHaveLength(PLATE_MESH_BUILDS);
+      release();
+      const answers = await Promise.all(opens);
+      expect(answers.map((a) => a.statusCode)).toEqual(plates.map(() => 200));
+    } finally {
+      release();
+      readGate = null;
+    }
+  });
+
+  // Review of PR #409: plate builds go through the process's memory gate,
+  // which a STEP preview's mesh read shares, so a plate is not read while a
+  // preview holds its mesh in memory.
+  test("a plate is not read while another job holds the process's memory gate", async () => {
+    const stored = await ingest("Gate.3mf", buildSliceable({ plates: 1, filaments: 1 }));
+    const [plate] = await platesOf(stored.fileId);
+    if (plate === undefined) throw new Error("no plate");
+    let release: () => void = () => undefined;
+    const holding = memoryGate.run(
+      "step-preview:held-by-the-test",
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      new AbortController().signal,
+      { first: true },
+    );
+    try {
+      const open = meshOf(plate.id);
+      // Time for the open to look its plate up and reach the store, if it could.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(sourceReads).toBe(0);
+      release();
+      await holding;
+      expect((await open).statusCode).toBe(200);
+      expect(sourceReads).toBe(1);
+    } finally {
+      release();
+    }
+  });
+
+  test("an open past PLATE_MESH_WAITING waiting builds is 503 busy, and starts nothing", async () => {
+    const plateCount = PLATE_MESH_BUILDS + PLATE_MESH_WAITING + 1;
+    const stored = await ingest("Queue.3mf", buildSliceable({ plates: plateCount, filaments: 1 }));
+    const plates = await platesOf(stored.fileId);
+    expect(plates).toHaveLength(plateCount);
+    let release: () => void = () => undefined;
+    readGate = new Promise((resolve) => {
+      release = resolve;
+    });
+    try {
+      const held = plates.slice(0, -1).map((p) => meshOf(p.id));
+      await vi.waitFor(() => expect(readsHeld).toBe(PLATE_MESH_BUILDS));
+      // Time for every other open to look its plate up and join the queue.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const reads = sourceReads;
+      const last = plates.at(-1);
+      if (last === undefined) throw new Error("no last plate");
+      const busy = await meshOf(last.id);
+      expect(busy.statusCode).toBe(503);
+      expect(busy.json()).toMatchObject({ error: "busy" });
+      expect(busy.headers["retry-after"]).toBe("5");
+      expect(sourceReads).toBe(reads);
+      release();
+      expect((await Promise.all(held)).map((a) => a.statusCode)).toEqual(held.map(() => 200));
+      // Once the queue has room again, the same plate is made.
+      expect((await meshOf(last.id)).statusCode).toBe(200);
+    } finally {
+      release();
+      readGate = null;
+    }
+  });
+
+  test("a read past the worker's timeout answers too_large, stores nothing, and is read again after PLATE_MESH_BUSY_RETRY_MS", async () => {
+    // The timeout measures how busy the machine was as much as the file: the
+    // plate is answered from memory for a while, then read again, and reads
+    // once the load is gone (here, once the read has its normal time). A
+    // file's own verdict stays remembered however long passes.
+    const stored = await ingest("Too slow.3mf", buildSliceable({ plates: 1, filaments: 2 }));
+    const [plate] = await platesOf(stored.fileId);
+    if (plate === undefined) throw new Error("no plate");
+    const flat = await ingest("Pictures only too.3mf", build3mf({ plates: 1, nonce: "busy" }));
+    const [noMesh] = await platesOf(flat.fileId);
+    if (noMesh === undefined) throw new Error("no plate");
+    let clock = 1_000_000;
+    let reads = 0;
+    const worker = { ...WORKER, timeoutMs: 1 };
+    const slow = Fastify();
+    await registerPlateMeshApi(
+      slow,
+      createPlateMeshes({
+        db: env.db,
+        store: {
+          putBlob: (stream, opts) => env.store.putBlob(stream, opts),
+          deleteBlobs: (keys) => env.store.deleteBlobs(keys),
+          getBlobStream: (key) => {
+            reads += 1;
+            return env.store.getBlobStream(key);
+          },
+        },
+        tmpDir,
+        worker,
+        now: () => clock,
+      }),
+    );
+    await slow.ready();
+    const open = (id: string) => slow.inject({ method: "GET", url: `/app/api/plates/${id}/mesh` });
+    try {
+      const first = await open(plate.id);
+      expect(first.statusCode).toBe(422);
+      expect(first.json()).toMatchObject({ error: "no_mesh", code: "too_large" });
+      expect((await platesOf(stored.fileId))[0]?.meshBlobId).toBeNull();
+      expect(reads).toBe(1);
+
+      // Within PLATE_MESH_BUSY_RETRY_MS the answer comes from memory.
+      clock += PLATE_MESH_BUSY_RETRY_MS - 1;
+      const again = await open(plate.id);
+      expect(again.json()).toMatchObject({ code: "too_large" });
+      expect(reads).toBe(1);
+
+      // The load is gone: reads have their normal time again. Under the 1 ms
+      // timeout no read can finish (the timer starts when the worker is
+      // spawned), so the file's own verdict needs this first.
+      worker.timeoutMs = PLATE_MESH_TIMEOUT_MS;
+      const verdict = await open(noMesh.id);
+      expect(verdict.json()).toMatchObject({ error: "no_mesh", code: "no_mesh" });
+      expect(reads).toBe(2);
+
+      // The time has passed: the plate is read again and made.
+      clock += 1;
+      const made = await open(plate.id);
+      expect(made.statusCode).toBe(200);
+      expect(reads).toBe(3);
+      const meshBlobId = (await platesOf(stored.fileId))[0]?.meshBlobId;
+      expect(meshBlobId).not.toBeNull();
+      expect(made.json()).toEqual({ url: `/blobs/${meshBlobId}` });
+
+      // The file's own verdict is never read again.
+      clock += 100 * PLATE_MESH_BUSY_RETRY_MS;
+      expect((await open(noMesh.id)).json()).toMatchObject({ code: "no_mesh" });
+      expect(reads).toBe(3);
+    } finally {
+      await slow.close();
+    }
+  });
+
+  test("after one plate of a file times out, another plate of the same file answers too_large without a worker or a read", async () => {
+    const stored = await ingest(
+      "Many plates slow.3mf",
+      buildSliceable({ plates: 2, filaments: 1 }),
+    );
+    const [first, second] = await platesOf(stored.fileId);
+    if (first === undefined || second === undefined) throw new Error("no plates");
+    let clock = 1_000_000;
+    let reads = 0;
+    const slow = Fastify();
+    await registerPlateMeshApi(
+      slow,
+      createPlateMeshes({
+        db: env.db,
+        store: {
+          putBlob: (stream, opts) => env.store.putBlob(stream, opts),
+          deleteBlobs: (keys) => env.store.deleteBlobs(keys),
+          getBlobStream: (key) => {
+            reads += 1;
+            return env.store.getBlobStream(key);
+          },
+        },
+        tmpDir,
+        worker: { ...WORKER, timeoutMs: 1 },
+        now: () => clock,
+      }),
+    );
+    await slow.ready();
+    const open = (id: string) => slow.inject({ method: "GET", url: `/app/api/plates/${id}/mesh` });
+    try {
+      expect((await open(first.id)).json()).toMatchObject({ error: "no_mesh", code: "too_large" });
+      expect(reads).toBe(1);
+      // Another plate of the same file: answered from memory, nothing read.
+      clock += 1;
+      const other = await open(second.id);
+      expect(other.statusCode).toBe(422);
+      expect(other.json()).toMatchObject({ error: "no_mesh", code: "too_large" });
+      expect(reads).toBe(1);
+    } finally {
+      await slow.close();
+    }
+  });
+
+  test("leaves no temp file behind", async () => {
+    expect(await readdir(tmpDir)).toEqual([]);
+  });
+});

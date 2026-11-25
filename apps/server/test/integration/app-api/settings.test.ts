@@ -1,17 +1,19 @@
-// Build plan Task 21: the app API behind the settings, trash and organising
-// pages (AC-013 warning, AC-031 menu, AC-060, AC-061, AC-062, AC-063 UI,
-// AC-083 UI). Every route is under /app/api and session-class: it needs a
+// The app API behind the settings, trash and organising
+// pages: the bucket versioning warning, the printer menu, rename, tags, flat
+// collections, the trash, and per-client API tokens. Every route is under /app/api and session-class: it needs a
 // live session, and every state-changing one needs Origin to be
-// PUBLIC_ORIGIN (Task 15's gate), so the token routes here are for the web UI
+// PUBLIC_ORIGIN (the route-class gate), so the token routes here are for the web UI
 // and separate from the bearer API.
 //
 // Everything is real but the login: a migrated Postgres 17 and a bucket on
 // the S3 test server made without versioning, pg-boss with the ingest and
-// slicer queues, estimates (Task 12) against the contract-faithful slicer
-// stub, tokens in api_tokens (Task 16), and the trash (Task 14). The request
+// slicer queues, estimates against the contract-faithful slicer
+// stub, tokens in api_tokens, and the trash. The request
 // log is captured from buildApp's logger stream, and the last test reads it:
 // no token this file made appears in any line, with or without its prefix.
-// Sessions are in memory (Task 15's test support). Every file is generated.
+// Sessions are in the sessions table too, read through the login tests'
+// support: a token is made in one transaction with a locked read of its
+// maker's session row (issue #414). Every file is generated.
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { FastifyInstance } from "fastify";
@@ -29,17 +31,21 @@ import { createApiLibrary } from "../../../src/api/v1.js";
 import { buildApp } from "../../../src/app.js";
 import { readDisplayContext } from "../../../src/app-api/library.js";
 import { recordVersioning } from "../../../src/app-api/settings.js";
-import { dbTokenList, type ListedToken } from "../../../src/app-api/tokens.js";
+import {
+  dbTokenList,
+  type ListedToken,
+  TOKEN_SIGN_IN_WINDOW_MS,
+} from "../../../src/app-api/tokens.js";
 import { patternClass } from "../../../src/auth/gate.js";
-import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
+import { dbSessionStore, SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { createSlicerClient } from "../../../src/estimates/client.js";
-import { plateNumbers } from "../../../src/estimates/display.js";
+import { plateNumbersMany } from "../../../src/estimates/display.js";
 import { FALLBACK_SLICES_PER_MINUTE, MIN_FINISHES_FOR_RATE } from "../../../src/estimates/rate.js";
 import { createEstimates, type Estimates } from "../../../src/estimates/service.js";
 import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
-import { QUEUE, startQueues } from "../../../src/jobs/queues.js";
+import { MAINTENANCE_TASKS, QUEUE, startQueues } from "../../../src/jobs/queues.js";
 import { createTrash, type PurgeStore } from "../../../src/library/trash.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { createUploads } from "../../../src/uploads/tus.js";
@@ -221,7 +227,7 @@ beforeAll(async () => {
   tokens = createTokens({ store: dbTokenStore(env.db) });
   purgeStore = env.store;
   tokenList = dbTokenList(env.db);
-  auth = await testAuth();
+  auth = await testAuth({ store: dbSessionStore(env.db) });
   app = await buildApp({
     health: { database: async () => 1, queuesRunning: () => true },
     uploads: createUploads({
@@ -240,12 +246,13 @@ beforeAll(async () => {
             settings: () => env.repos.settings.get(),
             listPrinters: () => estimates.listPrinters(),
           }),
-        plateNumbers: (ctx, id) => plateNumbers(env.db, ctx, id),
+        plateNumbersMany: (ctx, ids) => plateNumbersMany(env.db, ctx, ids),
       }),
     },
     appApi: {
       settings: { settings: env.repos.settings, estimates },
-      tokens: { tokens, list: () => tokenList() },
+      // The sign-in window is measured on the sessions' clock (issue #377).
+      tokens: { tokens, list: () => tokenList(), now: () => auth.clock.now },
       organise: {
         db: env.db,
         trash: createTrash({
@@ -269,7 +276,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await app?.close();
   await auth?.issuer.stop();
-  await boss?.stop({ graceful: false });
+  // Graceful, so a poll in flight ends before pg-boss closes (issue #490).
+  await boss?.stop({ graceful: true, timeout: 20_000 });
   await stub?.stop();
   await env?.stop();
 });
@@ -466,9 +474,13 @@ describe("the settings page", () => {
     }
   });
 
-  test("adding a printer queues every plate for it and answers how many", async () => {
+  test("adding a printer answers how many plates it will queue, before queueing them", async () => {
     await uploadPlate();
     await drain();
+    const pollJobs = async () =>
+      (await boss.findJobs(QUEUE.maintenance, { data: { task: MAINTENANCE_TASKS.pollOrca } }))
+        .length;
+    const pollsBefore = await pollJobs();
     const held = stub.hold();
     try {
       const res = await call("PUT", "/app/api/settings/printers", {
@@ -486,6 +498,20 @@ describe("the settings page", () => {
       expect(queued).toBeGreaterThanOrEqual(1);
       // Nothing else was queued, so its plates are through after its own.
       expect(answer.added[0]?.through).toBe(queued);
+      // The save sent a poll to queue them (a maintenance worker may have
+      // taken it already, so the slicer queue is not asserted empty).
+      expect(await pollJobs()).toBeGreaterThan(pollsBefore);
+      // Running the poll queues one slice job per plate.
+      await estimates.pollOrca();
+      // Jobs in any state (a worker may have claimed or finished one, and
+      // pg-boss writes a finished job's state late), by estimate: a poll the
+      // maintenance worker runs at the same time may send a copy.
+      const sliceJobs = await boss.findJobs<{ printerId: string; estimateId: string }>(
+        QUEUE.slicer,
+        {},
+      );
+      const forX1C = sliceJobs.filter((j) => j.data.printerId === X1C);
+      expect(new Set(forX1C.map((j) => j.data.estimateId)).size).toBe(queued);
       // The settings answer shows that work waiting for the X1C.
       expect((await call("GET", "/app/api/settings")).json()).toMatchObject({
         printerId: P1S,
@@ -528,6 +554,7 @@ describe("the settings page", () => {
       const forA1 = added.find((a) => a.printerId === A1)?.queued ?? 0;
       expect(forX1C).toBeGreaterThanOrEqual(1);
       expect(forA1).toBeGreaterThanOrEqual(1);
+      await estimates.pollOrca();
       // Once the first X1C slice is running, the figures are exact.
       await until(
         () => stub.calls.length,
@@ -561,6 +588,7 @@ describe("the settings page", () => {
     await call("PUT", "/app/api/settings/printers", {
       json: { printers: [P1S, X1C], defaultId: P1S, version: await version() },
     });
+    await estimates.pollOrca();
     await drain();
     const calls = stub.calls.length;
     const reorder = await call("PUT", "/app/api/settings/printers", {
@@ -626,6 +654,8 @@ describe("the settings page", () => {
       expect(added.status, added.text).toBe(200);
       const queued = (added.json() as { added: Array<{ queued: number }> }).added[0]?.queued ?? 0;
       expect(queued).toBeGreaterThanOrEqual(1);
+      // The poll the save sent queues its plates (run here, as in the other tests).
+      await estimates.pollOrca();
       // Window A, still showing [P1S], saves [P1S]: refused, nothing dropped.
       const stale = await call("PUT", "/app/api/settings/printers", {
         json: { printers: [P1S], defaultId: P1S, version: readByA },
@@ -652,6 +682,7 @@ describe("the settings page", () => {
     await call("PUT", "/app/api/settings/printers", {
       json: { printers: [P1S, X1C], defaultId: P1S, version: await version() },
     });
+    await estimates.pollOrca();
     await drain();
     const A1 = "Bambu Lab A1 0.4 nozzle";
     const readByA = await version();
@@ -707,6 +738,30 @@ describe("the settings page", () => {
 });
 
 describe("API tokens", () => {
+  // A new token needs a session signed in within TOKEN_SIGN_IN_WINDOW_MS
+  // (issue #322). The sessions and the token route both read the test auth's
+  // hand-moved clock (auth.clock, passed to the tokens module as now), so the
+  // window does not depend on how long the tests above took (issue #377).
+  // Each token test still signs in afresh, with a display name to record as
+  // creator.
+  beforeEach(async () => {
+    session = (await auth.sessions.start("subject-settings", "Synthetic Settings User")).id;
+  });
+
+  test("the sign-in window is measured on the sessions' clock (issue #377)", async () => {
+    // Signed in at the auth clock's time; that clock moves past the window,
+    // while the real clock has hardly moved. A route reading another clock
+    // than the sessions would let this through.
+    auth.clock.advance(TOKEN_SIGN_IN_WINDOW_MS + 1000);
+    const late = await call("POST", "/app/api/tokens", { json: { name: `late ${marker()}` } });
+    expect(late.status, late.text).toBe(403);
+    expect((late.json() as { error: string }).error).toBe("sign_in_required");
+    expect(late.text).not.toContain(TOKEN_PREFIX);
+    // A sign-in on the moved clock is fresh again.
+    session = (await auth.sessions.start("subject-settings", "Synthetic Settings User")).id;
+    await makeToken(`on time ${marker()}`);
+  });
+
   test("new token is shown once and never again", async () => {
     const { res, created } = await makeToken("Upload script on a laptop");
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -728,6 +783,7 @@ describe("API tokens", () => {
       prefix: created.prefix,
       createdAt: created.createdAt,
       lastUsedAt: null,
+      createdBy: { subject: "subject-settings", name: "Synthetic Settings User" },
     });
 
     // It is a working API token, and its use shows as last used.
@@ -738,6 +794,19 @@ describe("API tokens", () => {
       }
     ).tokens.find((t) => t.id === created.id);
     expect(after?.lastUsedAt).not.toBeNull();
+  });
+
+  test("the api_tokens row records who made the token (issue #322)", async () => {
+    const { created } = await makeToken(`creator ${marker()}`);
+    const row = await env.db
+      .selectFrom("apiTokens")
+      .select(["createdBySubject", "createdByName"])
+      .where("id", "=", created.id)
+      .executeTakeFirstOrThrow();
+    expect(row).toEqual({
+      createdBySubject: "subject-settings",
+      createdByName: "Synthetic Settings User",
+    });
   });
 
   test("revoking one token leaves the other working and drops it from the list", async () => {
@@ -1093,7 +1162,7 @@ describe("deleting tags and collections", () => {
   });
 });
 
-/** What GET /app/api/trash answers now, as the trash page holds it. */
+/** What GET /app/api/trash answers now, as the trash page holds it: page 1 only. */
 async function listedTrash(): Promise<{ ids: string[]; readAt: string }> {
   const res = await call("GET", "/app/api/trash");
   expect(res.status, res.text).toBe(200);
@@ -1208,6 +1277,10 @@ describe("the trash", () => {
       expect((await call("GET", "/app/api/trash")).json()).toEqual({
         models: [expect.objectContaining({ id: failing.model.id, purgeStarted: true })],
         readAt: expect.any(String),
+        page: 1,
+        pageSize: 100,
+        pageCount: 1,
+        total: 1,
       });
     } finally {
       purgeStore = env.store;
@@ -1242,6 +1315,91 @@ describe("the trash", () => {
     expect(await env.store.listPrefix(`models/${unseen.model.id}/`)).not.toEqual([]);
     expect((await listedTrash()).ids).toEqual([unseen.model.id]);
     // It can still be restored.
+    expect((await call("POST", `/app/api/trash/${unseen.model.id}/restore`)).status).toBe(204);
+  });
+
+  /** Trashes n models with distinct, ordered trash times, oldest first: row i is trashed at minute i. */
+  async function seedTrashOf(n: number): Promise<string[]> {
+    await call("POST", "/app/api/trash/empty", { json: { cutoff: (await listedTrash()).readAt } });
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const m = await seedStoredModel(env);
+      await call("POST", `/app/api/models/${m.model.id}/trash`);
+      const at = `2026-11-10T10:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}Z`;
+      await trashedAtExactly(m.model.id, at);
+      ids.push(m.model.id);
+    }
+    return ids;
+  }
+
+  type TrashPageBody = {
+    models: Array<{ id: string }>;
+    readAt: string;
+    page: number;
+    pageSize: number;
+    pageCount: number;
+    total: number;
+  };
+
+  test("the trash answers 100 per page, newest first, with page counts", async () => {
+    const ids = await seedTrashOf(101);
+    const res = await call("GET", "/app/api/trash");
+    expect(res.status, res.text).toBe(200);
+    const body = res.json() as TrashPageBody;
+    expect(body).toMatchObject({ page: 1, pageSize: 100, pageCount: 2, total: 101 });
+    expect(body.models.map((m) => m.id)).toEqual([...ids].reverse().slice(0, 100));
+  });
+
+  test("page 2 continues where page 1 ended", async () => {
+    const ids = await seedTrashOf(3);
+    const first = (await call("GET", "/app/api/trash?limit=2")).json() as TrashPageBody;
+    expect(first.models.map((m) => m.id)).toEqual([ids[2], ids[1]]);
+    const res = await call("GET", "/app/api/trash?page=2&limit=2");
+    expect(res.status, res.text).toBe(200);
+    const body = res.json() as TrashPageBody;
+    expect(body).toMatchObject({ page: 2, pageSize: 2, pageCount: 2, total: 3 });
+    expect(body.models.map((m) => m.id)).toEqual([ids[0]]);
+    // A page past the end is served as the last page.
+    const past = (await call("GET", "/app/api/trash?page=9&limit=2")).json() as TrashPageBody;
+    expect(past.page).toBe(2);
+    expect(past.models.map((m) => m.id)).toEqual([ids[0]]);
+  });
+
+  test("an out-of-range page or limit is refused", async () => {
+    for (const q of ["page=0", "page=1000001", "page=x", "limit=0", "limit=201"]) {
+      const res = await call("GET", `/app/api/trash?${q}`);
+      expect(res.status, q).toBe(400);
+      expect(res.json()).toMatchObject({ error: "bad_request" });
+    }
+  });
+
+  test("empty trash with page 1's readAt leaves a model trashed after it, with the trash paged", async () => {
+    await seedTrashOf(3);
+    const first = (await call("GET", "/app/api/trash?limit=2")).json() as TrashPageBody;
+    expect(first.pageCount).toBe(2);
+    const unseen = await seedStoredModel(env);
+    await sleep(5);
+    await call("POST", `/app/api/models/${unseen.model.id}/trash`);
+
+    const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: first.readAt } });
+    expect(res.status, res.text).toBe(200);
+    expect((res.json() as { purged: number }).purged).toBe(3);
+    expect((await listedTrash()).ids).toEqual([unseen.model.id]);
+    expect((await call("POST", `/app/api/trash/${unseen.model.id}/restore`)).status).toBe(204);
+  });
+
+  test("empty trash with page 2's readAt leaves a model trashed after that read", async () => {
+    await seedTrashOf(3);
+    const second = (await call("GET", "/app/api/trash?page=2&limit=2")).json() as TrashPageBody;
+    expect(second.page).toBe(2);
+    const unseen = await seedStoredModel(env);
+    await sleep(5);
+    await call("POST", `/app/api/models/${unseen.model.id}/trash`);
+
+    const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: second.readAt } });
+    expect(res.status, res.text).toBe(200);
+    expect((res.json() as { purged: number }).purged).toBe(3);
+    expect((await listedTrash()).ids).toEqual([unseen.model.id]);
     expect((await call("POST", `/app/api/trash/${unseen.model.id}/restore`)).status).toBe(204);
   });
 
@@ -1345,5 +1503,9 @@ describe("every /app/api route", () => {
       expect(log).not.toContain(made);
       expect(log).not.toContain(made.slice(TOKEN_PREFIX.length));
     }
+    // Tokens this test never saw, such as the ones made on the 500 path,
+    // whose answer it does not read: nothing token-shaped is in the log.
+    const tokenShaped = new RegExp(TOKEN_PATTERN.source.replace(/^\^|\$$/g, ""));
+    expect(log).not.toMatch(tokenShaped);
   });
 });

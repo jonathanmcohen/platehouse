@@ -1,4 +1,4 @@
-// OpenSCAD in the built image (AC-052): renders STL and PNG headless, shows
+// OpenSCAD in the built image: renders STL and PNG headless, shows
 // OpenSCAD's own message on an error, and cannot read a file outside its own
 // job folder. /opt/platehouse/sandbox-probe.stl is a small STL the image
 // ships for this test; each control opens the same file without landrun, so
@@ -11,8 +11,8 @@
 // case runs bash under the server's rules with bash itself let in by hand.
 import { slicerContract } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { landrunArgs } from "../../src/sandbox.js";
-import { type RunningSlicer, startSlicer } from "./support/slicer.js";
+import { landrunArgs, sandboxRules } from "../../src/sandbox.js";
+import { IMAGE_PATHS, type RunningSlicer, runInImage, startSlicer } from "./support/slicer.js";
 
 let slicer: RunningSlicer;
 beforeAll(async () => {
@@ -60,7 +60,8 @@ function importWithoutSandbox(file: string) {
 
 /** landrun with the server's own rules, run by hand in SHELL_DIR. */
 function landrunInContainer(command: string[], extraRox: string[] = []) {
-  const args = landrunArgs({ dir: SHELL_DIR, openscadDir: "/opt/openscad", command });
+  const rules = sandboxRules("openscad", { ...IMAGE_PATHS, dir: SHELL_DIR });
+  const args = landrunArgs({ rules, command });
   if (extraRox.length > 0) {
     const at = args.indexOf("--rox") + 1;
     args[at] = [args[at], ...extraRox].join(",");
@@ -113,7 +114,7 @@ describe("OpenSCAD in the image", () => {
   ];
 
   test.each(OUTSIDE)(
-    "scad import of %s, outside its own job folder, fails (AC-052)",
+    "scad import of %s, outside its own job folder, fails",
     async (_label, file) => {
       const res = await post("/v1/scad/stl", `import("${file}");\n`);
       expect(res.status).toBe(422);
@@ -200,7 +201,7 @@ describe("OpenSCAD in the image", () => {
 
   // Issue #153 item 3: a process that calls setsid() leaves its job's process
   // group, so the kill at the time cap misses it, and it is re-parented to
-  // tini. The server kills every such process when a job is released. A
+  // tini. The server kills such processes left behind when a job is released. A
   // setsid'd sleep started through docker exec stands for one: once its
   // shell exits, its parent is PID 1, as an escaped OpenSCAD child's would
   // be. A process docker exec starts directly has parent 0 and is not hit.
@@ -238,11 +239,44 @@ describe("OpenSCAD in the image", () => {
     expect(slicer.logs()).toMatch(new RegExp(`left behind by the job: [0-9, ]*\\b${pid}\\b`));
   });
 
+  test("a re-parented process and its child are both gone after the next job", async () => {
+    const started = slicer.exec([
+      "sh",
+      "-c",
+      `setsid sh -c 'sleep 600 & echo $! > /work/leftover-a.pid; sleep 600 & echo $! > /work/leftover-b.pid; wait' </dev/null >/dev/null 2>&1 &
+       for i in $(seq 50); do [ -s /work/leftover-b.pid ] && break; sleep 0.1; done; cat /work/leftover-a.pid /work/leftover-b.pid`,
+    ]);
+    const pids = started.stdout.trim().split("\n");
+    expect(pids, started.stderr).toHaveLength(2);
+    for (const pid of pids) expect(pid).toMatch(/^\d+$/);
+    const present = (pid: string) =>
+      slicer.exec(["sh", "-c", `test -d /proc/${pid} && echo up`]).stdout.trim() === "up";
+    // control: both are running before the job
+    for (const pid of pids) expect(present(pid), `process ${pid} did not start`).toBe(true);
+
+    const res = await post("/v1/scad/stl", "cube([1, 1, 1]);\n");
+    expect(await statusOf(res)).toBe("200");
+    for (let i = 0; i < 50 && pids.some(present); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    for (const pid of pids) expect(present(pid), `process ${pid} is still there`).toBe(false);
+  });
+
   // Issue #153 item 5: the image's build strips every setuid and setgid bit
-  // and fails if any is left; this checks the image as it runs.
+  // and fails if any is left; this checks the built image. The check is about
+  // what is in the image, not how it runs, so it does not need the hardened
+  // runtime: it runs in a fresh throwaway container from the same image, as
+  // root with Docker's default capabilities, which can read every folder
+  // (root in the hardened container has no capabilities, and cannot). No
+  // folder is left out, and any error find reports (a folder it could not
+  // search) fails the test, as a found file does.
   test("no file in the image is setuid or setgid", () => {
-    const r = slicer.exec(["sh", "-c", "find / -xdev -perm /6000 -type f 2>/dev/null; echo done"]);
-    expect(r.stdout.trim()).toBe("done");
+    const r = runInImage("find", ["/", "-xdev", "-perm", "/6000", "-type", "f"]);
+    expect({ code: r.code, stdout: r.stdout, stderr: r.stderr }).toEqual({
+      code: 0,
+      stdout: "",
+      stderr: "",
+    });
   });
 
   // The job folders' tmpfs carries noexec, nosuid and nodev, as the reference

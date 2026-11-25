@@ -1,5 +1,5 @@
 // Builds the slicer image and runs it the way examples/docker-compose.yml does
-// (AC-035): read-only root, a 1 GB tmpfs at /work mounted noexec, nosuid and
+// (its isolation and limits): read-only root, a 1 GB tmpfs at /work mounted noexec, nosuid and
 // nodev (nothing in a job folder is ever run; examples/docker-compose.yml
 // carries the same options), 4 CPUs
 // (fewer if the host has fewer), 4 GB of memory with no swap, a 1024 process
@@ -17,9 +17,23 @@
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { slicerContract } from "@platehouse/slicer-contract";
 
 const ROOT = resolve(fileURLToPath(new URL("../../../../../", import.meta.url)));
 export const IMAGE = process.env.SLICER_IMAGE ?? "platehouse-slicer:test";
+
+/**
+ * The image's folders, as the server's defaults name them (loadConfig), for
+ * a test that builds a program's sandbox rules by hand (sandboxRules) and
+ * runs them with docker exec.
+ */
+export const IMAGE_PATHS = {
+  openscadDir: "/opt/openscad",
+  orcaDir: "/opt/orca",
+  profilesDir: "/opt/platehouse/profiles",
+  nodeDir: "/opt/node",
+  appDir: "/opt/platehouse/app",
+} as const;
 
 interface Run {
   code: number;
@@ -63,6 +77,18 @@ export function ensureImage(): void {
   built = true;
 }
 
+/**
+ * Runs one program in a fresh throwaway container from the slicer image, as
+ * root with Docker's default capabilities, and removes the container after.
+ * For checks of what is in the image itself, which do not need the hardened
+ * runtime startSlicer gives: root there has no capabilities, so it cannot
+ * read every folder in the image.
+ */
+export function runInImage(program: string, args: string[]): Run {
+  ensureImage();
+  return docker(["run", "--rm", "-u", "0", "--entrypoint", program, IMAGE, ...args]);
+}
+
 export interface RunningSlicer {
   id: string;
   base: string;
@@ -74,7 +100,7 @@ export interface RunningSlicer {
 }
 
 /**
- * examples/docker-compose.yml gives the slicer 4 CPUs (AC-035). Docker refuses --cpus above the
+ * examples/docker-compose.yml gives the slicer 4 CPUs. Docker refuses --cpus above the
  * host's count, so the tests ask for 4 or as many as the host has, whichever is fewer.
  */
 export function cpuLimit(hostCpus: number): string {
@@ -149,9 +175,31 @@ export async function startSlicer(): Promise<RunningSlicer> {
       }
       await new Promise((r) => setTimeout(r, 1000));
     }
+    // The image's healthcheck passes on any 200, and health answers 200 while
+    // the start-up sandbox check holds the heavy-job lock, where a request is
+    // 409 busy. A test starts once that check is done.
+    const base = `http://127.0.0.1:${port}`;
+    let last = "no answer";
+    for (;;) {
+      try {
+        const res = await fetch(`${base}/v1/health`);
+        const body = res.status === 200 ? slicerContract.health.parse(await res.json()) : null;
+        last = body ? `sandbox ${body.sandbox.state}, busy ${body.busy}` : `status ${res.status}`;
+        if (body && body.sandbox.state !== "checking" && !body.busy) break;
+      } catch (err) {
+        last = err instanceof Error ? err.message : String(err);
+      }
+      if (Date.now() > until) {
+        const logs = docker(["logs", id]);
+        throw new Error(
+          `the slicer's start-up sandbox check did not finish (${last}):\n${logs.stdout}${logs.stderr}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
     return {
       id,
-      base: `http://127.0.0.1:${port}`,
+      base,
       exec: (args) => docker(["exec", id, ...args]),
       health,
       logs: () => {

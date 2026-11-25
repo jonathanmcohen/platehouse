@@ -4,6 +4,9 @@ import { isUuid, uuidv7 } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB, NameSource } from "../db/types.js";
 import { cutName, fileStems } from "../ingest/names.js";
+import { SettingsInputError } from "../input-error.js";
+import { joinWithNote } from "../library/converted-description.js";
+import { descriptionSha256 } from "../library/description-hash.js";
 
 export interface Model {
   id: string;
@@ -56,11 +59,20 @@ export interface FoundMetadata {
    * (license_note is always stored); it is added at the foot of the
    * description only when the description and both licence columns are
    * empty, since a description already set is never edited (the maintainer,
-   * 2026-11-08). The model page shows license_note (Task 20).
+   * 2026-11-08). The model page shows license_note.
    */
   licenseNote?: string | null;
   /** The MakerWorld design ID, digits only (packages/threemf makerWorldDesignId). */
   makerworldDesignId?: string | null;
+  /**
+   * Where descriptionMd was converted from (ingest only): the .3mf and the
+   * converter version. When the description is filled, its SHA-256, this
+   * version and this file are stored with it (migration 0014), so the
+   * re-conversion (library/reconvert.ts) can tell later that it is still
+   * exactly what the converter wrote. Left out, as for the API's
+   * create-model, a description filled is recorded as from no converter.
+   */
+  descriptionSource?: { fileId: string; converter: number };
 }
 
 /** A model the "Use file titles" backfill would rename. */
@@ -430,12 +442,12 @@ export function modelsRepo(db: Kysely<DB>) {
     }
     const sort = query.sort ?? "relevance";
     if (query.after !== undefined && sort !== "relevance") {
-      throw new RangeError("A cursor pages only the relevance order");
+      throw new SettingsInputError("A cursor pages only the relevance order");
     }
     const { printer } = query;
     const byTotal = sort.startsWith("time-") || sort.startsWith("weight-");
     if (byTotal && printer === undefined) {
-      throw new RangeError(`The ${sort} sort needs the selected printer`);
+      throw new SettingsInputError(`The ${sort} sort needs the selected printer`);
     }
     const rank = sql<number>`round(greatest(
         similarity(models.name, ${q}),
@@ -613,7 +625,7 @@ export function modelsRepo(db: Kysely<DB>) {
     get,
 
     /**
-     * Fill-only metadata (AC-022): writes each found value only into a field
+     * Fill-only metadata: writes each found value only into a field
      * that is null or empty, so nothing the user set is overwritten. The name is
      * never touched. A found value that is null, empty or blank writes
      * nothing. A found licence note is stored whenever licenseNote is empty,
@@ -668,13 +680,30 @@ export function modelsRepo(db: Kysely<DB>) {
         if (fillLicence && spdx !== undefined) set.licenseSpdx = spdx;
         if (note !== undefined && empty(row.licenseNote)) set.licenseNote = note;
 
+        let source: Partial<
+          Record<"descriptionSha256" | "descriptionFileId", string> & {
+            descriptionConverter: number;
+          }
+        > = {};
         if (empty(row.descriptionMd)) {
-          const parts = [value(found.descriptionMd), fillLicence ? note : undefined];
-          const description = parts.filter((p) => p !== undefined).join("\n\n");
-          if (description !== "") set.descriptionMd = description;
+          const description = joinWithNote(
+            value(found.descriptionMd) ?? "",
+            fillLicence ? note : undefined,
+          );
+          if (description !== "") {
+            set.descriptionMd = description;
+            if (found.descriptionSource !== undefined) {
+              source = {
+                descriptionSha256: descriptionSha256(description),
+                descriptionConverter: found.descriptionSource.converter,
+                descriptionFileId: found.descriptionSource.fileId,
+              };
+            }
+          }
         }
-        // The creator row is made only when it will be used, so no creator
-        // is left in the sidebar without a model.
+        // The creator row is made only when it will be used. A purge keeps
+        // creator rows (a creator outlives its models); the Creators page
+        // lists only creators with a live model, so none shows without one.
         const creator = value(found.creator)?.trim();
         if (creator !== undefined && row.creatorId === null) {
           set.creatorId = await creatorId(trx, creator);
@@ -682,7 +711,7 @@ export function modelsRepo(db: Kysely<DB>) {
         if (Object.keys(set).length === 0) return true;
         const result = await trx
           .updateTable("models")
-          .set({ ...set, updatedAt: sql`now()` })
+          .set({ ...set, ...source, updatedAt: sql`now()` })
           .where("id", "=", id)
           .executeTakeFirst();
         return result.numUpdatedRows > 0n;
@@ -696,7 +725,7 @@ export function modelsRepo(db: Kysely<DB>) {
      * name; see fileStems). A name a person set, by a rename (name_source
      * 'user', which migration 0006 also gave every model a person named
      * before name_source existed) or a name none of its files has, is never
-     * overwritten (AC-022), and a model already named from a title
+     * overwritten, and a model already named from a title
      * keeps that one. Only while the caption is empty, too, so this title is
      * the one fillMetadata then stores as the caption: a model whose caption
      * an earlier .3mf already filled keeps its name, so its name and caption

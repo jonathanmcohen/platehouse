@@ -1,6 +1,6 @@
-// Build plan Task 15 on the real server: start(config) wires sessions to the
+// Login and the gate on the real server: start(config) wires sessions to the
 // sessions table and the gate to every route. The OIDC provider is a port nothing
-// listens on, so this is also AC-081 end to end: /auth/login is 503 and a
+// listens on, so this also shows end to end that login says it is unavailable while API routes keep working: /auth/login is 503 and a
 // bearer-class route still gives its own 401, while a session in the
 // database lets a request through. Every route the running app registers
 // answers a request with no credentials the way its class says; the walk
@@ -54,7 +54,9 @@ describe("the running server", () => {
     expect((await get(RESULT)).status).toBe(401);
     const page = await get("/models/abc", { accept: "text/html" });
     expect(page.status).toBe(302);
-    expect(page.headers.get("location")).toBe(`${env.config.publicOrigin}/auth/login`);
+    expect(page.headers.get("location")).toBe(
+      `${env.config.publicOrigin}/auth/login?next=/models/abc`,
+    );
   });
 
   test("with the OIDC provider unreachable, /auth/login is 503 and the API keeps its own 401", async () => {

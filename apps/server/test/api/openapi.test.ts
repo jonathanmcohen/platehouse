@@ -34,12 +34,15 @@ import type {
 } from "../../src/estimates/display.js";
 import { SCRUB_MAX_CHARS } from "../../src/scrub.js";
 import {
-  createUploads,
+  DISK_FULL_MESSAGE,
   MAX_UPLOAD_BYTES,
   REQUEST_TIMEOUT_MS,
   registerTus,
   SLOW_LINK_BYTES_PER_SECOND,
+  TEMP_TOTAL_MESSAGE,
+  TOO_MANY_UPLOADS_MESSAGE,
 } from "../../src/uploads/tus.js";
+import { readyUploads } from "../support/uploads.js";
 import { documentedPath, METHODS, type OpenApiDoc, problems } from "./support/openapi-rules.js";
 
 /** The repository's root, where biome.json is. */
@@ -111,11 +114,7 @@ beforeAll(async () => {
   await registerTus(app, {
     prefix: "/api/v1/uploads",
     authHook: apiUploadHook(refusingApi),
-    uploads: createUploads({
-      tmpDir: tmp,
-      queue: { enqueue: async () => {}, result: async () => undefined },
-      log: () => {},
-    }),
+    uploads: await readyUploads(tmp),
   });
   await app.ready();
   doc = app.swagger() as unknown as OpenApiDoc;
@@ -265,6 +264,39 @@ describe("the OpenAPI document", () => {
     );
   });
 
+  test("lists the limits on unfinished uploads among the upload creation's answers", () => {
+    const answers = doc.paths["/uploads"]?.post?.responses ?? {};
+    expect(answers["429"]?.description).toMatch(/20 unfinished uploads/);
+    expect(answers["507"]?.description).toMatch(/UPLOAD_TEMP_MAX_BYTES/);
+    expect(answers["507"]?.description).toMatch(/1 GiB/);
+  });
+
+  test("the 507 shows each of its sentences: the total's, the disk's and the folder's", () => {
+    const media = doc.paths["/uploads"]?.post?.responses?.["507"]?.content?.["text/plain"];
+    const values = Object.values(media?.examples ?? {}).map((e) => (e as { value: unknown }).value);
+    expect(values).toEqual([
+      `${TEMP_TOTAL_MESSAGE}\n`,
+      `${DISK_FULL_MESSAGE}\n`,
+      `${TOO_MANY_UPLOADS_MESSAGE}\n`,
+    ]);
+  });
+
+  test("states an unfinished upload's lifetime wherever it states one", () => {
+    // 24 hours after it was created, whatever arrives, or an hour with no byte.
+    const create = doc.paths["/uploads"]?.post;
+    const texts = [
+      create?.description,
+      create?.responses?.["429"]?.description,
+      doc.paths["/uploads/{id}"]?.head?.description,
+      doc.paths["/uploads/{id}"]?.head?.responses?.["404"]?.description,
+      doc.paths["/uploads/{id}"]?.patch?.responses?.["404"]?.description,
+    ];
+    for (const text of texts) {
+      expect(text).toMatch(/24 hours after it was created/);
+      expect(text).toMatch(/an hour/);
+    }
+  });
+
   test("shows a plate's numbers with the fields the API sends, printerName included", () => {
     expect(shapesAgree).toEqual([true, true, true, true, true]);
     const file = PLATE_NUMBERS_DOC.properties.file;
@@ -293,12 +325,35 @@ describe("the OpenAPI document", () => {
     );
   });
 
+  // Issue #380 (the maintainer, 2026-11-22): derivedStatus keeps its 0.1.0
+  // meaning, word for word, and a file's preview picture is reported as
+  // previewStatus and previewMessage beside it, always sent.
+  test("a file keeps derivedStatus as in 0.1.0 and documents previewStatus and previewMessage", () => {
+    const example = doc.paths["/files/{id}"]?.get?.responses?.["200"]?.content?.[
+      "application/json"
+    ] as { schema: Record<string, unknown>; example: Record<string, unknown> } | undefined;
+    const schema = example?.schema as {
+      properties: Record<string, { description?: string; type?: unknown; enum?: unknown }>;
+      required: string[];
+    };
+    expect(schema.properties.derivedStatus?.description).toBe(
+      "For .scad and STEP files, the preview render: pending, ok or failed. Null for other kinds.",
+    );
+    expect(schema.properties.previewStatus?.description).toMatch(/STL and STEP/);
+    expect(schema.properties.previewStatus?.description).toMatch(/pending, ok or failed/);
+    expect(schema.properties.previewMessage?.description).toMatch(/why/i);
+    expect(schema.required).toEqual(expect.arrayContaining(["previewStatus", "previewMessage"]));
+    expect(example?.example).toMatchObject({ previewStatus: null, previewMessage: null });
+  });
+
   test("states the request time limit and the upload cap from the constants the server uses", () => {
     expect(doc.paths["/uploads/{id}"]?.patch?.description).toContain(
       `A single request may take up to ${REQUEST_LIMIT}.`,
     );
     expect(doc.info.description).toContain(`uploads are at most ${UPLOAD_CAP}.`);
-    // No size or time written out by hand anywhere else in the document.
+    // The upload cap is written as "N MiB" nowhere else in the document, so
+    // a hand-typed copy of it cannot drift. (Only the MiB figure is counted;
+    // the request time limit is checked by the line above, not here.)
     const text = JSON.stringify(doc);
     const mib = `${MAX_UPLOAD_BYTES / 2 ** 20} MiB`;
     expect(text.split(mib).length - 1).toBe(

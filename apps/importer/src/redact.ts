@@ -1,5 +1,5 @@
 // Keeps credentials and signed queries out of everything the importer prints
-// (AC-003). Every line the CLI writes goes through one Redactor, which holds
+// (no credential may appear in output or logs). Every line the CLI writes goes through one Redactor, which holds
 // the client id and secret, the Platehouse token, the Manyfold token once it
 // arrives, and each signed query of an object-store redirect as it is seen.
 // The clients already keep these out of their messages; this is the floor

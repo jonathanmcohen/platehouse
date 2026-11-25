@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Checks the app image's standard OCI labels (issue #317), for the release
-# workflow (.github/workflows/release.yml):
+# Checks an image's standard OCI labels: the app image's for the release
+# workflow (issue #317, .github/workflows/release.yml), and the slicer
+# image's loaded build for .github/workflows/slicer-image.yml (the
+# 0.1.1-rc.1 live check):
 #
 #   docker/check-image-labels.sh <where> <ref> <version> <revision> <source>
 #

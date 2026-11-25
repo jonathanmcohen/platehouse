@@ -1,0 +1,25 @@
+# The image mode of the end-to-end stack: layer this file over compose.yml and
+# the app service runs the image the app-image job builds (platehouse:ci) in
+# place of the TypeScript source, so the suite exercises what ships: the
+# dist exports, uid 1000 with root-owned files, the migrations and web assets
+# beside the built server, and tini as PID 1 (#452). e2e/up.sh adds this file
+# when E2E_APP_IMAGE is set:
+#
+#   E2E_APP_IMAGE=platehouse:ci bash e2e/up.sh
+#
+# The environment, the health check and the dependencies are the ones in
+# compose.yml. What changes is how the process starts and how it is probed: the
+# image's own entrypoint, command, working directory and HEALTHCHECK (every 30
+# s, but every 2 s during its 60 s start period, so a healthy start shows
+# within seconds), and no checkout mounted.
+# The run's CA is still mounted, since the app trusts it for the issuer. The
+# image is loaded locally and never pulled.
+services:
+  app:
+    image: ${E2E_APP_IMAGE:?set E2E_APP_IMAGE to use this file}
+    pull_policy: never
+    working_dir: !reset null
+    command: !reset null
+    healthcheck: !reset null
+    volumes: !override
+      - ${E2E_CERTS_DIR:?run e2e/up.sh}/ca.pem:/certs/ca.pem:ro

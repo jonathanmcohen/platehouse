@@ -1,4 +1,4 @@
-// The server tests' environment (build plan Task 30): an empty Postgres 17
+// The server tests' environment: an empty Postgres 17
 // database (the server migrates it itself), a bucket on the S3 test server,
 // the contract-faithful slicer stub, an inbox and a temp folder, and the
 // environment a real server process is started with. Every value here is

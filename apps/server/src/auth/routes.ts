@@ -1,5 +1,6 @@
-// GET /auth/login, GET /auth/callback and POST /auth/logout (build plan
-// Task 15; AC-080, AC-081, AC-091). They are public routes (the Route
+// GET /auth/login, GET /auth/callback and POST /auth/logout: the OIDC login,
+// which says when the provider is down and builds every URL from the
+// configured public origin. They are public routes (the Route
 // classes table): no session is needed to reach them.
 //
 // - GET /auth/login asks the issuer for a new login (oidc.ts) and sends the
@@ -13,17 +14,27 @@
 //   the header size limit, it first clears every login cookie the request
 //   carries that is forged or expired, and of the rest all but the newest
 //   MAX_PENDING_LOGINS - 1. When the issuer cannot be reached the answer is
-//   503 "Login is unavailable right now".
+//   503 "Login is unavailable right now". A next= query naming a plain
+//   path (returnPath: segments of letters, digits, - and _) rides in the
+//   signed cookie, and the callback sends the browser there instead of the
+//   start page; anything else in next= is ignored. The gate's redirect of a
+//   page asked for without a session uses it (gate.ts), and so does Settings,
+//   to come back after the fresh sign-in a new API token needs (issue #322).
 // - GET /auth/callback finds the login cookie by the state in its query and
 //   spends that one cookie whatever happens, leaving any other login's
 //   alone. A state that is not a plain token is 400 and names no cookie. It
 //   then exchanges the code against the callback URL rebuilt on
 //   PUBLIC_ORIGIN with only the request's query (so redirect_uri never comes
-//   from the Host header), and on success starts a session, sets
-//   __Host-ph_session and sends the browser to PUBLIC_ORIGIN/. A missing,
+//   from the Host header), and on success starts a session with the display
+//   name the claims give, sets __Host-ph_session and sends the browser to
+//   PUBLIC_ORIGIN/ (or the login's next path on PUBLIC_ORIGIN). A missing,
 //   forged or expired login cookie, or a response that does not check out,
-//   is 400; a user not let in is 403 with the reason; the issuer unreachable
-//   is 503.
+//   is 400; a user not let in is 403 with the reason (not allowed in, which never names the group,
+//   email not verified, or a user id over MAX_SUBJECT_LENGTH characters,
+//   which the log records by its length, never its value); the issuer
+//   unreachable is 503. A 403 refusal also ends the session the browser
+//   presented, if any, and clears its cookie, as a sign-in that succeeds
+//   replaces it (issue #395); a 400 or a 503 ends nothing.
 // - POST /auth/logout needs Origin to equal PUBLIC_ORIGIN, as every state-
 //   changing request on a session route does (gate.ts), or it is 403 and the
 //   session and its cookie are left alone, so another site cannot sign the user
@@ -45,7 +56,13 @@ import {
 } from "@platehouse/i18n";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createLocales, englishMessages, type Locales } from "../locales/locales.js";
-import { type LoginChecks, LoginError, type OidcClient } from "./oidc.js";
+import {
+  type LoginChecks,
+  LoginError,
+  type LoginFailure,
+  MAX_SUBJECT_LENGTH,
+  type OidcClient,
+} from "./oidc.js";
 import {
   SESSION_ABSOLUTE_MS,
   SESSION_COOKIE,
@@ -82,14 +99,27 @@ export const MAX_PENDING_LOGINS = 5;
 /** What /auth/login shows, with status 503, when the issuer cannot be reached. */
 export const LOGIN_UNAVAILABLE: string = englishMessages()["login.unavailable.title"] ?? "";
 
+/**
+ * The refusals that say the person signing in is no longer let in (issue
+ * #395). On these the callback also ends the session the browser presented
+ * and clears its cookie. "unavailable" (the issuer could not be reached) and
+ * "failed" (the callback did not check out) say nothing about the person, so
+ * they end nothing.
+ */
+const NOT_LET_IN: ReadonlySet<LoginFailure> = new Set<LoginFailure>([
+  "subject_too_long",
+  "not_in_group",
+  "email_not_verified",
+]);
+
 /** The login cookie's attributes; the clearing one carries them too. */
 const LOGIN_COOKIE_OPTIONS = SESSION_COOKIE_OPTIONS;
 
 /**
  * The key the login cookie is signed with. It is derived from LINK_SECRET
  * with HKDF-SHA256 under its own label, so it is independent of the slicer
- * link key and needs no configuration value of its own (the Configuration
- * contract has none), and it survives a restart in the middle of a login.
+ * link key and needs no configuration value of its own (apps/server/src/config.ts
+ * has none), and it survives a restart in the middle of a login.
  */
 export function loginCookieKey(linkSecret: string): Buffer {
   return Buffer.from(
@@ -109,7 +139,6 @@ export interface AuthRouteDeps {
   /** PUBLIC_ORIGIN, scheme and host only: the Origin POST /auth/logout must carry. */
   publicOrigin: string;
   absoluteUrl(path: string): string;
-  group: string;
   now?: () => Date;
   /** The languages, for the pages' words; the built-in languages when left out. */
   locales?: Locales;
@@ -122,6 +151,28 @@ interface LoginState {
   n: string;
   /** When the login expires, in ms since the epoch. */
   e: number;
+  /** Where the callback sends the browser (a returnPath), when not the start page. */
+  r?: string;
+}
+
+/**
+ * A path GET /auth/login?next= may send the browser back to after the login:
+ * slash-separated segments of letters, digits, - and _ only, so no other
+ * host, no dot segment, escape, backslash, doubled slash or query can get
+ * in. The callback builds the URL on PUBLIC_ORIGIN (absoluteUrl) all the
+ * same. The gate's redirect of a page asked for without a session uses it
+ * (gate.ts), and so does Settings, to come back after the fresh sign-in a
+ * new API token needs (issue #322).
+ */
+const RETURN_PATH = /^(?:\/[A-Za-z0-9_-]+)+$/;
+
+/** The longest next= path the login keeps. */
+const MAX_RETURN_PATH = 200;
+
+/** next, when it is a path the login may return to; undefined otherwise. */
+export function returnPath(next: string | null | undefined): string | undefined {
+  if (typeof next !== "string" || next.length > MAX_RETURN_PATH) return undefined;
+  return RETURN_PATH.test(next) ? next : undefined;
 }
 
 function escapeHtml(text: string): string {
@@ -181,16 +232,22 @@ function unavailable(reply: FastifyReply, tr: Translator) {
   return sendPage(reply, tr, 503, ["login.unavailable.title"], ["login.unavailable.issuer"]);
 }
 
-/** The login cookie's checks, or undefined when it is missing, forged, malformed or expired. */
+/**
+ * The login cookie's checks and return path, or undefined when it is
+ * missing, forged, malformed or expired.
+ */
 function readLoginCookie(
   request: FastifyRequest,
   name: string,
   now: Date,
-): LoginChecks | undefined {
+): { checks: LoginChecks; next: string | undefined } | undefined {
   const state = readLoginState(request, name, now);
   return state === undefined
     ? undefined
-    : { codeVerifier: state.v, state: state.s, nonce: state.n };
+    : {
+        checks: { codeVerifier: state.v, state: state.s, nonce: state.n },
+        next: returnPath(state.r),
+      };
 }
 
 /** The login cookie's signed value, or undefined when it is missing, forged, malformed or expired. */
@@ -262,6 +319,27 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     }
   }
 
+  /**
+   * Ends the session behind the session cookie this request carries, and
+   * clears the cookie, as a sign-in that succeeds replaces it (issue #395).
+   * Only that one session: the person's sessions in other browsers are for
+   * Sign out everywhere. No cookie, nothing happens; a cookie with no session
+   * behind it is only cleared. When the session cannot be ended (the
+   * database is down) the failure is logged and the cookie is cleared all
+   * the same, so this browser is signed out at once; the row then lives
+   * until it expires, and Sign out everywhere can still end it.
+   */
+  async function endPresentedSession(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const cookie = request.cookies[SESSION_COOKIE];
+    if (cookie === undefined) return;
+    try {
+      await deps.sessions.end(cookie);
+    } catch (error) {
+      request.log.warn({ err: error }, "auth: could not end the refused user's session");
+    }
+    reply.clearCookie(SESSION_COOKIE, SESSION_COOKIE_OPTIONS);
+  }
+
   app.get("/auth/login", async (request, reply) => {
     let begun: Awaited<ReturnType<OidcClient["begin"]>>;
     try {
@@ -270,11 +348,13 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       request.log.warn({ err: error }, "auth: login is unavailable: the issuer cannot be reached");
       return unavailable(reply, await words(request));
     }
+    const next = returnPath(new URLSearchParams(queryOf(request.url)).get("next"));
     const state: LoginState = {
       v: begun.checks.codeVerifier,
       s: begun.checks.state,
       n: begun.checks.nonce,
       e: now().getTime() + LOGIN_COOKIE_MS,
+      ...(next === undefined ? {} : { r: next }),
     };
     clearOldLogins(request, reply, now());
     reply.setCookie(
@@ -292,15 +372,15 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
 
   app.get("/auth/callback", async (request, reply) => {
     const state = new URLSearchParams(queryOf(request.url)).get("state") ?? "";
-    let checks: LoginChecks | undefined;
+    let login: ReturnType<typeof readLoginCookie>;
     if (STATE_PATTERN.test(state)) {
       // This login's cookie is spent whatever happens next; another login's
       // cookie is left for its own callback.
       const name = loginCookieName(state);
       reply.clearCookie(name, LOGIN_COOKIE_OPTIONS);
-      checks = readLoginCookie(request, name, now());
+      login = readLoginCookie(request, name, now());
     }
-    if (checks === undefined) {
+    if (login === undefined) {
       return sendPage(
         reply,
         await words(request),
@@ -311,21 +391,36 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     }
     const callbackUrl = new URL(`${deps.absoluteUrl("/auth/callback")}${queryOf(request.url)}`);
     let subject: string;
+    let displayName: string | null | undefined;
     try {
-      ({ subject } = await deps.oidc.finish(callbackUrl, checks));
+      ({ subject, name: displayName } = await deps.oidc.finish(callbackUrl, login.checks));
     } catch (error) {
       const failure = error instanceof LoginError ? error.failure : "failed";
-      request.log.warn({ failure }, "auth: login refused");
+      // The subject's length, never the subject: one too long could be anything.
+      const subjectLength = error instanceof LoginError ? error.subjectLength : undefined;
+      request.log.warn(
+        subjectLength === undefined ? { failure } : { failure, subjectLength },
+        "auth: login refused",
+      );
+      if (NOT_LET_IN.has(failure)) await endPresentedSession(request, reply);
       switch (failure) {
         case "unavailable":
           return unavailable(reply, await words(request));
+        case "subject_too_long":
+          return sendPage(
+            reply,
+            await words(request),
+            403,
+            ["login.refused.title"],
+            ["login.refused.subject", { max: MAX_SUBJECT_LENGTH }],
+          );
         case "not_in_group":
           return sendPage(
             reply,
             await words(request),
             403,
             ["login.refused.title"],
-            ["login.refused.group", { group: deps.group }],
+            ["login.refused.group"],
           );
         case "email_not_verified":
           return sendPage(
@@ -347,7 +442,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     }
     let started: Awaited<ReturnType<Sessions["start"]>>;
     try {
-      started = await deps.sessions.start(subject);
+      started = await deps.sessions.start(subject, displayName ?? null);
       // A session the browser already had is replaced, not kept beside it.
       await deps.sessions.end(request.cookies[SESSION_COOKIE]).catch(() => undefined);
     } catch (error) {
@@ -365,7 +460,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       maxAge: SESSION_ABSOLUTE_MS / 1000,
     });
     reply.header("cache-control", "no-store");
-    return reply.redirect(deps.absoluteUrl("/"), 302);
+    return reply.redirect(deps.absoluteUrl(login.next ?? "/"), 302);
   });
 
   app.post("/auth/logout", async (request, reply) => {
@@ -382,6 +477,10 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       return reply.code(503).send({ error: "unavailable" });
     }
     reply.clearCookie(SESSION_COOKIE, SESSION_COOKIE_OPTIONS);
+    // Asks the browser to drop its cached copies of this site, including
+    // source files and meshes it kept on disk, and any 0.1.0 cached for a
+    // year. Browsers that support the "cache" directive do; not all do.
+    reply.header("clear-site-data", '"cache"');
     return reply.code(204).send();
   });
 }

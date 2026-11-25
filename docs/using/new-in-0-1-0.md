@@ -1,7 +1,8 @@
 # New in 0.1.0
 
-0.1.0 is the first release of Platehouse, so everything in these docs is new in it. This page
-points to the features added late in the release.
+0.1.0 was the first release of Platehouse, so everything in these docs was new in it. This page
+points to the features added late in that release. For later versions, see the
+[changelog](../changelog.md).
 
 ## Added late in 0.1.0
 
@@ -36,5 +37,5 @@ points to the features added late in the release.
   collection or move them to the trash in one go. See
   [Using Platehouse](./index.md#selecting-several-models).
 - **Translations**: the interface in English, Spanish and French, with a Language menu in Settings,
-  and your own languages through `LOCALES_DIR`. Spanish and French are machine translations in
-  0.1.0. See [Settings](./settings.md#language) and [Translations](../translations/index.md).
+  and your own languages through `LOCALES_DIR`. Spanish and French are currently machine
+  translations. See [Settings](./settings.md#language) and [Translations](../translations/index.md).

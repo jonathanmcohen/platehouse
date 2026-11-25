@@ -62,17 +62,22 @@ function Chevron({ direction }: { direction: "left" | "right" }) {
   );
 }
 
+/** A left click that follows a link in this tab: no modifier key, not already handled. */
+export function isPlainClick(event: MouseEvent<HTMLAnchorElement>): boolean {
+  return (
+    !event.defaultPrevented &&
+    event.button === 0 &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey
+  );
+}
+
 export function Pager({ page, pageCount, hrefFor, onNavigate }: PagerProps) {
   const { t } = useI18n();
   const followed = (event: MouseEvent<HTMLAnchorElement>) => {
-    const inThisTab =
-      !event.defaultPrevented &&
-      event.button === 0 &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      !event.shiftKey &&
-      !event.altKey;
-    if (inThisTab) onNavigate?.();
+    if (isPlainClick(event)) onNavigate?.();
   };
   return (
     <nav className="ph-pager" aria-label={t("library.pager.label")}>

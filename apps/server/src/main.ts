@@ -1,4 +1,4 @@
-// The server process (build plan Task 30; AC-021, AC-033, AC-093 app side).
+// The server process: it wires every service, starts the queues and the inbox watcher, and serves the health check.
 // Run as the entry module it reads the configuration from the environment
 // (loadConfig, which names a missing key and never prints a value), starts
 // the server and stops it on SIGTERM or SIGINT. start(config) is the whole
@@ -8,48 +8,52 @@
 //      lock, so two starting servers apply each migration once);
 //   2. pg-boss, started on the same database;
 //   3. the services, each built once and shared: the slicer client and
-//      estimates (Task 12), the render jobs (Task 13), ingest with
+//      estimates, the render jobs, ingest with
 //      derived.afterUpload as its afterCommit, so a .scad or STEP file queues
 //      its render once its row commits however it arrived, the tus upload
-//      store (Task 9), the trash (Task 14) and the orphan sweep (Task 8);
+//      store, the trash and the orphan sweep;
 //   4. the queues (startQueues) with a ServerQueueDeps, so every queue has
 //      its worker and every maintenance task its schedule: the slicer
 //      worker dispatches by job kind to estimates' "slice" and the render
 //      and mesh kinds, an ingested file's plates are queued at once
-//      (onIngested), and the Orca poll also runs once at startup;
-//   5. the inbox watcher (Task 10), wired exactly as its own comment and the
+//      (onIngested), and the Orca poll also runs once at startup; the
+//      description re-conversion (#357) is sent to the upgrade queue
+//      once, on the first start of a version whose converter changed;
+//   5. the inbox watcher, wired exactly as its own comment and the
 //      #59 changelog line ask, then started;
-//   6. the Fastify app (app.ts), listening on PORT on every interface, with
-//      login (Task 15): sessions in the sessions table, the OIDC client for
+//   6. the Fastify app (app.ts), listening on PORT on every interface (IPv6
+//      and IPv4, listenOnAllInterfaces), with
+//      login: sessions in the sessions table, the OIDC client for
 //      OIDC_ISSUER with redirect_uri absoluteUrl('/auth/callback'), and the
 //      login cookie's key derived from LINK_SECRET (loginCookieKey). Pocket
 //      ID is not contacted at startup, only at the first login, so the
-//      server starts while it is down. The Public API v1 (Task 16) gets
+//      server starts while it is down. The Public API v1 gets
 //      tokens from the api_tokens table and reads the library through the
-//      same database and store, with Task 12's plate numbers read as the
+//      same database and store, with the estimates module's plate numbers read as the
 //      library page reads them (one display context per request); it never touches
-//      the OIDC provider, so API tokens keep working while it is down (AC-081).
-//      File delivery and slicer links (Task 17) read files through that
+//      the OIDC provider, so API tokens keep working while it is down.
+//      File delivery and slicer links read files through that
 //      same library and blobs through the same database and store, and
 //      sign links with a key links.ts derives from LINK_SECRET.
-//      The library page's app API (Task 19) reads the same database and
-//      Task 12's plate numbers, with the display context (the settings row
+//      The library page's app API reads the same database and
+//      the estimates module's plate numbers, with the display context (the settings row
 //      and estimates.listPrinters, through readDisplayContext) read once per
-//      page rather than once per plate. The model page's app API (Task 20)
+//      page rather than once per plate. The model page's app API
 //      reads them the same way, once per model, and queues a failed
 //      estimate again through estimates.retryEstimate.
-//      The web app's own API under /app/api (Task 21: settings, tokens,
+//      The web app's own API under /app/api (settings, tokens,
 //      organising and the trash) shares the API's tokens, estimates and the
 //      trash; the bucket's versioning state is read just before, for the
-//      settings page's warning (AC-013).
-//      The built web app (Task 18) is served from options.web, by default
+//      settings page's warning while versioning is off. Sign out everywhere (issue #322)
+//      shares the login's sessions and the API's tokens.
+//      The built web app is served from options.web, by default
 //      apps/web/dist beside the server package and optional, so a test
 //      server without a web build reports healthy. The process (main())
 //      passes processWeb(): the same folder, required, so /healthz answers
 //      503 while index.html is missing and the app image's HEALTHCHECK fails
-//      instead of passing in front of 503 pages (Task 24, issue #162).
+//      instead of passing in front of 503 pages (issue #162).
 //
-// stop() undoes it in the order Task 30 sets: no new HTTP requests (requests
+// stop() undoes it in this order: no new HTTP requests (requests
 // in flight get HTTP_CLOSE_GRACE_MS, then their connections are closed), the
 // inbox watcher, pg-boss (gracefully: active jobs get BOSS_STOP_TIMEOUT_MS,
 // then pg-boss fails them by their queue's retry rules; a slicer job then
@@ -61,19 +65,22 @@
 // or if pg-boss cut a job off at its timeout, so the process exits 1 and only
 // a clean stop exits 0 (#106). When start() itself fails, the same stop runs,
 // but a failed cleanup is only logged and the startup error is what start()
-// throws. The signal handler adds that deadline as a last resort: past 30 s
+// throws. A signal during start-up aborts start() (checked between the
+// steps) and waits START_ABORT_WAIT_MS for it to unwind, then exits 0 anyway
+// (#457). The signal handler adds that deadline as a last resort: past 30 s
 // the process exits 1 whatever is still running.
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { createTokens, dbTokenStore } from "./api/tokens.js";
 import { createApiLibrary } from "./api/v1.js";
-import { buildApp } from "./app.js";
+import { type AppApiDeps, buildApp } from "./app.js";
 import { createAppActivity } from "./app-api/activity.js";
 import { createAppLibrary, readDisplayContext } from "./app-api/library.js";
 import { createAppModel } from "./app-api/model.js";
 import { recordVersioning } from "./app-api/settings.js";
 import { dbTokenList } from "./app-api/tokens.js";
+import { dbUserList } from "./app-api/users.js";
 import { createOidc } from "./auth/oidc.js";
 import { loginCookieKey } from "./auth/routes.js";
 import { createSessions, dbSessionStore } from "./auth/sessions.js";
@@ -82,23 +89,33 @@ import { createDb } from "./db/kysely.js";
 import { migrate } from "./db/migrate.js";
 import { createDeliveryLibrary } from "./delivery/download.js";
 import { createDerived, derivedJobHandlers } from "./derived/derived.js";
-import { createSlicerClient, sliceTimeoutMs } from "./estimates/client.js";
-import { plateNumbers } from "./estimates/display.js";
+import { sweepWorkingCopies } from "./derived/working-copies.js";
+import { createSlicerClient } from "./estimates/client.js";
+import { plateNumbersMany } from "./estimates/display.js";
 import { createEstimates } from "./estimates/service.js";
+import { createSlicerState } from "./estimates/slicer-state.js";
 import { createInboxWatcher, type InboxWatcher, inboxProbes } from "./inbox/watch.js";
 import { createIngest, type IngestResult } from "./ingest/ingest.js";
 import { createOrphanSweep } from "./ingest/orphans.js";
 import { createBoss } from "./jobs/boss.js";
 import { type ServerQueueDeps, startQueues } from "./jobs/queues.js";
+import { createLicenceFill, storeLicenceReader } from "./library/licence-fill.js";
+import { createDescriptionReconvert, storeTextReader } from "./library/reconvert.js";
 import { createTrash } from "./library/trash.js";
+import { chainUpgradeSteps } from "./library/upgrade-steps.js";
 import { createLocales } from "./locales/locales.js";
+import { createPlateMeshes } from "./plate-mesh/plate-mesh.js";
+import { descriptionsRepo } from "./repos/descriptions.js";
 import { createRepos } from "./repos/index.js";
 import { createBlobStore } from "./storage/s3.js";
-import { bossUploadQueue, createUploads } from "./uploads/tus.js";
+import { bossUploadQueue, createUploads, prepareUploads } from "./uploads/tus.js";
 import { defaultWebDir, type WebDeps } from "./web/shell.js";
 
 /** The longest a shutdown may take before the process exits anyway. */
 export const SHUTDOWN_DEADLINE_MS = 30_000;
+
+/** The longest a signal during start-up waits for start() to unwind before the process exits anyway. */
+export const START_ABORT_WAIT_MS = 5_000;
 
 /** How long requests in flight get once the server stops taking new ones. */
 export const HTTP_CLOSE_GRACE_MS = 5_000;
@@ -300,10 +317,16 @@ export interface StartOptions {
    * not required (app.ts's default). The process passes processWeb().
    */
   web?: WebDeps;
+  /**
+   * Aborted when the process is asked to stop while start() is still
+   * running. It is checked between the start-up steps; an abort there goes
+   * through the same clean-up as a failed start and rejects with an AbortError.
+   */
+  signal?: AbortSignal;
 }
 
 /**
- * The web build as the process serves it (Task 24, issue #162): apps/web/dist
+ * The web build as the process serves it (issue #162): apps/web/dist
  * beside the server package, required, so a server started without it fails
  * its health check. dir is for the tests.
  */
@@ -320,8 +343,14 @@ export async function start(config: Config, options: StartOptions = {}): Promise
   let queuesRunning = false;
   let stopping: Promise<void> | undefined;
   const jobs = jobCounter();
+  // Aborted as the first thing a stop does, before any step and so before
+  // pg-boss's graceful stop, so a job that can end early does (the
+  // description re-conversion, #381) instead of being cut off at pg-boss's
+  // 10 s limit.
+  const shutdownSignal = new AbortController();
 
   async function shutdown(): Promise<void> {
+    shutdownSignal.abort();
     queuesRunning = false;
     const steps: ShutdownStep[] = [];
     const http = app;
@@ -354,8 +383,12 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     return stopping;
   };
 
+  const aborted = (): void => options.signal?.throwIfAborted();
+
   try {
+    aborted();
     await migrate(db);
+    aborted();
 
     const startedBoss = createBoss({ databaseUrl: config.databaseUrl });
     boss = startedBoss;
@@ -363,10 +396,17 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       queuesRunning = false;
     });
     await startedBoss.start();
+    aborted();
 
     const repos = createRepos(db);
     const slicer = createSlicerClient({
       url: config.slicer.url,
+      plateSeconds: config.slicer.plateSeconds,
+    });
+    // One view of the slicer's limits and sandbox, shared by the estimates
+    // and the derived files.
+    const slicerState = createSlicerState({
+      health: () => slicer.health(),
       plateSeconds: config.slicer.plateSeconds,
     });
     const estimates = createEstimates({
@@ -374,9 +414,19 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       boss: startedBoss,
       slicer,
       store,
-      sliceTimeoutMs: sliceTimeoutMs(config.slicer.plateSeconds),
+      slicerState,
     });
-    const derived = createDerived({ db, store, slicerUrl: config.slicer.url, queue: startedBoss });
+    // A STEP preview's mesh read and the plate mesh builds (below) share the
+    // process's one memory gate (memory/gate.ts), which both use when
+    // given none.
+    const derived = createDerived({
+      db,
+      store,
+      slicerUrl: config.slicer.url,
+      slicerState,
+      queue: startedBoss,
+      tmpDir: config.tmpDir,
+    });
     // Two hooks on purpose, afterCommit here and onIngested below (the maintainer,
     // 2026-11-11): afterCommit runs inside ingestFile, only for the attempt
     // whose rows committed, while onIngested also runs on the inbox
@@ -389,10 +439,26 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       store,
       afterCommit: (stored) => derived.afterUpload(stored),
     });
-    const uploads = createUploads({ tmpDir: config.tmpDir, queue: bossUploadQueue(startedBoss) });
+    await prepareUploads(config.tmpDir);
+    const swept = await sweepWorkingCopies(config.tmpDir);
+    if (swept > 0) console.info(`start-up: removed ${swept} working copy folder(s) a crash left`);
+    const uploads = createUploads({
+      tmpDir: config.tmpDir,
+      queue: bossUploadQueue(startedBoss),
+      maxTempBytes: config.uploadTempMaxBytes,
+    });
     const trash = createTrash({ db, store });
     const orphans = createOrphanSweep({ db, store });
     const onIngested = (result: IngestResult) => estimates.enqueueFile(result.fileId);
+    // The upgrade steps: the description re-conversion (#357) and the licence
+    // fill (#445) after it, as one chain, sent to the upgrade queue by
+    // startQueues while it has not finished and run a slice per job
+    // (queues.ts RECONVERT_SLICE_SECONDS).
+    const descriptions = descriptionsRepo(db);
+    const upgradeSteps = chainUpgradeSteps([
+      createDescriptionReconvert({ store: descriptions, readText: storeTextReader(store) }),
+      createLicenceFill({ store: descriptions, readLicence: storeLicenceReader(store) }),
+    ]);
 
     // Every handler a pg-boss worker runs is counted (jobs), so stopping
     // pg-boss can tell a job cut off at its timeout from a clean stop. The
@@ -406,10 +472,17 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       pollOrca: () => estimates.pollOrca(),
       onIngested,
       checkRenders: (now: Date) => derived.checkRenders(now),
+      backfillPreviews: (now: Date) => derived.backfillPreviews(now),
+      requeueSandboxOff: (now: Date) => derived.requeueSandboxOff(now),
       purgeSessions: (now: Date) => repos.sessions.deleteExpired(now),
+      reconvertDescriptions: (stop: () => boolean, signal: AbortSignal) =>
+        upgradeSteps.run(stop, signal),
+      reconvertPending: () => upgradeSteps.pending(),
+      shutdown: shutdownSignal.signal,
     } satisfies ServerQueueDeps);
     await startQueues(startedBoss, queueDeps);
     queuesRunning = true;
+    aborted();
 
     const startedWatcher = createInboxWatcher({
       dir: config.inbox.dir,
@@ -423,14 +496,17 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     });
     watcher = startedWatcher;
     startedWatcher.start();
+    aborted();
 
-    // The settings page warns while bucket versioning is off (AC-013); the
+    // The settings page warns while bucket versioning is off; the
     // state is read once here, in the background, so a store that is slow to
     // answer never holds up the start. recordVersioning never throws: a store
     // that cannot be reached is logged and leaves the last state recorded.
     void recordVersioning({ store, settings: repos.settings });
 
     const tokens = createTokens({ store: dbTokenStore(db) });
+    // One set of sessions for the login and Sign out everywhere (issue #322).
+    const sessions = createSessions({ store: dbSessionStore(db) });
     // The selected printer, the Orca version and the printer menu, read once
     // per page by the library and the model page, and once per request by
     // the Public API v1.
@@ -445,7 +521,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       db,
       store,
       displayContext,
-      plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
+      plateNumbersMany: (ctx, plateIds) => plateNumbersMany(db, ctx, plateIds),
     });
     // The languages: the built-in catalogs and LOCALES_DIR (the maintainer, 2026-11-19).
     // LOCALES_DIR is read once here, waiting at most LOCALES_READ_LIMIT_MS,
@@ -459,6 +535,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       },
     });
     await locales.ready();
+    aborted();
     const startedApp = await buildApp({
       health: {
         database: () => sql`select 1`.execute(db),
@@ -473,10 +550,9 @@ export async function start(config: Config, options: StartOptions = {}): Promise
           redirectUri: config.absoluteUrl("/auth/callback"),
           group: config.oidc.group,
         }),
-        sessions: createSessions({ store: dbSessionStore(db) }),
+        sessions,
         publicOrigin: config.publicOrigin,
         absoluteUrl: (path) => config.absoluteUrl(path),
-        group: config.oidc.group,
         cookieSecret: loginCookieKey(config.linkSecret),
       },
       api: { tokens, library: apiLibrary },
@@ -488,20 +564,25 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       library: createAppLibrary({
         db,
         displayContext,
-        plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
+        plateNumbersMany: (ctx, plateIds) => plateNumbersMany(db, ctx, plateIds),
       }),
-      // The model page (Task 20).
+      // The model page.
       model: createAppModel({
         db,
         displayContext,
         retryEstimate: (estimateId) => estimates.retryEstimate(estimateId),
       }),
-      // The settings, trash and organising pages (Task 21).
+      // A .3mf plate's 3D view (issue #358), made on first open.
+      plateMeshes: createPlateMeshes({ db, store, tmpDir: config.tmpDir }),
+      // The settings, trash and organising pages, and Sign out
+      // everywhere on the settings page (issue #322). Every module is passed:
+      // satisfies AppApiDeps catches one left out.
       appApi: {
         settings: { settings: repos.settings, estimates },
         tokens: { tokens, list: dbTokenList(db) },
         organise: { db, trash },
-      },
+        users: { list: dbUserList(db), sessions },
+      } satisfies AppApiDeps,
       // The Activity page: read-only numbers, queues, slicer health and events.
       activity: createAppActivity({
         db,
@@ -514,10 +595,34 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       logger: true,
     });
     app = startedApp;
-    await startedApp.listen({ port: config.port, host: "0.0.0.0" });
+    aborted();
+    await listenOnAllInterfaces(startedApp, config.port);
     return { app: startedApp, stop };
   } catch (error) {
     return stopAfterFailedStart(error, stop);
+  }
+}
+
+/**
+ * Listens on "::", which on a dual-stack host also answers IPv4, so an
+ * IPv6-only Docker network reaches the server too (issue #473). Where the
+ * host has no IPv6 (EAFNOSUPPORT, or EADDRNOTAVAIL where the kernel has IPv6
+ * switched off) it listens on 0.0.0.0 instead and logs that.
+ */
+export async function listenOnAllInterfaces(
+  app: {
+    listen(options: { port: number; host: string }): Promise<unknown>;
+    log: { warn(message: string): void };
+  },
+  port: number,
+): Promise<void> {
+  try {
+    await app.listen({ port, host: "::" });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EAFNOSUPPORT" && code !== "EADDRNOTAVAIL") throw error;
+    app.log.warn("IPv6 is not available here; listening on 0.0.0.0 (IPv4 only)");
+    await app.listen({ port, host: "0.0.0.0" });
   }
 }
 
@@ -568,6 +673,46 @@ export function installSignalHandlers(
   proc.on("SIGINT", onSignal);
 }
 
+/**
+ * The stop for a signal that arrives while start() is still running: aborts
+ * it, then waits up to waitMs for it to unwind, which stops whatever it had
+ * started. Abort is only noticed between steps and a step can hang (migrate
+ * on a database that never answers waits for the pool's connect timeout), so
+ * past waitMs this gives up and resolves; the process then exits 0. That is
+ * safe: the migrations are one transaction, pg-boss's install is one, and
+ * Postgres rolls back whatever a dropped connection left open; the queue
+ * creation that follows is not one, but is idempotent on the next start.
+ * Only the settling of start() is raced: a server that did start is stopped
+ * outside the race, under the signal handler's own 30 s deadline.
+ */
+export async function stopWhileStarting(
+  abort: AbortController,
+  starting: Promise<Server>,
+  waitMs: number = START_ABORT_WAIT_MS,
+  log: (line: string) => void = console.info,
+): Promise<void> {
+  abort.abort();
+  let timer: NodeJS.Timeout | undefined;
+  const gaveUp = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), waitMs);
+  });
+  const settled = starting.then(
+    (server) => server,
+    () => undefined,
+  );
+  let result: Server | undefined | "late";
+  try {
+    result = await Promise.race([settled, gaveUp]);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (result === "late") {
+    log("platehouse: stopped during start-up");
+    return;
+  }
+  if (result !== undefined) await result.stop();
+}
+
 /** The process: configuration from the environment, the server, the signals. */
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   let config: Config;
@@ -581,8 +726,21 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     }
     throw error;
   }
-  const server = await start(config, { web: processWeb() });
-  installSignalHandlers(server.stop);
+  // The handlers are installed before start() runs, so docker stop works
+  // while the app is still starting.
+  const abort = new AbortController();
+  let server: Server | undefined;
+  const starting = start(config, { web: processWeb(), signal: abort.signal });
+  installSignalHandlers(() =>
+    server === undefined ? stopWhileStarting(abort, starting) : server.stop(),
+  );
+  try {
+    server = await starting;
+  } catch (error) {
+    // A start-up a signal ended: the signal handler exits 0, not this.
+    if (abort.signal.aborted && error === abort.signal.reason) return;
+    throw error;
+  }
 }
 
 if (import.meta.main) {

@@ -84,6 +84,8 @@ function fileRow(id: string, kind: string, status: string | null, message: strin
     parse_status: "ok",
     derived_status: status,
     derived_message: message,
+    preview_status: null,
+    preview_message: null,
     mesh_blob_id: null,
     render_stl_blob_id: null,
     render_png_blob_id: null,
@@ -171,7 +173,7 @@ function apiLibrary(files: ReturnType<typeof fileRow>[] = FILES) {
     db: scriptedDb(files),
     store: unusedStore,
     displayContext: async () => ({ printerId: "P1S", orcaVersion: null, printers: [] }),
-    plateNumbers: async () => ({}),
+    plateNumbersMany: async () => new Map(),
   });
 }
 

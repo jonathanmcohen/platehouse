@@ -1,4 +1,4 @@
-// Login sessions (build plan Task 15; AC-080). The __Host-ph_session cookie
+// Login sessions, which every page and file route needs. The __Host-ph_session cookie
 // carries 32 random bytes in base64url (43 characters). The session is a row
 // in the sessions table whose id is the base64url SHA-256 of that cookie
 // value (sessionRowId), also 43 characters, so the table never holds a
@@ -23,9 +23,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Kysely } from "kysely";
 import type { DB, Session } from "../db/types.js";
-import { type NewSession, sessionsRepo } from "../repos/sessions.js";
+import { type NewSession, type SignedOut, sessionsRepo } from "../repos/sessions.js";
 
-/** The session cookie (Database schema contract). */
+export type { SignedOut };
+
+/** The session cookie (the sessions table in db/migrations/0001_init.sql). */
 export const SESSION_COOKIE = "__Host-ph_session";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -63,6 +65,13 @@ export interface SessionStore {
   /** The session, unless it is past its absolute or idle expiry at now. */
   get(id: string, now: Date): Promise<Session | undefined>;
   delete(id: string): Promise<boolean>;
+  /**
+   * Sign out everywhere, in one transaction: deletes every session of one
+   * subject, then, with revokeTokens, revokes every live API token they made.
+   * The delete waits for a token being made from one of those sessions
+   * (api/tokens.ts createTokenForSession), so the revoke finds that token.
+   */
+  signOutEverywhere(subject: string, revokeTokens: boolean): Promise<SignedOut>;
   /** Moves a session's idle expiry to idleExpiresAt. */
   touch(id: string, idleExpiresAt: Date): Promise<void>;
 }
@@ -74,6 +83,7 @@ export function dbSessionStore(db: Kysely<DB>): SessionStore {
     create: (input) => repo.create(input),
     get: (id, now) => repo.get(id, now),
     delete: (id) => repo.delete(id),
+    signOutEverywhere: (subject, revokeTokens) => repo.signOutEverywhere(subject, revokeTokens),
     async touch(id, idleExpiresAt) {
       await db.updateTable("sessions").set({ idleExpiresAt }).where("id", "=", id).execute();
     },
@@ -87,8 +97,12 @@ export interface StartedSession {
 }
 
 export interface Sessions {
-  /** A new session for subject; its cookie value is 32 random bytes in base64url. */
-  start(subject: string): Promise<StartedSession>;
+  /**
+   * A new session for subject, signed in now, with the display name the
+   * issuer gave (null or left out when it gave none); its cookie value is 32
+   * random bytes in base64url.
+   */
+  start(subject: string, displayName?: string | null): Promise<StartedSession>;
   /**
    * The live session behind this cookie value, its idle expiry moved on;
    * undefined when there is none. The session's id is its row id.
@@ -96,6 +110,13 @@ export interface Sessions {
   find(cookie: string | undefined): Promise<Session | undefined>;
   /** Ends the session behind this cookie value; nothing happens when there is none. */
   end(cookie: string | undefined): Promise<void>;
+  /**
+   * Sign out everywhere (issue #322): ends every session of one subject and,
+   * with revokeTokens, revokes every live API token they made, in one
+   * transaction that a token being made at the same moment waits for, or
+   * that waits for it (issue #414). Returns how many of each.
+   */
+  signOutEverywhere(subject: string, revokeTokens: boolean): Promise<SignedOut>;
 }
 
 /**
@@ -116,13 +137,17 @@ export function createSessions(deps: { store: SessionStore; now?: () => Date }):
   const now = deps.now ?? (() => new Date());
 
   return {
-    async start(subject) {
+    async start(subject, displayName) {
       const at = now().getTime();
       const cookie = randomBytes(32).toString("base64url");
       const expiresAt = new Date(at + SESSION_ABSOLUTE_MS);
       await store.create({
         id: sessionRowId(cookie),
         subject,
+        displayName: displayName ?? null,
+        // The sign-in time, from the same clock as the expiries: a new API
+        // token needs a sign-in this recent (app-api/tokens.ts).
+        createdAt: new Date(at),
         expiresAt,
         idleExpiresAt: new Date(at + SESSION_IDLE_MS),
       });
@@ -147,5 +172,7 @@ export function createSessions(deps: { store: SessionStore; now?: () => Date }):
     async end(cookie) {
       if (isSessionId(cookie)) await store.delete(sessionRowId(cookie));
     },
+
+    signOutEverywhere: (subject, revokeTokens) => store.signOutEverywhere(subject, revokeTokens),
   };
 }

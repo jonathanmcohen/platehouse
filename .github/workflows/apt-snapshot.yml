@@ -61,8 +61,7 @@
 #
 # Permissions: contents: read at the top; refresh alone holds contents: write
 # (the push) and pull-requests: write, and dispatch-ci alone actions: write
-# (starting ci.yml). Actions are pinned to the exact tags the other workflows
-# use. The checkout keeps no token on disk; the push, and the fetch before
+# (starting ci.yml). Actions are pinned to full commit SHAs, with the release tag as a comment (#420). The checkout keeps no token on disk; the push, and the fetch before
 # it, pass the job token to git in the environment of that one command.
 name: apt-snapshot
 
@@ -108,12 +107,12 @@ jobs:
           fi
 
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
 
@@ -209,11 +208,23 @@ jobs:
             echo "${BRANCH} already holds this change on this main; nothing is pushed"
           else
             if [ -n "$remote" ]; then
+              # The snapshot the branch proposed, read from the fetched
+              # branch. Run by hand twice on one day with main moved in
+              # between, it is the same as NEW: the branch is replaced
+              # because main moved, not because a newer snapshot exists.
+              previous="$(git show 'FETCH_HEAD:apps/slicer/Dockerfile' 2>/dev/null | sed -n 's/^ARG APT_SNAPSHOT=//p' | head -n 1)" || previous=""
+              if [ "$previous" = "$NEW" ]; then
+                why="Replaced because main moved since it was opened: it proposed this same snapshot, ${NEW_LABEL} (\`${NEW}\`), on an older main"
+                was="proposed the same snapshot on an older main"
+              else
+                why="Replaced by a newer snapshot, ${NEW_LABEL} (\`${NEW}\`)"
+                was="proposed an older snapshot"
+              fi
               # Replaced, not moved: close its open pull request (deleting
               # the branch would close it anyway, with no word why), then
               # delete the branch, if it is still where it was read.
               if [ -n "$existing" ]; then
-                gh pr close "$existing" --repo "$REPO" --comment "Replaced by a newer snapshot, ${NEW_LABEL} (\`${NEW}\`): the apt-snapshot workflow opens a new pull request from the same branch. ${RUN_URL}"
+                gh pr close "$existing" --repo "$REPO" --comment "${why}: the apt-snapshot workflow opens a new pull request from the same branch. ${RUN_URL}"
                 echo "Closed pull request #${existing}; a new one replaces it"
                 replaced="$existing"
                 existing=""
@@ -238,7 +249,7 @@ jobs:
             echo "**To merge:** merge when ci is green. Merging publishes nothing: the published slicer image gets the new packages with its next build (a release tag, a new OrcaSlicer version, or a run of the slicer-image workflow by hand). If the new snapshot breaks a build or a test, fix it on another branch, because the next run replaces this one, or close this pull request; the next monthly run opens a new one."
             if [ -n "$replaced" ]; then
               echo ""
-              echo "This replaces #${replaced}, which proposed an older snapshot and was not merged."
+              echo "This replaces #${replaced}, which ${was} and was not merged."
             fi
             echo ""
             echo "Opened by the apt-snapshot workflow: ${RUN_URL}"

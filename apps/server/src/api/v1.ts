@@ -1,8 +1,10 @@
-// The Public API v1 (build plan Task 16; AC-082, AC-084, AC-085), for
-// scripts, AI assistants and the Manyfold importer (Task 23). Every route is under
+// The Public API v1, for scripts, AI assistants and the Manyfold importer
+// (apps/importer). It works without a cookie, can add and find files but never
+// delete, trash or purge anything, answers a bad token 401 and sends no CORS
+// headers. Every route is under
 // /api/v1, bearer-class (auth/gate.ts) and behind the bearer hook
 // (api/tokens.ts): a token, never a cookie, never a login redirect, and no
-// Origin check. The operations are the contract's:
+// Origin check. The operations are:
 //
 //   GET    /api/v1/openapi.json                    this API's description
 //   GET    /api/v1/models?q&tag&collection&creator&externalRef&cursor&limit
@@ -25,10 +27,10 @@
 //   trash that lands while an upload is under way still wins: ingest refuses
 //   the finished upload (the result says so) and stores nothing.
 // - POST /api/v1/models takes the metadata and externalRef the importer
-//   carries (decision 5). license is an SPDX id. A taken externalRef, on a
-//   live or a trashed model, is 409 {"error":"exists","trashed":<bool>}, so
-//   a re-run import skips a model the user trashed rather than recreating it
-//   (Review Focus 4).
+//   carries. license is usually an SPDX id (any string is accepted). A taken
+//   externalRef, on a live or a trashed model, is 409
+//   {"error":"exists","trashed":<bool>}, so a re-run import skips a model the
+//   user trashed rather than recreating it or making a duplicate.
 // - externalRef= finds the live model with that reference (zero or one); it
 //   is a lookup, not a filter, so it cannot be combined with the others.
 // - JSON bodies are parsed in this scope only (the root app parses none),
@@ -40,14 +42,18 @@
 //   issue #260) as it is read, so no slicer temp path or address is
 //   answered; the whole stored message is kept, and a longer one keeps its
 //   end, where the program's error line is. The stored row is left as it is.
+//   previewMessage, why an STL's or STEP file's preview picture failed, is
+//   cleaned the same way. derivedStatus keeps its 0.1.0 meaning (a .scad's
+//   render, a STEP file's mesh; null for an STL): the picture is answered as
+//   previewStatus beside it (issue #380, the maintainer, 2026-11-22).
 // - A model's or a file's plate numbers are read as the library page reads
 //   them (app-api/library.ts): one display context per request
 //   (readDisplayContext, so the printer menu waits at most
-//   DISPLAY_MENU_TIMEOUT_MS), shared by every plate, and at most
-//   PLATE_NUMBERS_CONCURRENCY plate lookups at once (mapLimit). A model with
-//   many plates then asks the slicer for its printers once, not once per
-//   plate, leaves most of the database pool free, and shows every plate for
-//   the same printer.
+//   DISPLAY_MENU_TIMEOUT_MS), shared by every plate, and every plate's
+//   numbers in one call (plateNumbersMany, two queries). A model with many
+//   plates then asks the slicer for its printers once, not once per plate,
+//   leaves most of the database pool free, and shows every plate for the
+//   same printer.
 // - No CORS plugin is registered and no answer carries an Access-Control
 //   header, so a browser on another origin cannot read the API.
 // - A file's content is named and sized here once for every route that
@@ -60,13 +66,14 @@
 //   and counts the bytes as they go (exactSize), and a HEAD compares the
 //   HeadObject's size (fileHead), so a HEAD answers 503 where the GET would.
 import { pipeline, Readable, Transform } from "node:stream";
+import { Metadata } from "@tus/server";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
-import { mapLimit, PLATE_NUMBERS_CONCURRENCY } from "../app-api/library.js";
 import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB, FileKind, ModelFile, ParseStatus, Plate } from "../db/types.js";
 import type { DisplayContext, PlateNumbers } from "../estimates/display.js";
+import { SettingsInputError } from "../input-error.js";
 import { createCollections } from "../library/collections.js";
 import { createSearch, InvalidCursor, type LibrarySearch } from "../library/search.js";
 import { createTags } from "../library/tags.js";
@@ -139,6 +146,10 @@ export interface ApiFile {
   derivedStatus: string | null;
   /** The render or conversion message, cleaned by scrubDerivedMessage, its end kept (issue #260); null with none. */
   derivedMessage: string | null;
+  /** An STL's or STEP file's preview picture: null, pending, ok or failed (issue #380). */
+  previewStatus: string | null;
+  /** Why the picture failed, cleaned as derivedMessage is; null with none. */
+  previewMessage: string | null;
   createdAt: string;
   updatedAt: string;
   plates: ApiPlate[];
@@ -275,7 +286,7 @@ function isContent(content: FileHead | FileContent): content is FileContent {
 }
 
 /** The headers a file's answer sets that describe the bytes, not the answer. */
-const CONTENT_HEADERS = ["content-type", "content-length", "content-disposition"] as const;
+const CONTENT_HEADERS = ["content-type", "content-length", "content-disposition", "etag"] as const;
 
 /**
  * Takes a file's content headers off an error answer. A stream that fails
@@ -361,8 +372,11 @@ export function createApiLibrary(deps: {
    * menu (readDisplayContext), read once per request.
    */
   displayContext(): Promise<DisplayContext>;
-  /** Task 12's plateNumbers for one plate with that context (estimates/display.ts). */
-  plateNumbers(ctx: DisplayContext, plateId: string): Promise<PlateNumbers>;
+  /** The estimates module's plateNumbersMany for several plates with that context (estimates/display.ts). */
+  plateNumbersMany(
+    ctx: DisplayContext,
+    plateIds: readonly string[],
+  ): Promise<Map<string, PlateNumbers>>;
 }): ApiLibrary {
   const { db, store } = deps;
   const repos = createRepos(db);
@@ -417,27 +431,29 @@ export function createApiLibrary(deps: {
   }
 
   /**
-   * These files as the API shows them. Their plates are listed one file at
-   * a time, then every plate's numbers are read with the one context, at
-   * most PLATE_NUMBERS_CONCURRENCY at once. Files with no plates (an STL,
+   * These files as the API shows them. Their plates are listed in one query,
+   * then every plate's numbers are read in one call with the one context
+   * (two queries in all). Files with no plates (an STL,
    * STEP or SCAD file, or a .3mf with no plate data) read no context, so
    * their answer never waits on the printer menu or the slicer.
    */
   async function toApiFiles(files: readonly ModelFile[]): Promise<ApiFile[]> {
-    const platesOf: Plate[][] = [];
-    for (const file of files) platesOf.push(await repos.plates.listForFile(file.id));
-    const plates = platesOf.flat();
-    const numbers = new Map<string, PlateNumbers>();
+    const plates = await repos.plates.listForFiles(files.map((f) => f.id));
+    let numbers = new Map<string, PlateNumbers>();
     if (plates.length > 0) {
       const ctx = await deps.displayContext();
-      const read = await mapLimit(
-        plates,
-        PLATE_NUMBERS_CONCURRENCY,
-        async (p) => [p.id, await deps.plateNumbers(ctx, p.id)] as const,
+      numbers = await deps.plateNumbersMany(
+        ctx,
+        plates.map((p) => p.id),
       );
-      for (const [id, n] of read) numbers.set(id, n);
     }
-    return files.map((file, i) => toApiFile(file, platesOf[i] ?? [], numbers));
+    return files.map((file) =>
+      toApiFile(
+        file,
+        plates.filter((p) => p.fileId === file.id),
+        numbers,
+      ),
+    );
   }
 
   function toApiFile(
@@ -456,6 +472,8 @@ export function createApiLibrary(deps: {
       parseStatus: file.parseStatus,
       derivedStatus: file.derivedStatus,
       derivedMessage: scrubDerivedMessage(file.derivedMessage),
+      previewStatus: file.previewStatus,
+      previewMessage: scrubDerivedMessage(file.previewMessage),
       createdAt: iso(file.createdAt),
       updatedAt: iso(file.updatedAt),
       plates: plates.map((p) => ({
@@ -587,16 +605,17 @@ export function createApiLibrary(deps: {
   };
 }
 
-/** The keys and decoded values of a tus Upload-Metadata header; undefined when malformed. */
+/**
+ * The keys and decoded values of a tus Upload-Metadata header, read by tus's
+ * own parser so this check and tus agree; undefined when tus would refuse it.
+ */
 export function uploadMetadata(header: unknown): Map<string, string | null> | undefined {
   if (typeof header !== "string") return undefined;
-  const fields = new Map<string, string | null>();
-  for (const pair of header.split(",")) {
-    const [key, value, extra] = pair.trim().split(" ");
-    if (key === undefined || key === "" || extra !== undefined) return undefined;
-    fields.set(key, value === undefined ? null : Buffer.from(value, "base64").toString("utf8"));
+  try {
+    return new Map(Object.entries(Metadata.parse(header)));
+  } catch {
+    return undefined;
   }
-  return fields;
 }
 
 const NOT_FOUND = { error: "not_found" } as const;
@@ -668,6 +687,8 @@ const EXAMPLE_FILE = {
   parseStatus: "ok",
   derivedStatus: null,
   derivedMessage: null,
+  previewStatus: null,
+  previewMessage: null,
   createdAt: "2026-11-01T10:00:00.000Z",
   updatedAt: "2026-11-01T10:00:00.000Z",
   plates: [
@@ -689,7 +710,10 @@ const MODEL = {
     caption: { ...nullableString, description: "A one-line summary" },
     description: { ...nullableString, description: "Markdown" },
     creator: { ...nullableString, description: "Who designed it" },
-    license: { ...nullableString, description: "An SPDX licence id, such as CC-BY-4.0" },
+    license: {
+      ...nullableString,
+      description: "Usually an SPDX licence id, such as CC-BY-4.0; any string is accepted",
+    },
     licenseNote: { ...nullableString, description: "Licence text that is not an SPDX id" },
     externalRef: {
       ...nullableString,
@@ -767,6 +791,21 @@ const FILE = {
         `addresses and tokens; at most ${DERIVED_MESSAGE_MAX_CHARS} characters, keeping the ` +
         "end of a longer one, where the error line is",
     },
+    previewStatus: {
+      ...nullableString,
+      description:
+        "For STL and STEP files, the preview picture of the file's current version: pending, " +
+        "ok or failed (ok once it is stored, pending while it is being made, failed when the " +
+        "last attempt failed). Null when there is none yet (one is queued unless the file cannot " +
+        "have one: a STEP file whose conversion failed, or a file in a trashed model), and for " +
+        "other kinds. It never changes derivedStatus.",
+    },
+    previewMessage: {
+      ...nullableString,
+      description:
+        "Why the preview picture failed, cleaned as derivedMessage is; at most " +
+        `${DERIVED_MESSAGE_MAX_CHARS} characters. Null with none`,
+    },
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
     plates: {
@@ -796,6 +835,8 @@ const FILE = {
     "parseStatus",
     "derivedStatus",
     "derivedMessage",
+    "previewStatus",
+    "previewMessage",
     "createdAt",
     "updatedAt",
     "plates",
@@ -855,7 +896,12 @@ const NEW_MODEL = {
       pattern: "\\S",
       description: "Who designed it",
     },
-    license: { type: "string", minLength: 1, maxLength: 200, description: "An SPDX licence id" },
+    license: {
+      type: "string",
+      minLength: 1,
+      maxLength: 200,
+      description: "Usually an SPDX licence id; any string is accepted",
+    },
     externalRef: {
       type: "string",
       minLength: 1,
@@ -1382,7 +1428,7 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
         try {
           done = await run();
         } catch (error) {
-          if (error instanceof RangeError) return badRequest(reply, error.message);
+          if (error instanceof SettingsInputError) return badRequest(reply, error.message);
           throw error;
         }
         // Taking off a label the model did not have is done all the same.

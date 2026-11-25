@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { mapLicense } from "../src/license.js";
 
-// Ported by behaviour from automation Manyfold/makerworld-metadata
-// test/metadata.test.mjs at 1ce8c57 (the licence cases), in the shape the
-// build plan's Task 7 interface gives: {spdx?, footer?, unknown?: true}.
+// Ported by behaviour from the tests of an earlier Manyfold metadata script
+// (the licence cases), in the shape mapLicense returns: {spdx?, footer?, unknown?: true}.
 
-// licence table maps exactly (plan Task 7 and requirements AC-022).
+// licence table maps exactly: each CC licence to its CC 4.0 SPDX id, CC0 to CC0-1.0.
 const SPDX_ROWS: Array<[string, string]> = [
   ["BY-NC-SA", "CC-BY-NC-SA-4.0"],
   ["BY-NC", "CC-BY-NC-4.0"],
   ["BY-SA", "CC-BY-SA-4.0"],
   ["BY", "CC-BY-4.0"],
   ["BY-NC-ND", "CC-BY-NC-ND-4.0"],
+  ["BY-ND", "CC-BY-ND-4.0"],
   ["CC0", "CC0-1.0"],
 ];
 
@@ -31,11 +31,14 @@ describe("mapLicense", () => {
     expect(mapped).not.toHaveProperty("spdx");
   });
 
-  it("the table has exactly these six SPDX rows and two footer rows", () => {
+  it("the table has exactly these seven SPDX rows and two footer rows", () => {
     // Every row above maps, and nothing near them does: case, spacing inside
     // the value, a version suffix and the CC- prefix all fall to unknown.
     for (const near of ["by", "By-Nc", "BY NC", "BY-NC-4.0", "CC-BY", "CC0-1.0", "cc0"]) {
-      expect(mapLicense(near), near).toStrictEqual({ unknown: true });
+      expect(mapLicense(near), near).toStrictEqual({
+        footer: `License on MakerWorld: ${near}`,
+        unknown: true,
+      });
     }
   });
 
@@ -46,8 +49,31 @@ describe("mapLicense", () => {
     expect(mapLicense("  ")).toStrictEqual({});
   });
 
-  it("mapLicense: anything else is unknown", () => {
-    expect(mapLicense("Something Else")).toStrictEqual({ unknown: true });
+  it("mapLicense: anything else is unknown but kept as a footer", () => {
+    expect(mapLicense("Some New Licence")).toStrictEqual({
+      footer: "License on MakerWorld: Some New Licence",
+      unknown: true,
+    });
+  });
+
+  it("an unknown value has control and format characters removed and whitespace collapsed", () => {
+    expect(mapLicense("A\u0007\u200b  B")).toStrictEqual({
+      footer: "License on MakerWorld: A B",
+      unknown: true,
+    });
+  });
+
+  it("an unknown value of only control characters is empty", () => {
+    expect(mapLicense("\u0007\u200b")).toStrictEqual({});
+  });
+
+  it("an unknown value is capped at 120 code points without splitting a surrogate pair", () => {
+    const plain = mapLicense("x".repeat(500));
+    expect(plain.footer).toBe(`License on MakerWorld: ${"x".repeat(120)}`);
+    const emoji = mapLicense("\u{1F600}".repeat(500));
+    const value = (emoji.footer ?? "").slice("License on MakerWorld: ".length);
+    expect(Array.from(value)).toHaveLength(120);
+    expect(value).toBe("\u{1F600}".repeat(120));
   });
 
   it("mapLicense: surrounding whitespace is ignored", () => {
@@ -58,7 +84,13 @@ describe("mapLicense", () => {
   });
 
   it("a value that names an Object.prototype key is unknown, not a crash", () => {
-    expect(mapLicense("constructor")).toStrictEqual({ unknown: true });
-    expect(mapLicense("__proto__")).toStrictEqual({ unknown: true });
+    expect(mapLicense("constructor")).toStrictEqual({
+      footer: "License on MakerWorld: constructor",
+      unknown: true,
+    });
+    expect(mapLicense("__proto__")).toStrictEqual({
+      footer: "License on MakerWorld: __proto__",
+      unknown: true,
+    });
   });
 });

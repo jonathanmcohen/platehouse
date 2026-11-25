@@ -65,6 +65,7 @@ import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB } from "../db/types.js";
+import { SettingsInputError } from "../input-error.js";
 import { ensureLabels } from "./labels.js";
 import { type LibraryView, modelsRepo } from "./models.js";
 import { tagsRepo } from "./tags.js";
@@ -121,13 +122,13 @@ function names(values: readonly string[], what: string): string[] {
   const seen = new Set<string>();
   for (const value of values) {
     const name = value.trim();
-    if (name === "") throw new RangeError(`A ${what} name must not be empty`);
+    if (name === "") throw new SettingsInputError(`A ${what} name must not be empty`);
     const key = name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(name);
   }
-  if (out.length === 0) throw new RangeError(`Name at least one ${what}`);
+  if (out.length === 0) throw new SettingsInputError(`Name at least one ${what}`);
   return out;
 }
 

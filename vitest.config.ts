@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config";
 // Only the TypeScript suites under apps/ and packages/ run here. The slicing
 // gate's tests use node:test and run with node --test (see ci.yml).
 //
-// Three projects, one per CI job (build plan Tasks 3 and 11):
+// Three projects, one per CI job:
 // - unit: every test file except those under a test/integration/ or
 //   test/container/ folder.
 // - integration: the files under test/integration/, which start real
@@ -41,8 +41,8 @@ export default defineConfig({
         extends: true,
         test: {
           name: "unit",
-          // The web app's component tests are TSX (Task 19's library.test.tsx,
-          // Task 21's settings.test.tsx), so .test.tsx files under apps/ run here too.
+          // The web app's component tests are TSX (library.test.tsx,
+          // settings.test.tsx and the rest), so .test.tsx files under apps/ run here too.
           include: [
             "apps/*/test/**/*.test.ts",
             "apps/*/test/**/*.test.tsx",

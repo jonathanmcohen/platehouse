@@ -1,4 +1,4 @@
-// Build plan Task 15: patternClass(pattern) for a matched route and
+// patternClass(pattern) for a matched route and
 // routeClass(path) for an unmatched request are the Route classes table of
 // the contract, and anything unlisted is session. Every route the app
 // registers has a class (walks app.printRoutes()), and answers a request with no
@@ -173,8 +173,8 @@ describe("patternClass", () => {
 });
 
 describe("a route registered with a regex-constrained param", () => {
-  // Registered here, in the test only (never shipped code), the way Task 16's
-  // bearer routes and Task 17's link routes may be: the gate classes them by
+  // Registered here, in the test only (never shipped code), the way the API's
+  // bearer routes and the slicer link routes may be: the gate classes them by
   // their prefix, so a bearer or link route is never made to need a session
   // cookie or a same-origin Origin header, and a session route still does.
   const BEARER = "/api/v1/regex-test/:id(^\\d+)";
@@ -241,7 +241,7 @@ describe("every registered route", () => {
     await t?.close();
   });
 
-  test("printRoutes lists the routes this task and Task 30 register", () => {
+  test("printRoutes lists the routes the gate and the server register", () => {
     const listed = new Map(registeredRoutes(t.app).map((r) => [r.path, r.methods]));
     const expected: Array<[string, string]> = [
       ["/healthz", "GET"],
@@ -281,7 +281,10 @@ describe("every registered route", () => {
           // what is left is the class's answer to no credentials.
           headers: { accept: "application/json", origin: TEST_ORIGIN },
         });
-        const toLogin = res.headers.location === `${TEST_ORIGIN}/auth/login`;
+        const location = String(res.headers.location ?? "");
+        const toLogin =
+          location === `${TEST_ORIGIN}/auth/login` ||
+          location.startsWith(`${TEST_ORIGIN}/auth/login?`);
         switch (cls) {
           case "session":
           case "bearer":
@@ -308,13 +311,17 @@ describe("every registered route", () => {
       const cls = patternClass(route.path);
       if (cls !== "session" && cls !== "bearer") continue;
       for (const method of route.methods) {
+        // Same-origin, as a browser sends it, so a state-changing session
+        // route (an upload's POST or PATCH) meets the session check and not
+        // the Origin check's 403, which a "not 401" alone would let pass.
         const res = await t.app.inject({
           method: method as "GET",
           url: concretePath(route.path),
+          headers: { origin: TEST_ORIGIN },
           cookies: { [SESSION_COOKIE]: sessionCookie },
         });
         const label = `${method} ${route.path} (${cls})`;
-        if (cls === "session") expect(res.statusCode, label).not.toBe(401);
+        if (cls === "session") expect([401, 403], label).not.toContain(res.statusCode);
         else expect(res.statusCode, label).toBe(401);
       }
     }
@@ -337,7 +344,7 @@ describe("every registered route", () => {
       cookies: { [SESSION_COOKIE]: sessionCookie },
     });
     expect(page.statusCode).toBe(302);
-    expect(page.headers.location).toBe(`${TEST_ORIGIN}/auth/login`);
+    expect(page.headers.location).toBe(`${TEST_ORIGIN}/auth/login?next=/no-such-page`);
     expect(api.statusCode).toBe(401);
     expect(signedIn.statusCode).toBe(404);
   });

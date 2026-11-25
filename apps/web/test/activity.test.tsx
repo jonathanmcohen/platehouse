@@ -66,6 +66,9 @@ function emptyView(): ActivityView {
       busy: false,
       orca: "2.5.0",
       openscad: "2026.10.01",
+      sandbox: "on",
+      sandboxReason: null,
+      unsandboxed: false,
       printerId: P1S,
       printerName: P1S_NAME,
     },
@@ -135,6 +138,9 @@ function busyView(): ActivityView {
     busy: true,
     orca: "2.5.0",
     openscad: "2026.10.01",
+    sandbox: "on",
+    sandboxReason: null,
+    unsandboxed: false,
     printerId: P1S,
     printerName: P1S_NAME,
   };
@@ -528,6 +534,9 @@ describe("the page", () => {
         busy: null,
         orca: null,
         openscad: null,
+        sandbox: null,
+        sandboxReason: null,
+        unsandboxed: null,
         printerId: P1S,
         printerName: P1S_NAME,
       };
@@ -538,6 +547,93 @@ describe("the page", () => {
     expect(stat(s, "Status")).toBe("Not reachable");
     expect(stat(s, "OrcaSlicer")).toBe("Unknown");
     expect(text(s)).toContain("The slicer is not answering");
+  });
+
+  describe("sandbox", () => {
+    const OFF_KERNEL =
+      "Sandbox: off. This server's kernel is older than Linux 6.12, so pictures, OpenSCAD renders, STEP previews and estimates are off.";
+    const OFF_CHECK =
+      "Sandbox: off. Its check failed, so pictures, OpenSCAD renders, STEP previews and estimates are off.";
+    const OFF_KERNEL_SHORT = "Sandbox: off. This server's kernel is older than Linux 6.12.";
+    const OFF_CHECK_SHORT = "Sandbox: off. Its check failed.";
+    const UNSANDBOXED =
+      "Estimates and STEP previews still run, without the sandbox, because SLICER_ALLOW_UNSANDBOXED is set. Pictures and OpenSCAD renders are off.";
+
+    async function renderWith(sandbox: Partial<ActivityView["slicer"]>) {
+      answer = () => {
+        const v = busyView();
+        v.slicer = { ...v.slicer, ...sandbox };
+        return v;
+      };
+      await render();
+      return text(section("Slicer"));
+    }
+
+    test("says it is on", async () => {
+      const t = await renderWith({ sandbox: "on" });
+      expect(t).toContain("Sandbox: on");
+      expect(t).not.toContain("Sandbox: off");
+    });
+
+    test("says it is being checked", async () => {
+      expect(await renderWith({ sandbox: "checking" })).toContain("Sandbox: checking");
+    });
+
+    test("says it is off for an old kernel, and nothing more when not allowed", async () => {
+      const t = await renderWith({
+        sandbox: "off",
+        sandboxReason: "old_kernel",
+        unsandboxed: false,
+      });
+      expect(t).toContain(OFF_KERNEL);
+      expect(t).not.toContain("SLICER_ALLOW_UNSANDBOXED");
+    });
+
+    test("says it is off for a failed check", async () => {
+      const t = await renderWith({
+        sandbox: "off",
+        sandboxReason: "check_failed",
+        unsandboxed: false,
+      });
+      expect(t).toContain(OFF_CHECK);
+    });
+
+    // Allowed to run without it, estimates and STEP previews are not off, so
+    // the off line gives only the reason, and the next line what still runs.
+    test("says what still runs when the slicer is allowed to run without it, for an old kernel", async () => {
+      const t = await renderWith({
+        sandbox: "off",
+        sandboxReason: "old_kernel",
+        unsandboxed: true,
+      });
+      expect(t).toContain(OFF_KERNEL_SHORT);
+      expect(t).toContain(UNSANDBOXED);
+      expect(t).not.toContain(OFF_KERNEL);
+      expect(t).not.toContain("estimates are off");
+    });
+
+    test("says what still runs when the slicer is allowed to run without it, for a failed check", async () => {
+      const t = await renderWith({
+        sandbox: "off",
+        sandboxReason: "check_failed",
+        unsandboxed: true,
+      });
+      expect(t).toContain(OFF_CHECK_SHORT);
+      expect(t).toContain(UNSANDBOXED);
+      expect(t).not.toContain(OFF_CHECK);
+      expect(t).not.toContain("estimates are off");
+    });
+
+    test("says nothing about it when the slicer did not answer", async () => {
+      const t = await renderWith({
+        reachable: false,
+        busy: null,
+        sandbox: null,
+        sandboxReason: null,
+        unsandboxed: null,
+      });
+      expect(t).not.toContain("Sandbox");
+    });
   });
 });
 
@@ -730,6 +826,66 @@ describe("recent events", () => {
     expect(s).toContain("Where a model came from");
   });
 
+  // Issue #316: a failed STL or STEP preview picture is named as one.
+  test("names a failed preview picture as one", async () => {
+    answer = () => {
+      const v = busyView();
+      v.events.items = [
+        {
+          type: "render_failed",
+          at: "2026-11-19T11:58:00.000Z",
+          kind: "preview",
+          model: { id: LIVE_MODEL, name: "Air Dry - AMS" },
+          file: { id: "f3", name: "Hook.stl" },
+          message: "The preview picture could not be rendered. OpenSCAD said: ERROR: bad STL",
+        },
+      ];
+      return v;
+    };
+    await render();
+    const li = section("Recent events").querySelector("ol > li") as HTMLElement;
+    expect(text(li)).toContain("Preview picture failed");
+    expect(text(li)).toContain("Hook.stl");
+    expect(text(li)).not.toContain("STEP conversion failed");
+  });
+
+  test("an inbox file's name is shown inside bdi, so a right-to-left name cannot reorder the line", async () => {
+    answer = () => {
+      const v = busyView();
+      v.events.items = [
+        {
+          type: "inbox_failed",
+          at: "2026-11-19T11:56:00.000Z",
+          name: "Broken.3mf",
+          reason: "No Bambu plate data in this file.",
+        },
+      ];
+      return v;
+    };
+    await render();
+    const li = section("Recent events").querySelector("ol > li") as HTMLElement;
+    expect(li.querySelector("bdi")?.textContent).toBe("Broken.3mf");
+  });
+
+  test("an inbox file with no name left to show reads (unnamed file), not an empty line", async () => {
+    answer = () => {
+      const v = busyView();
+      v.events.items = [
+        {
+          type: "inbox_failed",
+          at: "2026-11-19T11:56:00.000Z",
+          name: "",
+          reason: "No Bambu plate data in this file.",
+        },
+      ];
+      return v;
+    };
+    await render();
+    const li = section("Recent events").querySelector("ol > li") as HTMLElement;
+    expect(text(li)).toContain("(unnamed file)");
+    expect(li.querySelector("bdi")).toBeNull();
+  });
+
   test("warns when the inbox's failed folder could not be read", async () => {
     answer = () => {
       const v = busyView();
@@ -801,5 +957,82 @@ describe("refreshing", () => {
     await render();
     await click(button(/^Refresh$/));
     expect(gets()).toBe(2);
+  });
+});
+
+// The description re-conversion on upgrade (#357) is an event of its own: how
+// many MakerWorld descriptions it changed, and what it left alone and why.
+describe("a description re-conversion", () => {
+  function withRun(counts: {
+    checked: number;
+    changed: number;
+    unchanged: number;
+    kept: number;
+    unreadable: number;
+  }): ActivityView {
+    const v = emptyView();
+    v.events.items = [
+      {
+        type: "descriptions_reconverted",
+        at: "2026-11-21T09:30:00.000Z",
+        converter: 3,
+        ...counts,
+      },
+    ];
+    return v;
+  }
+
+  test("says how many descriptions it changed and what it left alone", async () => {
+    answer = () => withRun({ checked: 120, changed: 66, unchanged: 40, kept: 12, unreadable: 2 });
+    await render();
+    const items = [...section("Recent events").querySelectorAll("ol > li")];
+    expect(items).toHaveLength(1);
+    const li = items[0] as HTMLElement;
+    expect(li.querySelector("time")?.getAttribute("datetime")).toBe("2026-11-21T09:30:00.000Z");
+    expect(text(li)).toContain("MakerWorld descriptions converted again");
+    expect(text(li)).toContain("66 descriptions changed, of 120 checked.");
+    expect(text(li)).toContain(
+      "40 already right. 12 left as they were: edited, or not written from their file. 2 whose files could not be read.",
+    );
+  });
+
+  test("says one description in the singular", async () => {
+    answer = () => withRun({ checked: 1, changed: 1, unchanged: 0, kept: 0, unreadable: 0 });
+    await render();
+    const li = section("Recent events").querySelector("ol > li");
+    expect(text(li)).toContain("1 description changed, of 1 checked.");
+  });
+
+  // Issue #398: the second line's counts were put in raw, so a count of 1
+  // read "1 left as they were ... their file".
+  test("says one kept or unreadable description in the singular too", async () => {
+    answer = () => withRun({ checked: 3, changed: 0, unchanged: 1, kept: 1, unreadable: 1 });
+    await render();
+    const li = section("Recent events").querySelector("ol > li");
+    expect(text(li)).toContain(
+      "1 already right. 1 left as it was: edited, or not written from its file. 1 whose file could not be read.",
+    );
+  });
+});
+
+// While the re-conversion has not finished, its schedule is listed (#382), so
+// a step an outage has delayed shows on the page.
+describe("an unfinished description re-conversion", () => {
+  test("shows its schedule by name", async () => {
+    answer = () => {
+      const v = emptyView();
+      v.schedules = [
+        {
+          key: "reconvert-descriptions",
+          label: "MakerWorld descriptions and licences (until they finish)",
+          schedule: "Every 5 minutes (UTC)",
+          lastRunAt: null,
+          lastState: null,
+        },
+      ];
+      return v;
+    };
+    await render();
+    expect(text(container)).toContain("MakerWorld descriptions and licences (until they finish)");
   });
 });

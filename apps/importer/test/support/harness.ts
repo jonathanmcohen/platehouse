@@ -14,9 +14,11 @@ export const MANYFOLD = "https://manyfold.example.test";
 export const OBJECTS = "https://objects.example.test";
 export const PLATEHOUSE = "https://platehouse.example.test";
 
-// Fake credentials, built from parts so no source line reads as one.
+// Fake credentials, built from parts so no source line reads as one. The
+// key holds a "/", so its URL-encoded form differs from it and the secrets
+// test's URL-encoded search can find something.
 export const FAKE_ID = ["stub", "client", "id", "7f3a"].join("-");
-export const FAKE_KEY = ["stub", "client", "key", "c0ffee", "9b1d"].join("-");
+export const FAKE_KEY = ["stub", "client", "key", "c0ffee/9b1d"].join("-");
 export const FAKE_BEARER = ["ph", "_", "S".repeat(20), "t".repeat(23)].join("");
 
 /** The environment the command is given, with the two addresses. */
@@ -83,6 +85,8 @@ export function setup(
   options: {
     manyfold?: Partial<ManyfoldStubOptions>;
     platehouse?: Partial<PlatehouseStubOptions>;
+    /** The clock the importer reads, in ms; the real one when not given. */
+    now?: () => number;
   } = {},
 ): Setup {
   const manyfold = createManyfoldStub({
@@ -115,6 +119,7 @@ export function setup(
         sleep: async (ms) => {
           waits.push(ms);
         },
+        ...(options.now === undefined ? {} : { now: options.now }),
       });
       return { ...result, stdout, stderr, output: [...stdout, ...stderr].join("\n") };
     },

@@ -1,7 +1,7 @@
 # Reverse proxy
 
-Platehouse expects a reverse proxy in front of it. The proxy terminates TLS, adds a few security
-headers the app does not set itself, and passes large uploads and downloads straight through.
+Platehouse expects a reverse proxy in front of it. The proxy terminates TLS, adds the HSTS header,
+and passes large uploads and downloads straight through.
 This page lists what Platehouse needs from any proxy. The guides that follow give a complete
 example for each of four servers:
 
@@ -15,7 +15,8 @@ Then use the [checklist](./checklist.md) to confirm your setup works.
 :::warning Examples to adapt
 
 Every snippet in this section is an example to adapt to your own setup, not a file to copy
-unchanged. Only the Traefik setup has been run against a real deployment. The nginx, Caddy and
+unchanged. Only the Traefik setup has been run against a real deployment (the end-to-end tests run
+a minimal Traefik with no middleware, not this guide's full setup). The nginx, Caddy and
 Apache guides are written from each server's documentation and from what Platehouse needs, and
 have not been run against a real Platehouse deployment. Run the [checklist](./checklist.md)
 whichever you use.
@@ -36,13 +37,30 @@ proxy talks plain http to the app on your own network.
 
 ### Security headers
 
-Platehouse does not set these response headers itself, so set them at the proxy:
+Platehouse sends these response headers itself, on every answer, errors included:
 
-| Header                      | Value                    | Why                                                                                      |
-| --------------------------- | ------------------------ | ---------------------------------------------------------------------------------------- |
-| `Strict-Transport-Security` | `max-age=31536000`       | Browsers use https for the site from then on.                                            |
-| `Referrer-Policy`           | `no-referrer`            | No Platehouse address, such as a slicer link, leaks to another site in a Referer header. |
-| `Content-Security-Policy`   | `frame-ancestors 'none'` | No other site can show Platehouse inside a frame.                                        |
+| Header                    | Value            | Why                                                                                                                                                   |
+| ------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Content-Security-Policy` | The policy below | The browser runs only Platehouse's own scripts and styles and connects only to Platehouse, and `frame-ancestors 'none'` stops other sites framing it. |
+| `Referrer-Policy`         | `no-referrer`    | No Platehouse address, such as a slicer link, leaks to another site in a Referer header.                                                              |
+| `X-Content-Type-Options`  | `nosniff`        | The browser keeps to the content type Platehouse names.                                                                                               |
+
+The policy is:
+
+```text
+default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+```
+
+The proxy sets one header: `Strict-Transport-Security: max-age=31536000`, so browsers use https
+for the site from then on. HSTS stays the proxy's job because only the proxy that terminates TLS
+knows the site is served over https.
+
+Do not set `Content-Security-Policy` at the proxy. Older versions of these guides set
+`Content-Security-Policy: frame-ancestors 'none'` there; if your proxy still has that line, remove
+it. Depending on the proxy, it would replace the app's policy or be sent as a second policy beside
+it, and a browser enforces every policy it gets, so a second one can only narrow the app's. The
+old `Referrer-Policy` line can go too, since the app sends the same value. The
+[checklist](./checklist.md) shows what the headers should look like.
 
 ### Large uploads
 
@@ -116,7 +134,7 @@ block. Match on the connection's own address, not on a header a client can set. 
 | Requirement                                                | Source                                                                                                                          |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | https only, Secure cookies                                 | The app's configuration and sign-in code                                                                                        |
-| The three security headers, set by the proxy               | The app's responses: it sets none of them itself                                                                                |
+| HSTS at the proxy, and no CSP at the proxy                 | The app's responses: it sends its CSP, `Referrer-Policy` and `nosniff` itself, and not HSTS                                     |
 | 512 MiB uploads, one-request uploads, the one-hour timeout | The app's upload handler and server timeout                                                                                     |
 | Traefik's 60-second read timeout                           | Traefik's documentation                                                                                                         |
 | No buffering or compression on the streaming paths         | The app streams these paths from the bucket as it reads them                                                                    |

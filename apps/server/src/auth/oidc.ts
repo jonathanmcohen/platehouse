@@ -1,4 +1,5 @@
-// Login over OpenID Connect (build plan Task 15; AC-080, AC-081),
+// Login over OpenID Connect, limited to members of one group, that leaves the
+// API working while the provider is down,
 // with openid-client: the authorization code flow with PKCE S256, a state
 // and a nonce, scopes openid email profile groups, and the client
 // authenticating to the token endpoint with client_secret_basic.
@@ -6,17 +7,27 @@
 // - redirect_uri is given (absoluteUrl('/auth/callback'), built from
 //   PUBLIC_ORIGIN), and the callback URL handed to finish() is built on it
 //   too, so no part of either comes from the request's Host or forwarded
-//   headers (AC-091). openid-client sends the callback URL, less its query,
+//   headers: every absolute URL comes from the configured public origin. openid-client sends the callback URL, less its query,
 //   as the token request's redirect_uri.
 // - Discovery happens on the first login, not at startup, so the server
-//   starts and serves everything but login while the OIDC provider is down (AC-081).
+//   starts and serves everything but login while the OIDC provider is down.
 //   A discovery that fails is not remembered: the next login tries again.
 //   Every request to the issuer gives up after ISSUER_TIMEOUT_SECONDS.
-// - A user is let in when the claims carry a subject, groups include
-//   OIDC_GROUP, and email_verified is true or the string "true" (Parchment
-//   dropped a string claim and login became an opaque "denied"). Groups and
+// - A user is let in when the claims carry a subject of at most
+//   MAX_SUBJECT_LENGTH (255) characters, the limit OpenID Connect Core sets
+//   (issue #378), groups include
+//   OIDC_GROUP, and email_verified is true or the string "true" (some
+//   providers send it as a string; dropping it would make login fail with
+//   an opaque "denied"). Groups and
 //   email_verified are read from the ID token, and from userinfo when the ID
 //   token leaves either out.
+// - The group is checked at every login and only then. Sessions keep no
+//   token from the issuer, so a session cannot ask the issuer again later;
+//   what needs a current check, such as making an API token, needs a fresh
+//   login instead (app-api/tokens.ts; issue #322).
+// - finish also returns a display name for the session (displayNameOf: name,
+//   else preferred_username, else email), which labels the API tokens the
+//   session makes. It never decides who gets in.
 import {
   authorizationCodeGrant,
   buildAuthorizationUrl,
@@ -30,6 +41,9 @@ import {
   randomPKCECodeVerifier,
   randomState,
 } from "openid-client";
+import { cleanName } from "./names.js";
+
+export { MAX_DISPLAY_NAME } from "./names.js";
 
 /** The scopes Platehouse asks for. */
 export const OIDC_SCOPE = "openid email profile groups";
@@ -46,25 +60,74 @@ export interface LoginChecks {
 
 /**
  * Why a login did not end in a session: the issuer could not be reached, the
- * response did not check out, or the user is not let in.
+ * response did not check out, the subject is longer than OIDC allows, or the
+ * user is not let in.
  */
-export type LoginFailure = "unavailable" | "failed" | "not_in_group" | "email_not_verified";
+export type LoginFailure =
+  | "unavailable"
+  | "failed"
+  | "subject_too_long"
+  | "not_in_group"
+  | "email_not_verified";
+
+/**
+ * The longest OIDC subject (sub) Platehouse takes, in characters: OpenID
+ * Connect Core limits sub to 255 ASCII characters (issue #378). admit()
+ * refuses a longer one, so every column and index that stores a subject
+ * (sessions.subject, api_tokens.created_by_subject; migration 0013) and the
+ * Sign out everywhere body hold at most this many. Counted by code point,
+ * as Postgres's char_length counts. 0.1.0 took any non-empty string, so
+ * nothing else about a subject is refused.
+ */
+export const MAX_SUBJECT_LENGTH = 255;
+
+/** How many characters a subject has, counted as char_length counts them. */
+export function subjectLength(subject: string): number {
+  return Array.from(subject).length;
+}
 
 export class LoginError extends Error {
   readonly failure: LoginFailure;
+  /** For subject_too_long: how many characters the subject had, never the subject. */
+  readonly subjectLength: number | undefined;
 
-  constructor(failure: LoginFailure, message: string, options?: { cause?: unknown }) {
+  constructor(
+    failure: LoginFailure,
+    message: string,
+    options?: { cause?: unknown; subjectLength?: number },
+  ) {
     super(message, options);
     this.name = "LoginError";
     this.failure = failure;
+    this.subjectLength = options?.subjectLength;
   }
 }
 
 export interface OidcClient {
   /** The issuer's authorize URL for a new login, and the checks to keep. */
   begin(): Promise<{ url: URL; checks: LoginChecks }>;
-  /** Exchanges the code in callbackUrl and returns the subject let in. */
-  finish(callbackUrl: URL, checks: LoginChecks): Promise<{ subject: string }>;
+  /**
+   * Exchanges the code in callbackUrl and returns the subject let in, with
+   * the display name the claims give (displayNameOf), or null.
+   */
+  finish(callbackUrl: URL, checks: LoginChecks): Promise<{ subject: string; name?: string | null }>;
+}
+
+/**
+ * The name to show for whoever signed in (issue #322): the first of the
+ * name, preferred_username and email claims that is a string with something
+ * in it once cleanName has cleaned it; null when none is. It
+ * only labels a session and the tokens it makes: nothing is let in or kept
+ * out by it.
+ */
+export function displayNameOf(claims: Record<string, unknown>): string | null {
+  for (const key of ["name", "preferred_username", "email"]) {
+    const value = claims[key];
+    if (typeof value !== "string") continue;
+    const clean = cleanName(value);
+    if (clean !== null) return clean;
+  }
+  return null;
 }
 
 export interface OidcOptions {
@@ -95,6 +158,14 @@ export function admit(claims: Record<string, unknown>, group: string): { subject
   const subject = claims.sub;
   if (typeof subject !== "string" || subject === "") {
     throw new LoginError("failed", "The login response named no user");
+  }
+  const length = subjectLength(subject);
+  if (length > MAX_SUBJECT_LENGTH) {
+    throw new LoginError(
+      "subject_too_long",
+      `The user id is ${length} characters; OpenID Connect allows at most ${MAX_SUBJECT_LENGTH}`,
+      { subjectLength: length },
+    );
   }
   if (!inGroup(claims.groups, group)) {
     throw new LoginError("not_in_group", `The user is not in the ${group} group`);
@@ -195,11 +266,13 @@ export function createOidc(opts: OidcOptions): OidcClient {
           const info: Record<string, unknown> = {
             ...(await fetchUserInfo(config, tokens.access_token, subject)),
           };
-          for (const key of ["groups", "email_verified"]) {
+          // The name claims come along when userinfo is asked anyway; they
+          // only label the session (displayNameOf), never decide entry.
+          for (const key of ["groups", "email_verified", "name", "preferred_username", "email"]) {
             if (!(key in claims) && key in info) claims[key] = info[key];
           }
         }
-        return admit(claims, opts.group);
+        return { ...admit(claims, opts.group), name: displayNameOf(claims) };
       } catch (error) {
         throw asLoginError(error);
       }

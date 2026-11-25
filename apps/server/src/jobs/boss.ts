@@ -1,8 +1,9 @@
-// The pg-boss instance (build plan Task 8, decision 6): background jobs in
+// The pg-boss instance: background jobs in
 // the app's own Postgres, so there is no Redis. pg-boss owns the schema
-// pgboss (Database schema contract) and creates and migrates it itself on
+// pgboss and creates and migrates it itself on
 // start(); the app's migrations never touch it.
 import { PgBoss } from "pg-boss";
+import { POOL_CONNECT_TIMEOUT_MS } from "../db/kysely.js";
 
 export const BOSS_SCHEMA = "pgboss";
 
@@ -20,7 +21,13 @@ export function createBoss(opts: {
   databaseUrl: string;
   onError?: (error: Error) => void;
 }): PgBoss {
-  const boss = new PgBoss({ connectionString: opts.databaseUrl, schema: BOSS_SCHEMA });
+  // pg-boss has a pool of its own, so it gets the app pool's connect timeout:
+  // a database that never answers fails its start instead of hanging it.
+  const boss = new PgBoss({
+    connectionString: opts.databaseUrl,
+    schema: BOSS_SCHEMA,
+    connectionTimeoutMillis: POOL_CONNECT_TIMEOUT_MS,
+  });
   boss.on("error", opts.onError ?? logBossError);
   return boss;
 }

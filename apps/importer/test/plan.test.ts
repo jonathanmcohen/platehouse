@@ -1,4 +1,5 @@
-// planModel: what one Manyfold model needs in Platehouse (AC-001, AC-002).
+// planModel: what one Manyfold model needs in Platehouse, so that a re-run
+// fills in only what is missing.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
@@ -181,6 +182,27 @@ describe("a model Platehouse already has", () => {
       ["stand.stl", "import"],
     ]);
     expect(plan.files[0]).toMatchObject({ stored: { id: "id-benchy.3mf" } });
+  });
+
+  it("counts a file present when its name has a format character the server removed", () => {
+    const lrm = String.fromCodePoint(0x200e);
+    const plan = planModel(
+      source({
+        files: [{ url: "u1", filename: `be${lrm}nchy.3mf`, contentUrl: "c1", contentSize: 3000 }],
+      }),
+      existing({ files: [stored("benchy.3mf", 3000)] }),
+    );
+    expect(plan.files.map((f) => f.action)).toEqual(["present"]);
+  });
+
+  it("counts a file present when it was stored under its raw name, format characters included (0.1.0)", () => {
+    const lrm = String.fromCodePoint(0x200e);
+    const raw = `be${lrm}nchy.3mf`;
+    const plan = planModel(
+      source({ files: [{ url: "u1", filename: raw, contentUrl: "c1", contentSize: 3000 }] }),
+      existing({ files: [stored(raw, 3000)] }),
+    );
+    expect(plan.files.map((f) => f.action)).toEqual(["present"]);
   });
 
   it("fails, rather than duplicates, a file whose name is there with another size", () => {

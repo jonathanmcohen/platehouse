@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// Build plan Task 19 (AC-020, AC-061, AC-064 and AC-073, UI side): the
-// library page, its cards and tag filter, the search box driving it, and the
+// Uploads, the tag filter, search, and cards that never download a model
+// file: the library page, its cards and tag filter, the search box driving it, and the
 // upload dialog. Rendered in jsdom with React; the server is a stubbed fetch
 // that records every request, and the tus upload is a stub that records what
 // it was asked to send and lets the test report progress.
@@ -9,7 +9,8 @@
 //   data, and the only images it shows are /blobs/<id> thumbnails the API
 //   named. Nothing points at /files/.
 // - card shows time and weight only when every plate is known, and says
-//   partial otherwise; an STL or STEP card shows a file-type icon.
+//   partial otherwise; an STL or STEP card shows its preview picture when
+//   the API names one (issue #316), else a file-type icon.
 // - upload dialog shows progress per file and honours combine: the switch
 //   is off by default; off, each file is its own new model; on, every file
 //   carries one batch id with combine. The tus options use 5 MiB chunks,
@@ -18,7 +19,7 @@
 //   library's search.
 // - creator and collection filters: the library reads ?creator= and
 //   ?collection= (the Creators and Collections pages' Show in the library
-//   link, Task 21), asks the API for them with the search, the tag and every
+//   link), asks the API for them with the search, the tag and every
 //   page, shows each one with a link that clears it (and goes back to page
 //   1), and keeps a name with spaces, an ampersand and non-ASCII characters
 //   intact.
@@ -28,7 +29,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { Filters } from "../src/library/Filters";
+import { Filters, TAG_CHIPS_SHOWN } from "../src/library/Filters";
 import { LibraryPage } from "../src/library/LibraryPage";
 import {
   formatDuration,
@@ -38,6 +39,8 @@ import {
 } from "../src/library/ModelCard";
 import { PRINTER_CHOICE_KEY } from "../src/settings/PrinterSwitch";
 import { Shell } from "../src/shell/Shell";
+import { DropZone } from "../src/upload/DropZone";
+import { isFolder } from "../src/upload/dropped";
 import { UploadDialog } from "../src/upload/UploadDialog";
 import {
   CHUNK_SIZE,
@@ -150,7 +153,8 @@ function stubServer(
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    if (url.pathname === "/app/api/library/tags") return json({ tags });
+    if (url.pathname === "/app/api/library/tags")
+      return json({ tags: tags.map((name, i) => ({ name, models: 10 - i })) });
     if (url.pathname === "/app/api/library") {
       const tag = url.searchParams.get("tag");
       const q = url.searchParams.get("q");
@@ -369,6 +373,19 @@ describe("card shows time and weight only when every plate is known", () => {
     expect(li.textContent).not.toMatch(/partial|plates?\b/);
   });
 
+  // Issue #316: once the server names an STL's or STEP's rendered preview as
+  // the card's thumbnail, the card shows that picture in place of the icon.
+  test.each([
+    ["STL", STL],
+    ["STEP", STEP],
+  ])("an %s card with a rendered preview shows it instead of the icon", async (_label, card) => {
+    const thumbnail = "/blobs/0198f0c4-0000-7000-8000-0000000000f1";
+    const li = await renderCard({ ...card, thumbnail });
+    expect(li.querySelector(".studio-card-media img")?.getAttribute("src")).toBe(thumbnail);
+    expect(li.querySelector(".studio-card-media svg")).toBeNull();
+    expect(li.textContent).not.toMatch(/partial|plates?\b/);
+  });
+
   test("time and weight read the way the card shows them", () => {
     expect(formatDuration(3000)).toBe("50m");
     expect(formatDuration(5100)).toBe("1h 25m");
@@ -512,7 +529,54 @@ describe("the header's printer switch", () => {
     expect(printerSwitch().value).toBe(PRINTER);
     expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBeNull();
   });
+
+  test("a stored printer that was removed falls back without the grid flashing Loading a second time", async () => {
+    localStorage.setItem(PRINTER_CHOICE_KEY, "Bambu Lab H2D 0.4 nozzle");
+    let release: () => void = () => {};
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let libraryReads = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "https://platehouse.test");
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        if (url.pathname === "/app/api/library/tags") return json({ tags: [] });
+        libraryReads += 1;
+        // The read the fallback asks for next is slow.
+        if (libraryReads === 2) await hold;
+        return json({
+          ...ONE_PRINTER,
+          printers: [
+            { id: PRINTER, name: PRINTER_NAME },
+            { id: A1_MINI, name: A1_MINI_NAME },
+          ],
+          models: [PLATED],
+          nextCursor: null,
+        });
+      }),
+    );
+    await render(libraryAt("/"));
+    expect(libraryReads).toBe(2);
+    expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBeNull();
+    // The answer for the default printer is on screen while the second read is out.
+    expect(container.textContent).not.toContain("Loading the library");
+    expect(cardNames()).toEqual(["Plated box"]);
+    release();
+    await settle();
+    expect(cardNames()).toEqual(["Plated box"]);
+  });
 });
+
+/** Tags as /app/api/library/tags answers: a name and a model count, most-used first. */
+function counted(names: string[]) {
+  return names.map((name, i) => ({ name, models: names.length - i }));
+}
 
 describe("tag filter narrows the grid", () => {
   test("choosing a tag asks for that tag and shows only its models", async () => {
@@ -537,7 +601,7 @@ describe("tag filter narrows the grid", () => {
   test("a tag link keeps the search, and All drops only the tag", async () => {
     await render(
       <MemoryRouter initialEntries={["/?q=box&tag=PLA"]}>
-        <Filters tags={["Gridfinity", "PLA"]} />
+        <Filters tags={counted(["Gridfinity", "PLA"])} />
       </MemoryRouter>,
     );
     const hrefs = [...container.querySelectorAll("a.studio-chip")].map((a) =>
@@ -556,7 +620,7 @@ describe("tag filter narrows the grid", () => {
     const at = new URLSearchParams({ q: "box", creator: "Maker One", collection: "Desk & Shelf" });
     await render(
       <MemoryRouter initialEntries={[`/?${at}&tag=PLA`]}>
-        <Filters tags={["Gridfinity", "PLA"]} />
+        <Filters tags={counted(["Gridfinity", "PLA"])} />
       </MemoryRouter>,
     );
     const queries = [...container.querySelectorAll("a.studio-chip")].map(
@@ -570,6 +634,71 @@ describe("tag filter narrows the grid", () => {
     ]);
     expect(queries.map((q) => q.get("q"))).toEqual(["box", "box", "box"]);
     expect(queries.map((q) => q.get("tag"))).toEqual([null, "Gridfinity", "PLA"]);
+  });
+});
+
+describe("the tag chips show the top 30", () => {
+  const forty = counted(
+    Array.from({ length: 40 }, (_, i) => `Tag ${String(i + 1).padStart(2, "0")}`),
+  );
+  const chipTexts = () =>
+    [...container.querySelectorAll("a.studio-chip")].map((a) => a.textContent);
+  const moreButton = () =>
+    [...container.querySelectorAll("button")].find((b) => b.getAttribute("aria-expanded") !== null);
+
+  test("shows 30 tags and More tags (N) for a big list", async () => {
+    expect(TAG_CHIPS_SHOWN).toBe(30);
+    await render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Filters tags={forty} />
+      </MemoryRouter>,
+    );
+    expect(chipTexts()).toHaveLength(31);
+    expect(chipTexts()[30]).toBe("Tag 30");
+    expect(moreButton()?.textContent).toBe("More tags (10)");
+    expect(moreButton()?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  test("a list of 30 or fewer has no More tags button", async () => {
+    await render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Filters tags={forty.slice(0, 30)} />
+      </MemoryRouter>,
+    );
+    expect(chipTexts()).toHaveLength(31);
+    expect(moreButton()).toBeUndefined();
+  });
+
+  test("More tags shows them all and keeps focus", async () => {
+    await render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Filters tags={forty} />
+      </MemoryRouter>,
+    );
+    const button = moreButton();
+    button?.focus();
+    await act(async () => button?.click());
+    expect(chipTexts()).toHaveLength(41);
+    expect(moreButton()?.textContent).toBe("Fewer tags");
+    expect(moreButton()?.getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(moreButton());
+    await act(async () => moreButton()?.click());
+    expect(chipTexts()).toHaveLength(31);
+    expect(moreButton()?.textContent).toBe("More tags (10)");
+  });
+
+  test("an active tag beyond the first 30 is shown", async () => {
+    await render(
+      <MemoryRouter initialEntries={["/?tag=Tag%2037"]}>
+        <Filters tags={forty} />
+      </MemoryRouter>,
+    );
+    expect(chipTexts()).toHaveLength(32);
+    expect(chipTexts().slice(0, 3)).toEqual(["All", "Tag 37", "Tag 01"]);
+    expect(container.querySelector('a.studio-chip[aria-current="true"]')?.textContent).toBe(
+      "Tag 37",
+    );
+    expect(moreButton()?.textContent).toBe("More tags (9)");
   });
 });
 
@@ -909,6 +1038,58 @@ describe("dropping files on the open upload dialog", () => {
     expect(dialog?.textContent).not.toMatch(/drop them on the library/i);
   });
 
+  /** A drop whose first entry is a folder, as Chromium and Firefox report it. */
+  function folderDrop(type: "drop", name: string): Event {
+    const folder = new File([], name);
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", {
+      value: {
+        types: ["Files"],
+        files: [folder],
+        items: [{ kind: "file", webkitGetAsEntry: () => ({ isDirectory: true }) }],
+        dropEffect: "none",
+      },
+    });
+    return event;
+  }
+
+  test("a dropped folder says folders cannot be uploaded and to drop the files inside it", async () => {
+    await render(<UploadDialog open files={[]} onClose={() => {}} start={noUploads} />);
+    const dialog = container.querySelector('[role="dialog"]');
+    await act(async () => {
+      // A folder named like a model file is still a folder.
+      dialog?.dispatchEvent(folderDrop("drop", "Benchy.stl"));
+      dialog?.dispatchEvent(fileDrag("drop", [new File(["solid x"], "plain.stl")]));
+    });
+    const row = container.querySelector('[data-upload="Benchy.stl"]');
+    expect(row?.textContent).toContain("Folders can't be uploaded. Drop the files inside it.");
+    expect(row?.textContent).not.toContain("Not a supported file type");
+    // A screen reader hears it: a refused row never changes, so it is said when added.
+    const said = container.querySelector('[role="status"]')?.textContent ?? "";
+    expect(said).toContain("Benchy.stl");
+    expect(said).toContain("Folders can't be uploaded. Drop the files inside it.");
+    expect(container.querySelector('[data-upload="plain.stl"]')?.textContent).not.toContain(
+      "Folders can't be uploaded",
+    );
+  });
+
+  test("the drop zone marks a dropped folder, and leaves a plain file alone", async () => {
+    const got: File[][] = [];
+    await render(
+      <DropZone onFiles={(files) => got.push(files)}>
+        <p>page</p>
+      </DropZone>,
+    );
+    const zone = container.querySelector("[data-dropzone]");
+    await act(async () => {
+      zone?.dispatchEvent(folderDrop("drop", "Models"));
+      zone?.dispatchEvent(fileDrag("drop", [new File(["solid x"], "plain.stl")]));
+    });
+    expect(got).toHaveLength(2);
+    expect(isFolder(got[0]?.[0] as File)).toBe(true);
+    expect(isFolder(got[1]?.[0] as File)).toBe(false);
+  });
+
   test("a file dropped where nothing takes it never reaches the browser", async () => {
     await render(<UploadDialog open={false} files={[]} onClose={() => {}} start={noUploads} />);
     const elsewhere = document.createElement("nav");
@@ -938,12 +1119,12 @@ describe("dropping files on the open upload dialog", () => {
   });
 });
 
-/** An error as tus-js-client gives one for an answer the server refused. */
 /** The Content-Type the tus handler's own refusals carry. */
 const TEXT = "text/plain; charset=utf-8";
 /** The Content-Type of the session gate's answers (auth/gate.ts). */
 const JSON_TYPE = "application/json; charset=utf-8";
 
+/** An error as tus-js-client gives one for an answer the server refused. */
 function refusal(status: number, body: string, contentType?: string): Error {
   const error = new Error(
     `tus: unexpected response while creating upload, originated from request (method: POST, url: https://platehouse.test/app/uploads, response code: ${status}, response text: ${body}, request id: n/a)`,
@@ -960,6 +1141,29 @@ function refusal(status: number, body: string, contentType?: string): Error {
 }
 
 describe("upload failures read as plain words", () => {
+  // The two 429s the upload route sends (uploads/tus.ts), word for word.
+  const TOO_MANY_UNFINISHED =
+    "You already have 20 unfinished uploads; nothing was saved. Finish or wait for one of " +
+    "them, then try again.\n";
+  const TOO_MANY_HELD =
+    "You already have 2000 uploads on the server, finished ones included; nothing was saved. " +
+    "A finished upload is cleared a day after its import; try again later.\n";
+
+  test("a 429 for too many unfinished uploads says to let some finish, then use Retry", () => {
+    expect(failureMessage(refusal(429, TOO_MANY_UNFINISHED, TEXT))).toBe(
+      "Too many of your uploads are unfinished; nothing was saved. Let some finish, then use Retry.",
+    );
+  });
+
+  test("a 429 for too many uploads on the server says to try again tomorrow, not to Retry", () => {
+    const text = failureMessage(refusal(429, TOO_MANY_HELD, TEXT));
+    expect(text).toBe(
+      "You have sent a great many files recently; nothing was saved. Try again tomorrow, or " +
+        "ask whoever runs Platehouse.",
+    );
+    expect(text).not.toMatch(/Retry/);
+  });
+
   test("a refusal shows the server's own reason, not tus-js-client's diagnostic", () => {
     const text = failureMessage(
       refusal(415, "Not a supported file type: use .3mf, .stl, .step, .stp or .scad\n", TEXT),
@@ -1100,8 +1304,15 @@ describe("the result check after the last byte", () => {
     );
   });
 
+  test("a 429, 502 or 504 (often a proxy in the way) is an error to ask again, not an answer", async () => {
+    for (const status of [429, 502, 504]) {
+      answer(status, { error: "x" });
+      await expect(fetchUploadResult(UPLOAD), String(status)).rejects.toThrow(`HTTP ${status}`);
+    }
+  });
+
   test("any other refusal is not waited on either", async () => {
-    for (const status of [400, 403, 500, 502]) {
+    for (const status of [400, 403, 500]) {
       answer(status, { error: "x" });
       expect(await fetchUploadResult(UPLOAD), String(status)).toEqual({
         status: "failed",
@@ -1217,7 +1428,7 @@ describe("upload dialog shows progress per file and honours combine", () => {
 
   function progressOf(name: string): HTMLProgressElement {
     const bar = container.querySelector<HTMLProgressElement>(
-      `progress[aria-label="Upload progress for ${name}"]`,
+      `[data-upload="${name}"] progress[aria-label="Upload progress"]`,
     );
     if (bar === null) throw new Error(`no progress bar for ${name}`);
     return bar;
@@ -1779,7 +1990,7 @@ describe("upload dialog shows progress per file and honours combine", () => {
       expect(onClose).toHaveBeenCalledTimes(1);
     });
 
-    test("Tab from behind the dialog goes back into it, never into the shell", async () => {
+    test("the page behind the dialog is inert, so Tab cannot reach the shell", async () => {
       const { start, fetchResult } = stubUploads();
       await render(
         <UploadDialog
@@ -1790,21 +2001,8 @@ describe("upload dialog shows progress per file and honours combine", () => {
           fetchResult={fetchResult}
         />,
       );
-      behind.focus();
-      let tab: KeyboardEvent | undefined;
-      await act(async () => {
-        tab = press(behind, "Tab");
-      });
-      expect(tab?.defaultPrevented).toBe(true);
-      expect(dialogEl().contains(document.activeElement)).toBe(true);
-      expect(document.activeElement).toBe(button(/choose files/i));
-
-      behind.focus();
-      await act(async () => {
-        tab = press(behind, "Tab", true);
-      });
-      expect(tab?.defaultPrevented).toBe(true);
-      expect(document.activeElement).toBe(button(/^upload/i));
+      expect(behind.closest("[inert]")).not.toBeNull();
+      expect(dialogEl().closest("[inert]")).toBeNull();
     });
 
     test("closed, it leaves the page's keys alone", async () => {

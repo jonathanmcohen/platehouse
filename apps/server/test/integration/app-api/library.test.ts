@@ -1,7 +1,8 @@
-// Build plan Task 19 (AC-061, AC-064 and AC-073, UI side): the library's app
+// The tag filter, search over name, caption, creator and tag, and cards that
+// never download a model file: the library's app
 // API, GET /app/api/library and GET /app/api/library/tags, against Postgres
 // 17 and the S3 test server. Models come in through ingest from generated
-// files (no designer file), and plate numbers are Task 12's plateNumbers for
+// files (no designer file), and plate numbers are the estimates module's plateNumbersMany for
 // a selected printer, the P1S with a 0.4 mm nozzle.
 //
 // - The library is rendered from the database alone. The test plays the
@@ -9,18 +10,16 @@
 //   then every image those answers point at. The server's request log then
 //   holds only /app/api requests and /blobs/<id> requests for plate
 //   thumbnails: no /files/ request and no source blob. createAppLibrary is
-//   given the database and plateNumbers and no store, so it has no way to
+//   given the database and plateNumbersMany and no store, so it has no way to
 //   read a model file at all.
 // - A card has time and weight for the selected printer only when every
 //   plate has numbers for it; otherwise it says partial. While the printer
 //   menu cannot be read (the slicer is down), a card the database cannot
 //   total says numbers unavailable instead. The display context (settings
-//   and the printer menu) is read once per page, and at most
-//   PLATE_NUMBERS_CONCURRENCY plate lookups run at once. readDisplayContext
-//   reads the settings row and the printer menu as the estimates service
-//   does, with an empty menu while the slicer is down or slower than
-//   DISPLAY_MENU_TIMEOUT_MS, and mapLimit keeps the cap and the plates'
-//   order.
+//   and the printer menu) is read once per page, and every plate's numbers
+//   are looked up in one plateNumbersMany call. readDisplayContext reads the
+//   settings row and the printer menu as the estimates service does, with an
+//   empty menu while the slicer is down or slower than DISPLAY_MENU_TIMEOUT_MS.
 // - The tag filter narrows the grid; search finds name, caption, creator and
 //   tag; a trashed model is never listed.
 // - Numbered pages (?page=): a page is a slice of the same ranked matches
@@ -44,12 +43,10 @@ import {
   DISPLAY_MENU_TIMEOUT_MS,
   LIBRARY_API_PATHS,
   type LibraryCard,
-  mapLimit,
-  PLATE_NUMBERS_CONCURRENCY,
   readDisplayContext,
 } from "../../../src/app-api/library.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
-import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
+import { type DisplayContext, plateNumbersMany } from "../../../src/estimates/display.js";
 import { createCollections } from "../../../src/library/collections.js";
 import { createTags } from "../../../src/library/tags.js";
 import { createRepos } from "../../../src/repos/index.js";
@@ -62,7 +59,7 @@ import {
   startIngestEnv,
   writeUpload,
 } from "../support/ingest.js";
-import { marker } from "../support/library.js";
+import { marker, storeBlob } from "../support/library.js";
 import { type TestAuth, testAuth } from "../support/oidc-issuer.js";
 
 const P1S: Printer = {
@@ -108,9 +105,8 @@ let context: DisplayContext = CONTEXT;
 /** How often the library read the display context, and what it handed on. */
 let contextReads = 0;
 const contexts = new Set<DisplayContext>();
-/** Plate number lookups running now, and the most that ever ran at once. */
-let lookupsInFlight = 0;
-let mostLookupsInFlight = 0;
+/** How many plateNumbersMany calls the library made. */
+let lookupCalls = 0;
 /** Every plate the library looked numbers up for, in order. */
 const lookedUp: string[] = [];
 
@@ -173,16 +169,11 @@ beforeAll(async () => {
         contextReads += 1;
         return context;
       },
-      plateNumbers: async (ctx, plateId) => {
+      plateNumbersMany: async (ctx, plateIds) => {
         contexts.add(ctx);
-        lookedUp.push(plateId);
-        lookupsInFlight += 1;
-        mostLookupsInFlight = Math.max(mostLookupsInFlight, lookupsInFlight);
-        try {
-          return await plateNumbers(env.db, ctx, plateId);
-        } finally {
-          lookupsInFlight -= 1;
-        }
+        lookupCalls += 1;
+        lookedUp.push(...plateIds);
+        return plateNumbersMany(env.db, ctx, plateIds);
       },
     }),
     logger: { write: (line: string) => lines.push(line) },
@@ -292,7 +283,7 @@ describe("library render requests no model file", () => {
     for (const id of fileIds) expect(text).not.toContain(id);
   });
 
-  test("STL and STEP cards have no thumbnail and name their file type for the icon", async () => {
+  test("STL and STEP cards with no preview yet have no thumbnail and name their file type for the icon", async () => {
     const word = marker();
     const stl = await ingest(`Hook ${word}.stl`, ASCII_STL);
     const step = await ingest(`Gear ${word}.stp`, STEP_TEXT);
@@ -307,6 +298,111 @@ describe("library render requests no model file", () => {
         partial: false,
       });
     }
+  });
+});
+
+// Issue #316: an STL or STEP card shows the preview picture rendered for
+// the file it stands for, a stored render_png blob of the same model, in
+// place of the file-type icon. A SCAD card keeps the icon (a choice made with
+// the library page, which the issue leaves as it is), and nothing but a stored
+// render_png of the card's own model is ever named.
+describe("STL and STEP previews on the card (issue #316)", () => {
+  async function attachPreview(modelId: string, fileId: string, bytes = Buffer.from("png")) {
+    const png = await storeBlob(env, modelId, "render_png", bytes);
+    await env.db
+      .updateTable("files")
+      .set({ renderPngBlobId: png.id, previewStatus: "ok" })
+      .where("id", "=", fileId)
+      .execute();
+    return png;
+  }
+
+  // Issue #380: the card reads the picture's own status. A picture that
+  // failed, or was never queued, shows the icon.
+  // Issue #389: ok is exactly "a picture of the current source is stored",
+  // so the card shows a stored picture only then; pending, failed and none
+  // all mean there is no picture of the current source to show.
+  test("an STL card follows previewStatus: the picture when ok, the icon otherwise", async () => {
+    const word = marker();
+    const stl = await ingest(`Preview status ${word}.stl`, ASCII_STL);
+    const png = await attachPreview(stl.modelId, stl.fileId);
+    const setStatus = (previewStatus: string | null) =>
+      env.db.updateTable("files").set({ previewStatus }).where("id", "=", stl.fileId).execute();
+    const thumbnail = async () => card(await library(`?q=${word}`), stl.modelId).thumbnail;
+    expect(await thumbnail()).toBe(`/blobs/${png.id}`);
+    await setStatus("pending");
+    expect(await thumbnail()).toBeNull();
+    await setStatus("failed");
+    expect(await thumbnail()).toBeNull();
+    await setStatus(null);
+    expect(await thumbnail()).toBeNull();
+  });
+
+  test("an STL or STEP card shows its rendered preview as its thumbnail", async () => {
+    const word = marker();
+    const stl = await ingest(`Preview hook ${word}.stl`, ASCII_STL);
+    const step = await ingest(`Preview gear ${word}.step`, STEP_TEXT);
+    const stlPng = await attachPreview(stl.modelId, stl.fileId);
+    const stepPng = await attachPreview(step.modelId, step.fileId);
+    const page = await library(`?q=${word}`);
+    expect(card(page, stl.modelId)).toMatchObject({
+      thumbnail: `/blobs/${stlPng.id}`,
+      fileKind: "stl",
+      plateCount: 0,
+    });
+    expect(card(page, step.modelId)).toMatchObject({
+      thumbnail: `/blobs/${stepPng.id}`,
+      fileKind: "step",
+      plateCount: 0,
+    });
+  });
+
+  test("a SCAD card keeps the file-type icon even with a rendered preview", async () => {
+    const word = marker();
+    const scad = await ingest(`Preview part ${word}.scad`, "cube([10, 10, 10]);\n");
+    await attachPreview(scad.modelId, scad.fileId);
+    const page = await library(`?q=${word}`);
+    expect(card(page, scad.modelId)).toMatchObject({ thumbnail: null, fileKind: "scad" });
+  });
+
+  test("a .3mf card keeps its plate thumbnail when the model also holds a previewed STL", async () => {
+    const word = marker();
+    const plated = await ingest(`Preview plated ${word}.3mf`, build3mf({ plates: 1 }));
+    const extra = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, ASCII_STL),
+      originalName: "Extra.stl",
+      target: { modelId: plated.modelId },
+    });
+    const png = await attachPreview(plated.modelId, extra.fileId);
+    const shown = card(await library(`?q=${word}`), plated.modelId);
+    expect(shown.fileKind).toBe("3mf");
+    expect(shown.thumbnail).not.toBe(`/blobs/${png.id}`);
+  });
+
+  test("a preview of another model, of another kind or not yet stored is never named", async () => {
+    const word = marker();
+    const other = await ingest(`Preview other ${word}.stl`, ASCII_STL);
+    const stl = await ingest(`Preview wrong ${word}.stl`, ASCII_STL);
+    const foreign = await storeBlob(env, other.modelId, "render_png", Buffer.from("png"));
+    const setPreview = (id: string) =>
+      env.db
+        .updateTable("files")
+        .set({ renderPngBlobId: id, previewStatus: "ok" })
+        .where("id", "=", stl.fileId)
+        .execute();
+    await setPreview(foreign.id);
+    expect(card(await library(`?q=${word}`), stl.modelId).thumbnail).toBeNull();
+    const thumbnail = await storeBlob(env, stl.modelId, "thumbnail", Buffer.from("png"));
+    await setPreview(thumbnail.id);
+    expect(card(await library(`?q=${word}`), stl.modelId).thumbnail).toBeNull();
+    const pending = await env.repos.blobs.insertPending({
+      modelId: stl.modelId,
+      kind: "render_png",
+      contentType: "image/png",
+      size: 3,
+    });
+    await setPreview(pending.id);
+    expect(card(await library(`?q=${word}`), stl.modelId).thumbnail).toBeNull();
   });
 });
 
@@ -507,7 +603,7 @@ describe("while the slicer's printer menu cannot be read", () => {
 });
 
 describe("plate numbers for a page", () => {
-  test("one display context per page, and a capped number of plate lookups at once", async () => {
+  test("one display context per page, and every plate looked up in one call", async () => {
     const word = marker();
     const models = [];
     for (let i = 0; i < 3; i += 1) {
@@ -517,7 +613,8 @@ describe("plate numbers for a page", () => {
     }
     contextReads = 0;
     contexts.clear();
-    mostLookupsInFlight = 0;
+    lookupCalls = 0;
+    const from = lookedUp.length;
     const page = await library(`?q=${word}`);
     expect(page.models).toHaveLength(3);
     for (const m of models) expect(card(page, m.modelId)).toMatchObject({ partial: false });
@@ -525,9 +622,9 @@ describe("plate numbers for a page", () => {
     // cached) are read once for the page, not once per plate.
     expect(contextReads).toBe(1);
     expect([...contexts]).toEqual([CONTEXT]);
-    // Twelve plates, never more than the cap in flight.
-    expect(mostLookupsInFlight).toBeGreaterThan(0);
-    expect(mostLookupsInFlight).toBeLessThanOrEqual(PLATE_NUMBERS_CONCURRENCY);
+    // Twelve plates, one call.
+    expect(lookupCalls).toBe(1);
+    expect(lookedUp.length - from).toBe(12);
   });
 });
 
@@ -601,67 +698,6 @@ describe("readDisplayContext", () => {
   });
 });
 
-/** Lets every pending promise callback run. */
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-describe("mapLimit", () => {
-  test("keeps the results in the items' order", async () => {
-    const out = await mapLimit([30, 10, 20, 0], 2, async (ms) => {
-      await new Promise((resolve) => setTimeout(resolve, ms));
-      return ms * 2;
-    });
-    expect(out).toEqual([60, 20, 40, 0]);
-  });
-
-  test("never has more than the limit in flight, and uses all of it", async () => {
-    let inFlight = 0;
-    let most = 0;
-    const releases: Array<() => void> = [];
-    const done = mapLimit(
-      Array.from({ length: 10 }, (_, i) => i),
-      3,
-      async (i) => {
-        inFlight += 1;
-        most = Math.max(most, inFlight);
-        await new Promise<void>((resolve) => releases.push(resolve));
-        inFlight -= 1;
-        return i;
-      },
-    );
-    for (let round = 0; round < 20; round += 1) {
-      await tick();
-      expect(inFlight).toBeLessThanOrEqual(3);
-      for (const release of releases.splice(0)) release();
-    }
-    expect(await done).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    expect(most).toBe(3);
-  });
-
-  test("an empty list calls nothing", async () => {
-    let calls = 0;
-    expect(
-      await mapLimit([], 4, async () => {
-        calls += 1;
-      }),
-    ).toEqual([]);
-    expect(calls).toBe(0);
-  });
-
-  test("a failure rejects the whole map", async () => {
-    await expect(
-      mapLimit([1, 2, 3], 2, async (n) => {
-        if (n === 2) throw new Error("the database is down");
-        return n;
-      }),
-    ).rejects.toThrow("the database is down");
-  });
-
-  test("the library's cap is small next to the pool of 10", () => {
-    expect(PLATE_NUMBERS_CONCURRENCY).toBeGreaterThan(0);
-    expect(PLATE_NUMBERS_CONCURRENCY).toBeLessThanOrEqual(4);
-  });
-});
-
 describe("tag filter narrows the grid", () => {
   test("?tag= lists only the models with that tag, ignoring case", async () => {
     const word = marker();
@@ -678,8 +714,35 @@ describe("tag filter narrows the grid", () => {
     const narrowed = await library(`?tag=${encodeURIComponent(tag.toUpperCase())}`);
     expect(narrowed.models.map((m) => m.id)).toEqual([tagged.modelId]);
 
-    const tags = (await get("/app/api/library/tags")).json() as { tags: string[] };
-    expect(tags.tags).toContain(tag);
+    const tags = (await get("/app/api/library/tags")).json() as {
+      tags: Array<{ name: string; models: number }>;
+    };
+    expect(tags.tags.map((t) => t.name)).toContain(tag);
+  });
+
+  test("the tags come with their live model counts, most-used first", async () => {
+    const word = marker();
+    const first = await ingest(`First ${word}.stl`, ASCII_STL);
+    const second = await ingest(`Second ${word}.stl`, ASCII_STL);
+    const gone = await ingest(`Gone ${word}.stl`, ASCII_STL);
+    const common = `Zzz common ${word}`;
+    const rare = `Aaa rare ${word}`;
+    const tags = createTags(env.db);
+    await tags.addTag(first.modelId, common);
+    await tags.addTag(second.modelId, common);
+    await tags.addTag(gone.modelId, common);
+    await tags.addTag(first.modelId, rare);
+    expect(await env.repos.models.trash(gone.modelId)).toBe(true);
+    const answer = (await get("/app/api/library/tags")).json() as {
+      tags: Array<{ name: string; models: number }>;
+    };
+    const mine = answer.tags.filter((t) => t.name.endsWith(word));
+    expect(mine).toEqual([
+      { name: common, models: 2 },
+      { name: rare, models: 1 },
+    ]);
+    const counts = answer.tags.map((t) => t.models);
+    expect(counts).toEqual([...counts].sort((a, b) => b - a));
   });
 
   test("a tag only trashed models carry is not offered, and trashed models are not listed", async () => {
@@ -690,8 +753,10 @@ describe("tag filter narrows the grid", () => {
     expect(await env.repos.models.trash(gone.modelId)).toBe(true);
     expect((await library(`?q=${word}`)).models).toEqual([]);
     expect((await library(`?tag=${encodeURIComponent(tag)}`)).models).toEqual([]);
-    const tags = (await get("/app/api/library/tags")).json() as { tags: string[] };
-    expect(tags.tags).not.toContain(tag);
+    const tags = (await get("/app/api/library/tags")).json() as {
+      tags: Array<{ name: string; models: number }>;
+    };
+    expect(tags.tags.map((t) => t.name)).not.toContain(tag);
   });
 });
 
@@ -880,7 +945,7 @@ describe("numbered pages", () => {
       createAppLibrary({
         db: env.db,
         displayContext: async () => CONTEXT,
-        plateNumbers: (ctx, plateId) => plateNumbers(env.db, ctx, plateId),
+        plateNumbersMany: (ctx, ids) => plateNumbersMany(env.db, ctx, ids),
         pagedMatchCap,
       });
     const capped = withCap(3);

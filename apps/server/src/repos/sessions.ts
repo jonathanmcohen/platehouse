@@ -1,14 +1,25 @@
 import type { Kysely } from "kysely";
 import type { DB, Session } from "../db/types.js";
+import { tokensRepo } from "./tokens.js";
 
 // Login sessions behind the __Host-ph_session cookie. The id is the base64url
 // SHA-256 of the cookie value (auth/sessions.ts's sessionRowId), made by the
 // caller, never the cookie value itself; it is 43 characters, and the
 // schema refuses any other shape.
 
+/** What Sign out everywhere did: sessions deleted and tokens revoked. */
+export interface SignedOut {
+  sessionsEnded: number;
+  tokensRevoked: number;
+}
+
 export interface NewSession {
   id: string;
   subject: string;
+  /** The display name the issuer gave at sign-in (auth/oidc.ts displayNameOf), or null. */
+  displayName?: string | null;
+  /** When the user signed in; the database's now() when left out. */
+  createdAt?: Date;
   expiresAt: Date;
   idleExpiresAt: Date;
 }
@@ -46,6 +57,40 @@ export function sessionsRepo(db: Kysely<DB>) {
     async delete(id: string): Promise<boolean> {
       const result = await db.deleteFrom("sessions").where("id", "=", id).executeTakeFirst();
       return result.numDeletedRows > 0n;
+    },
+
+    /** Deletes every session of one subject; returns how many. */
+    async deleteForSubject(subject: string): Promise<number> {
+      const result = await db
+        .deleteFrom("sessions")
+        .where("subject", "=", subject)
+        .executeTakeFirst();
+      return Number(result.numDeletedRows);
+    },
+
+    /**
+     * Sign out everywhere, in one transaction: deletes every session of the
+     * subject, then, with revokeTokens, revokes every live token they made.
+     * The delete waits for a token creation holding one of those rows
+     * (repos/tokens.ts createForSession) to commit, so the revoke after it
+     * finds that token; a creation that reaches a row after the delete waits
+     * for this commit and finds no session.
+     *
+     * The transaction asks for READ COMMITTED itself rather than taking the
+     * database default: the revoke finds a token committed while the delete
+     * waited only because each statement takes a fresh snapshot, which a
+     * stricter level would not. It starts its own transaction, so db cannot
+     * be one (Kysely refuses to nest them).
+     */
+    async signOutEverywhere(subject: string, revokeTokens: boolean): Promise<SignedOut> {
+      return db
+        .transaction()
+        .setIsolationLevel("read committed")
+        .execute(async (trx) => {
+          const sessionsEnded = await sessionsRepo(trx).deleteForSubject(subject);
+          const tokensRevoked = revokeTokens ? await tokensRepo(trx).revokeForCreator(subject) : 0;
+          return { sessionsEnded, tokensRevoked };
+        });
     },
   };
 }

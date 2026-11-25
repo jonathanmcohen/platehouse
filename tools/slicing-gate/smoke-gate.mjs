@@ -20,7 +20,7 @@
 //   node smoke-gate.mjs checks
 //       Runs gate.mjs checks and judges landrun's report item (g): same-dir
 //       import works, outside import blocked, the control without landrun
-//       works, and no landrun call fails on its own flags. The T11 --ro form
+//       works, and no landrun call fails on its own flags. The first slicer design's --ro form
 //       is run and its result printed, not judged.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -166,7 +166,7 @@ export function judgeChecks(checks) {
   const plan = lr.planFormRo ?? {};
   const notes = [
     `kernel ${lr.kernel}; ${(lr.abiLog ?? []).join(" | ") || "no ABI line logged"}`,
-    `T11 form (--ro on the OpenSCAD tree): ${plan.producedStl ? "works" : `does not run (exit ${plan.exit})`}`,
+    `first slicer design's form (--ro on the OpenSCAD tree): ${plan.producedStl ? "works" : `does not run (exit ${plan.exit})`}`,
   ];
   return { pass: problems.length === 0, problems, notes };
 }

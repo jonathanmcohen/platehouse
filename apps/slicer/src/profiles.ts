@@ -1,5 +1,5 @@
-// Orca's BBL profiles for the slicer (build plan Task 11, AC-031): the T1
-// recipe, ported from the slicing gate's flatten-profiles.mjs, which the
+// Orca's BBL profiles for the slicer, which also make the printer menu: the
+// slicing gate's recipe, ported from its flatten-profiles.mjs, which the
 // gate's run 4 proved on 332 slices.
 //
 // At image build (node profiles.js --source ... --out ... --process-full ...):
@@ -251,7 +251,7 @@ export interface FilamentCandidate {
 
 /**
  * Where a printer's default filament for a type comes from. The image's
- * manifest records it; it is not part of the Slicer HTTP contract v1.
+ * manifest records it; it is not part of the Slicer HTTP contract 2.
  */
 export const FILAMENT_SOURCES = ["bambu", "generic"] as const;
 export type FilamentSource = (typeof FILAMENT_SOURCES)[number];
@@ -309,7 +309,7 @@ function pickGeneric(candidates: string[], type: string): string | null {
 
 /**
  * Orca's Bambu generic filament profile for one filament type on one printer
- * (Q4 / AC-032). Candidates: instantiable "Generic ..." presets whose
+ * (used when Bambu has no preset of its own for the type). Candidates: instantiable "Generic ..." presets whose
  * flattened filament_type is the type and whose compatible_printers names
  * the printer. Ranked: base name exactly "Generic <type>", then shorter
  * name, then name order.
@@ -331,8 +331,7 @@ export function genericFilamentFor(
 
 /**
  * Bambu's own filament preset per filament type, preferred over the generic
- * one wherever Orca has it for the printer (build plan Task 11 Decisions,
- * the maintainer, 2026-11-08: "I use mostly Bambu Filaments"). The
+ * one wherever Orca has it for the printer (the maintainer, 2026-11-08: "I use mostly Bambu Filaments"). The
  * mapping, which the maintainer may correct: this table is the one place it lives.
  * Each value is a preset's base name, the part before " @".
  */

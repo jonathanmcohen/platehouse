@@ -1,20 +1,21 @@
-# CI for Platehouse (build plan Task 3).
+# CI for Platehouse.
 #
 # The workspace jobs run on every pull request and on every push to main and
 # the release branches, whatever the change touches (issue #16: a paths filter
 # on the triggers meant no CI ran on product PRs). They run in a chain:
 # lint -> typecheck -> unit -> integration -> e2e (Lint (Biome), Typecheck,
-# Unit tests, Integration tests, End-to-end tests; e2e is build plan Task 22).
-# Each test job fails when no test actually ran (AC-094), and logs how many
+# Unit tests, Integration tests, End-to-end tests).
+# Each test job fails when no test actually ran, so a green run always means
+# tests ran, and logs how many
 # did.
 #
 # The jobs in this file, in order: changes (Decide which path-scoped jobs
-# run), snapshot-pins (Ubuntu snapshot pin check, on every run, below), the
-# chain above, gate-tests (Slicing gate tests), gate-image (Slicing
-# gate image build), slicer-image (Slicer image and container tests) and
-# app-image (App image (amd64) and App image (arm64), build plan Task 24: the
-# image build, its healthy and unhealthy checks, then the release workflow's
-# Trivy gate) and docs (Docs build).
+# run), snapshot-pins (Ubuntu snapshot pin check) and base-image-pins (Base
+# image pin check), both on every run, below, the chain above, gate-tests
+# (Slicing gate tests), gate-image (Slicing gate image build), slicer-image
+# (Slicer image and container tests) and app-image (App image (amd64) and
+# App image (arm64): the image build, its healthy and unhealthy checks, then
+# the release workflow's Trivy gates) and docs (Docs build).
 #
 # The docs job builds the user docs site (apps/docs, Docusaurus, reading the
 # pages in docs/) and fails on a broken link or anchor. It runs, by the same
@@ -30,10 +31,10 @@
 # large, so its build runs only when tools/slicing-gate, this file or
 # .node-version (the gate jobs' Node version) changes, and only after the gate
 # tests passed. Nothing else depends on either gate job, so their skips
-# reach no other job. The slicer job (build plan Task 11) is scoped the same
+# reach no other job. The slicer job is scoped the same
 # way, by the same changes job: it builds the slicer image and runs the
 # container tests against it, and nothing depends on it either. Nothing is
-# pushed anywhere, no image is published (Task 25 does that) and no secret is
+# pushed anywhere, no image is published (the slicer-image workflow does that) and no secret is
 # used. No designer file comes near any job: every test builds its own
 # fixtures, and the one outside file, the slicer's STEP sample, is public NIST
 # test data checked against its sha256.
@@ -61,8 +62,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -80,7 +81,7 @@ jobs:
       docs: ${{ steps.docs.outputs.docs }}
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -94,13 +95,19 @@ jobs:
       # would leave no gate path in the list and skip the jobs.
       # The tests list holds tools/slicing-gate and every file the gate tests
       # read from outside it (issue #222), all in
-      # tools/slicing-gate/test/ciworkflow.test.mjs, rctarget.test.mjs and
-      # aptsnapshot.test.mjs: this workflow, .node-version, release.yml,
-      # slicer-image.yml, rc-tag.yml, apt-snapshot.yml,
+      # tools/slicing-gate/test/ciworkflow.test.mjs, rctarget.test.mjs,
+      # aptsnapshot.test.mjs and baseimages.test.mjs: this workflow,
+      # .node-version, release.yml, slicer-image.yml, rc-tag.yml,
+      # apt-snapshot.yml, base-images.yml, docs-pages.yml,
       # .github/scripts/rc-target.mjs, .github/scripts/apt-snapshot.mjs,
-      # docker/app.Dockerfile,
-      # apps/slicer/Dockerfile, two slicer container test files, README.md and
-      # CHANGELOG.md. A gate test that starts reading another file outside
+      # .github/scripts/base-images.mjs, .github/scripts/release-gate.mjs,
+      # pnpm-workspace.yaml (the overrides test in baseimages.test.mjs),
+      # e2e/compose.yml (the Node image the weekly base-images run moves),
+      # docker/app.Dockerfile, docker/check-image-labels.sh (the slicer
+      # image's label check step runs it), docker/test-app-image.sh, docker/app.Dockerfile.dockerignore, the root
+      # tsconfig.json and tools/brand/tsconfig.json (workflowpins.test.mjs),
+      # apps/slicer/Dockerfile, two slicer container test files, README.md,
+      # RELEASING.md and CHANGELOG.md. A gate test that starts reading another file outside
       # tools/slicing-gate adds it here, or a PR changing only that file skips
       # the test and still goes green. ciworkflow.test.mjs scans the gate tests,
       # and the modules they import, for such reads and fails on one missing
@@ -128,7 +135,7 @@ jobs:
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot)\.yml$|\.github/scripts/(rc-target|apt-snapshot)\.mjs$|\.node-version$|docker/app\.Dockerfile$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|base-images|docs-pages)\.yml$|\.github/scripts/(rc-target|apt-snapshot|base-images|release-gate)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|docker/app\.Dockerfile\.dockerignore$|pnpm-workspace\.yaml$|tsconfig\.json$|tools/brand/tsconfig\.json$|e2e/compose\.yml$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|RELEASING\.md$|CHANGELOG\.md$)' <<<"$changed"; then
               echo "The slicing gate or a file its tests read changed; the gate tests run."
             else
               tests=false
@@ -144,7 +151,7 @@ jobs:
           echo "tests=${tests}" >>"$GITHUB_OUTPUT"
           echo "image=${image}" >>"$GITHUB_OUTPUT"
 
-      # The same rule for the slicer job (build plan Task 11), with the same
+      # The same rule for the slicer job, with the same
       # base commit and the same safe default. It runs when apps/slicer or
       # packages/slicer-contract changes, or anything else the slicer image or
       # its container tests are built from: packages/threemf (the slicer reads
@@ -217,12 +224,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
 
@@ -230,19 +237,51 @@ jobs:
         run: |
           node .github/scripts/apt-snapshot.mjs leftovers
 
+  # Issue #453, as #391 above for the Ubuntu snapshot: the base image and Node
+  # pins the weekly base-images workflow moves must agree across the
+  # Dockerfiles, the gate README, .node-version, e2e/compose.yml and the root
+  # README, and only the four files that hold a digest (the three Dockerfiles
+  # and the gate README's pins table) may name the current digests, or the
+  # weekly run would leave a copy behind and stop before it pushes. A pull
+  # request that breaks either fails here instead. It runs on every pull
+  # request and push, whatever changed, with no network and no install.
+  # Nothing depends on it.
+  base-image-pins:
+    name: Base image pin check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+
+      - name: Pins agree and no file but the pins names their digests
+        run: |
+          pins="$(node .github/scripts/base-images.mjs read)"
+          get() { sed -n "s/^$1=//p" <<<"$pins"; }
+          app="$(get old_app_base)"
+          ubuntu="$(get old_ubuntu_base)"
+          node .github/scripts/base-images.mjs leftovers "${app##*@sha256:}" "${ubuntu##*@sha256:}" "$(get old_node_sha)"
+
   lint:
     name: Lint (Biome)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -250,6 +289,25 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Biome
         run: pnpm exec biome ci .
+
+      # The example Compose file must still parse and interpolate. Its .env
+      # template leaves secrets empty, and the file demands each value, so
+      # empty ones are filled in a throwaway copy; nothing is started.
+      - name: Validate the example Compose file
+        run: |
+          sed 's/=$/=x/' examples/.env.example >"$RUNNER_TEMP/compose.env"
+          docker compose -f examples/docker-compose.yml --env-file "$RUNNER_TEMP/compose.env" config -q
+
+      # Issues #432 and #453: a critical advisory in a production dependency
+      # fails the job. That covers the packages the server, web app, slicer
+      # and importer ship and also the docs site's production dependencies
+      # (the workspace has one lockfile); the overrides in pnpm-workspace.yaml
+      # keep the docs site's known advisories out of the report. It runs last
+      # so a lint finding is never hidden by it. The exit code is pnpm's and
+      # nothing waves it through. It asks the advisory service live, so a
+      # new advisory can fail a pull request that changed nothing.
+      - name: Audit production dependencies (fail on critical)
+        run: pnpm audit --prod --audit-level=critical
 
   typecheck:
     name: Typecheck
@@ -259,13 +317,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -285,20 +343,20 @@ jobs:
       # pinned earlier migration checksums against the files at an older
       # commit, and is reported as skipped when the checkout lacks it.
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
-      # The zero-test guard (AC-094). A test that a filter skipped still counts
+      # The zero-test guard: a job where no test ran fails. A test that a filter skipped still counts
       # in numTotalTests, so the guard counts the tests that ran: the total less
       # the skipped and todo ones. The count is logged whenever vitest wrote a
       # report, pass or fail. A failed vitest run then ends the step with
@@ -328,7 +386,7 @@ jobs:
           fi
       - name: Upload the test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unit-report
           path: report.json
@@ -343,13 +401,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -381,15 +439,15 @@ jobs:
           fi
       - name: Upload the test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: integration-report
           path: report.json
           if-no-files-found: ignore
           retention-days: 14
 
-  # The end-to-end suite (build plan Task 22): e2e/compose.yml runs Traefik
-  # v3, the app from this checkout, the slicer stub, Postgres, the S3 test
+  # The end-to-end suite: e2e/compose.yml runs Traefik
+  # v3, the app, the slicer stub, Postgres, the S3 test
   # server and a mock OIDC issuer, and Playwright drives Chromium through
   # Traefik at https://platehouse.e2e.test (e2e/README.md). It runs on every
   # pull request and push, after the integration job, since it reaches every
@@ -399,21 +457,31 @@ jobs:
   # when no spec ran: Playwright's JSON report counts the specs that ran
   # (expected, unexpected and flaky; skipped ones are left out), and the
   # global setup that signs in is not a spec, so it is never counted.
+  # The app runs as the shipped image (issue #452), not from TypeScript
+  # source: this job builds the amd64 app image the way the app-image job does,
+  # reading that job's build cache (scope app-image-amd64) and writing none, and
+  # e2e/up.sh swaps the app service for it (e2e/compose.image.yml). A rebuild
+  # from the cache needs no artifact, no wait for the app-image job (which
+  # also builds arm64 and scans) and no docker save or load of a large image. On
+  # a cache miss the build runs in full, which only costs time. This replaces
+  # the source-mode run; the suite is not run twice.
   e2e:
     name: End-to-end tests
     needs: integration
     if: ${{ !cancelled() && needs.integration.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
+    env:
+      E2E_APP_IMAGE: platehouse:ci
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -421,8 +489,24 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Typecheck the e2e suite
         run: pnpm exec tsc -p e2e/tsconfig.json
-      - name: Build the web app
-        run: pnpm --filter @platehouse/web build
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # The same stamp as the app-image job, so its cached layers are reused.
+      - name: Date the Debian updates
+        id: os-updates
+        run: |
+          echo "stamp=$(date -u +%Y-%m-%d)-${GITHUB_RUN_ATTEMPT:?}" >>"$GITHUB_OUTPUT"
+      - name: Build the app image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/app.Dockerfile
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ env.E2E_APP_IMAGE }}
+          build-args: OS_UPDATES_STAMP=${{ steps.os-updates.outputs.stamp }}
+          cache-from: type=gha,scope=app-image-amd64
       # Chromium's system libraries come from Ubuntu's mirrors, which can answer
       # 503 for a while, and one failed fetch used to fail the job with no test
       # run (issue #264). As in the image builds, apt retries each download 10
@@ -468,10 +552,10 @@ jobs:
           fi
       - name: Show the stack's logs
         if: ${{ failure() && env.E2E_ENV_FILE != '' }}
-        run: docker compose -f e2e/compose.yml --env-file "$E2E_ENV_FILE" logs --no-color --tail 300
+        run: docker compose -f e2e/compose.yml -f e2e/compose.image.yml --env-file "$E2E_ENV_FILE" logs --no-color --tail 300
       - name: Upload the Playwright report
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-report
           path: |
@@ -482,7 +566,7 @@ jobs:
           retention-days: 14
       - name: Stop the e2e stack
         if: ${{ always() && env.E2E_ENV_FILE != '' }}
-        run: docker compose -f e2e/compose.yml --env-file "$E2E_ENV_FILE" down -v
+        run: docker compose -f e2e/compose.yml -f e2e/compose.image.yml --env-file "$E2E_ENV_FILE" down -v
 
   # The slicing gate's tests (node:test, no install, no Docker). Runs only when
   # the changes job says the gate or a file its tests read changed (#222).
@@ -494,12 +578,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
 
@@ -517,8 +601,8 @@ jobs:
           fi
 
   # A build of the gate image and its smoke checks, so an image build failure
-  # is found here and not on the test server (the second gate run there,
-  # 2026-11-08, failed while building the image). Runs only when the changes job says the gate,
+  # is found here, before anyone copies the tool to the host that runs the
+  # gate. Runs only when the changes job says the gate,
   # this workflow or .node-version changed, and only after the gate tests
   # passed, as when both were one job. Every change that runs this job also
   # runs the tests (the image list is part of the tests list, pinned by
@@ -535,29 +619,28 @@ jobs:
       BUILDKIT_PROGRESS: plain
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       # The smoke step compares its two results with smoke-gate.mjs on the runner.
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
 
-      # Every RUN step and build check in the Dockerfile runs here, as on the
-      # test server.
+      # Every RUN step and build check in the Dockerfile runs here, as it does
+      # wherever the gate image is built.
       - name: Build the gate image
         run: docker build --platform linux/amd64 -t "$IMAGE" tools/slicing-gate
 
-      # Each check runs in a fresh container the way the gate runs on the test server:
+      # Each check runs in a fresh container with the slicing gate's own flags:
       # no network, read-only root, a tmpfs scratch dir, no capabilities.
-      # The last ones prove the two gate bugs of gate run 3 (2026-11-08)
-      # fixed: landrun's checks for report item (g), and a crafted cube saved
+      # The last ones prove two earlier gate bugs fixed: landrun's checks for report item (g), and a crafted cube saved
       # for one printer and sliced on the others. The cube is sliced twice:
       # with the image as built, and with Orca's process_full folder hidden by
-      # an empty tmpfs, which is the image as it was for run 3 and must fail
-      # the way run 3 did. Own-printer slices must match between the two.
+      # an empty tmpfs, which is the image as it was before that fix and must
+      # fail the way it did then. Own-printer slices must match between the two.
       - name: Smoke-check the image
         run: |
           gate() {
@@ -594,15 +677,15 @@ jobs:
           chmod 1777 "$results"
           echo "== crafted cube across printers, image as built"
           gate -v "$results:/results" "$IMAGE" node /src/smoke-gate.mjs switch --out /results/fixed.json
-          echo "== crafted cube across printers, control: process_full hidden as in run 3"
+          echo "== crafted cube across printers, control: process_full hidden as before the fix"
           gate -v "$results:/results" --tmpfs /opt/orca/resources/profiles/BBL/process_full:ro,size=1m \
             "$IMAGE" node /src/smoke-gate.mjs switch --control --out /results/control.json
           echo "== own-printer slices with and without process_full"
           node tools/slicing-gate/smoke-gate.mjs compare "$results/fixed.json" "$results/control.json"
 
-  # The slicer image (build plan Task 11): the container tests build
+  # The slicer image: the container tests build
   # apps/slicer/Dockerfile and run it the way examples/docker-compose.yml does (read-only root,
-  # tmpfs /work, 4 CPUs, 4 GB, no capabilities), then test contract v1 over
+  # tmpfs /work, 4 CPUs, 4 GB, no capabilities), then test contract 2 over
   # HTTP: a real slice of buildSliceable's plates, OpenSCAD renders and the
   # landrun sandbox, STEP to GLB, health and the printer menu. Runs only when
   # the changes job says the slicer or an input of its image changed. The
@@ -618,13 +701,13 @@ jobs:
       BUILDKIT_PROGRESS: plain
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -674,7 +757,7 @@ jobs:
           fi
       - name: Upload the test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: container-report
           path: report.json
@@ -690,7 +773,7 @@ jobs:
       # the tests passed, so the image exists.
       - name: Trivy report (informational, does not fail the job)
         continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.SLICER_IMAGE }}
           severity: HIGH,CRITICAL
@@ -700,7 +783,7 @@ jobs:
           cache-dir: ${{ runner.temp }}/trivy-cache
           version: v0.76.2
 
-  # The app image (build plan Task 24; this job approved by the maintainer, 2026-11-13):
+  # The app image (this job approved by the maintainer, 2026-11-13):
   # docker/app.Dockerfile, built natively for amd64 and arm64 on every run,
   # then run by docker/test-app-image.sh against Postgres 17 and the S3 test
   # server on a private Docker network. The container's own HEALTHCHECK must
@@ -708,8 +791,9 @@ jobs:
   # beside the built migrate.js be applied (#31). Then the same image with
   # apps/web/dist removed must keep running with /healthz 503 and its
   # HEALTHCHECK reporting unhealthy (#162). Last, the release workflow's Trivy
-  # gate scans the image for fixable OS HIGH or CRITICAL findings. Nothing is
-  # pushed and there is no login anywhere: the images stay on the runner.
+  # gate scans the image for fixable OS HIGH or CRITICAL findings, and the
+  # library gate after it for fixable CRITICAL findings in the npm packages
+  # (#453). Nothing is pushed and there is no login anywhere: the images stay on the runner.
   # Nothing depends on this job.
   app-image:
     name: App image (${{ matrix.arch }})
@@ -729,11 +813,11 @@ jobs:
       BUILDKIT_PROGRESS: plain
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4.4.1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # The runtime stage's apt-get upgrade is rebuilt whenever
       # OS_UPDATES_STAMP changes (docker/app.Dockerfile). Today's UTC date
       # makes pull request builds take Debian's fixes once a day and stay
@@ -746,7 +830,7 @@ jobs:
         run: |
           echo "stamp=$(date -u +%Y-%m-%d)-${GITHUB_RUN_ATTEMPT:?}" >>"$GITHUB_OUTPUT"
       - name: Build the app image
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/app.Dockerfile
@@ -782,12 +866,28 @@ jobs:
       # The Trivy version is the one release.yml installs, set here rather than
       # left to the action's default (v0.70.0 for the action's v0.36.0).
       - name: Trivy gate (fail on fixable OS HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           vuln-type: os
+          exit-code: "1"
+          format: table
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          version: v0.76.2
+
+      # The library gate (issue #453), beside the OS gate: a fixable CRITICAL
+      # finding in a library the image ships (the npm packages) fails the
+      # job. The OS gate above is unchanged, and HIGH library findings are
+      # not gated.
+      - name: Trivy library gate (fail on fixable CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          vuln-type: library
           exit-code: "1"
           format: table
           cache-dir: ${{ runner.temp }}/trivy-cache
@@ -801,13 +901,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm

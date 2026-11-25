@@ -1,4 +1,4 @@
-// Collections (build plan Task 14; AC-062, Q17). A model can sit in more than
+// Collections. A model can sit in more than
 // one collection. Collections are flat: the schema has no column through which
 // a collection could hold another, and these calls only ever put a model in
 // one. The rows are written by the collections repository; this module

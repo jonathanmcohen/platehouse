@@ -1,4 +1,4 @@
-// The reason map (build plan, Slicer HTTP contract v1, as amended): Orca
+// The reason map (Slicer HTTP contract 2, as amended): Orca
 // v2.5.0's own return codes (src/libslic3r/Utils.hpp, messages from
 // src/OrcaSlicer.cpp cli_errors), as the slicing gate's lib/classify.mjs
 // reads them. -62 and -101 are legitimate refusals reported with their
@@ -19,7 +19,7 @@ const MAP: Array<[number, string]> = [
   [-58, "timeout"],
 ];
 
-// Codes the plan's original map sent to nozzle_mismatch (-61 to -69) or did
+// Codes the contract's first map sent to nozzle_mismatch (-61 to -69) or did
 // not name (-50), whose Orca meaning is something else: empty plate, bed
 // type, collisions, vase mode, TPU count, mixed filament. By the maintainer's decision
 // (2026-11-08) they fall to the contract's "anything else".

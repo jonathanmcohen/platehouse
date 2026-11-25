@@ -1,10 +1,10 @@
-// Build plan Task 30: start(config) boots the whole server against Postgres
+// start(config) boots the whole server against Postgres
 // 17, the S3 test server and the contract-faithful slicer stub, and every
 // part is wired:
 // - every queue the app creates has a worker, and every slicer job kind and
 //   maintenance task reaches its handler;
 // - every cron is registered: purgeExpired 03:30, the orphan sweep 04:00, the
-//   expired-session delete 04:35 (Task 15), the stale-upload sweep hourly,
+//   expired-session delete 04:35, the stale-upload sweep hourly,
 //   the Orca poll every 10 minutes (and once at startup) and the render
 //   check every 15 minutes;
 // - a .3mf dropped in the inbox becomes a model and its plates are queued for
@@ -34,7 +34,9 @@ import {
   QUEUE,
   SWEEP_ORPHANS_CRON,
   SWEEP_UPLOADS_CRON,
+  UPGRADE_TASKS,
 } from "../../../src/jobs/queues.js";
+import { RECONVERT_STEP } from "../../../src/library/reconvert.js";
 import { type Server, start } from "../../../src/main.js";
 import { bossUploadQueue, uploadsDir } from "../../../src/uploads/tus.js";
 import { build3mf, SCAD_TEXT } from "../support/ingest.js";
@@ -69,9 +71,19 @@ function boss(): PgBoss {
   return probe;
 }
 
-/** Sends a job and waits until a worker has taken it and finished, either way. */
+/**
+ * Sends a job and waits until a worker has taken it and finished, either way.
+ * The upgrade queue is stately: send returns null when a job is already
+ * waiting there (the app's own re-conversion job, from start-up or its
+ * schedule). A probe on it carries its own singletonKey, so it never collapses
+ * into the app's job and is always created.
+ */
 async function settled(queue: string, data: object) {
-  const id = await boss().send(queue, data, { retryLimit: 0 });
+  const options =
+    queue === QUEUE.upgrade
+      ? { retryLimit: 0, singletonKey: `probe-${uuidv7()}` }
+      : { retryLimit: 0 };
+  const id = await boss().send(queue, data, options);
   if (id === null) throw new Error("job not created");
   const job = await until(
     () => boss().getJobById(queue, id),
@@ -121,13 +133,20 @@ describe("health", () => {
     expect(await healthStatus(env)).toBe(200);
   });
 
-  test("the Orca poll ran at startup", async () => {
-    expect((await env.repos.settings.get()).lastOrcaVersion).toBe("2.5.0");
+  test("the Orca poll runs soon after startup", async () => {
+    // Start-up sends the poll as a job; the maintenance worker runs it.
+    const deadline = Date.now() + 30_000;
+    let version = (await env.repos.settings.get()).lastOrcaVersion;
+    while (version !== "2.5.0" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      version = (await env.repos.settings.get()).lastOrcaVersion;
+    }
+    expect(version).toBe("2.5.0");
   });
 });
 
 describe("queues and workers", () => {
-  test("the app creates the ingest, slicer and maintenance queues", async () => {
+  test("the app creates the ingest, slicer, maintenance and upgrade queues", async () => {
     const names = (await boss().getQueues())
       .map((q) => q.name)
       .filter((name) => !name.startsWith("__pgboss__"))
@@ -195,11 +214,54 @@ describe("queues and workers", () => {
       expect(job.state, `${task}: ${JSON.stringify(job.output ?? null)}`).toBe("completed");
     }
   });
+
+  // #357: the first start of a version with a new converter queues the
+  // description re-conversion once; it runs and records itself, so the next
+  // start queues nothing.
+  test("the description re-conversion runs once at the first start and records itself", async () => {
+    const step = await until(
+      () =>
+        env.db
+          .selectFrom("upgradeSteps")
+          .select(["name", "result"])
+          .where("name", "=", RECONVERT_STEP)
+          .executeTakeFirst(),
+      (row) => row !== undefined,
+      30_000,
+    );
+    expect(step?.result).toMatchObject({ changed: expect.any(Number), kept: expect.any(Number) });
+    const job = await settled(QUEUE.upgrade, { task: UPGRADE_TASKS.reconvertDescriptions });
+    expect(job.state, JSON.stringify(job.output ?? null)).toBe("completed");
+    // Its schedule, made on the upgrade queue at the start while it was
+    // pending (#382), is gone once it has finished.
+    const schedules = await until(
+      () => boss().getSchedules(QUEUE.upgrade),
+      (list) => !list.some((s) => s.key === UPGRADE_TASKS.reconvertDescriptions),
+      30_000,
+    );
+    expect(schedules.map((s) => s.key)).not.toContain(UPGRADE_TASKS.reconvertDescriptions);
+  });
+
+  // #412: a job an earlier candidate left on the maintenance queue is handed
+  // over at once. The step has finished, so it completes and sends nothing.
+  test("an old re-conversion job on the maintenance queue completes without a slice", async () => {
+    const job = await settled(QUEUE.maintenance, { task: UPGRADE_TASKS.reconvertDescriptions });
+    expect(job.state, JSON.stringify(job.output ?? null)).toBe("completed");
+    const queued = await boss().findJobs(QUEUE.upgrade, { queued: true });
+    expect(queued).toEqual([]);
+    expect(await boss().getSchedules(QUEUE.maintenance)).not.toContainEqual(
+      expect.objectContaining({ key: UPGRADE_TASKS.reconvertDescriptions }),
+    );
+  });
 });
 
 describe("schedules", () => {
   test("every maintenance task is scheduled, at its time", async () => {
-    const schedules = await boss().getSchedules(QUEUE.maintenance);
+    // The description re-conversion's schedule is there only while it is
+    // pending (#382); the test above checks it goes.
+    const schedules = (await boss().getSchedules(QUEUE.maintenance)).filter(
+      (s) => s.key !== UPGRADE_TASKS.reconvertDescriptions,
+    );
     const byKey = new Map(schedules.map((s) => [s.key, s]));
     expect([...byKey.keys()].sort()).toEqual(Object.values(MAINTENANCE_TASKS).sort());
     const expected: Record<string, string> = {
@@ -209,6 +271,8 @@ describe("schedules", () => {
       [MAINTENANCE_TASKS.pollOrca]: "*/10 * * * *",
       [MAINTENANCE_TASKS.checkRenders]: "*/15 * * * *",
       [MAINTENANCE_TASKS.purgeSessions]: "35 4 * * *",
+      // Issue #316: the preview backfill, one batch at a time.
+      "backfill-previews": "*/5 * * * *",
     };
     expect(Object.keys(expected).sort()).toEqual(Object.values(MAINTENANCE_TASKS).sort());
     for (const [key, cron] of Object.entries(expected)) {
@@ -332,7 +396,7 @@ describe("the upload routes", () => {
     const before = await footprint();
     for (const prefix of [UPLOAD_PREFIXES.api, UPLOAD_PREFIXES.app]) {
       // Same-origin, as a browser sends it, so /app/uploads meets the session
-      // check rather than the gate's Origin check (Task 15).
+      // check rather than the gate's Origin check.
       const res = await fetch(`${env.baseUrl}${prefix}`, {
         method: "POST",
         headers: {

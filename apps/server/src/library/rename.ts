@@ -1,14 +1,15 @@
-// Renaming (build plan Task 14; AC-060, Q16). A rename changes the display
+// Renaming. A rename changes the display
 // name only. The bucket key (models/<modelId>/<blobId>) holds no user text
 // and is never renamed, and a file keeps its original_name.
 import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { DB } from "../db/types.js";
+import { SettingsInputError } from "../input-error.js";
 import { withLiveModel } from "./live.js";
 
 function displayName(name: string, what: "model" | "file"): string {
   const trimmed = name.trim();
-  if (trimmed === "") throw new RangeError(`A ${what} name must not be empty`);
+  if (trimmed === "") throw new SettingsInputError(`A ${what} name must not be empty`);
   return trimmed;
 }
 

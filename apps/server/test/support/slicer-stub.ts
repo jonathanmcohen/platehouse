@@ -1,5 +1,5 @@
-// A slicer stub for the estimate tests (build plan Task 12), built on the
-// slicer contract package so it cannot drift from contract v1: every answer
+// A slicer stub for the estimate tests, built on the
+// slicer contract package so it cannot drift from contract v2: every answer
 // it sends is parsed with the contract's own zod schema first, and a test
 // that scripts an answer the contract does not allow fails right there. The
 // query is read with the contract's sliceQuery, the body limit is the
@@ -11,10 +11,12 @@
 // /v1/profiles lists for the printer and the slot's type, or null where none
 // is listed and the file's own filament is kept.
 //
-// It also answers the three render routes Task 13 calls, POST /v1/scad/stl,
-// /v1/scad/png and /v1/step/glb (the renders group below): by default with
-// bytes made from the body it was sent, so a test can tell which source a
-// stored render came from, or as a test scripts it.
+// It also answers the render routes the render jobs and issue #316 call, POST
+// /v1/scad/stl, /v1/scad/png, /v1/step/glb and /v1/stl/png (the renders group
+// below): by default with bytes made from the body it was sent, so a test can
+// tell which source a stored render came from, or as a test scripts it. Its
+// GLB is a real one (one triangle, with the body's digest in its generator
+// field), since the STEP preview reads the stored mesh back.
 //
 // It listens on 127.0.0.1 only and holds nothing but synthetic data.
 import { createHash, randomBytes } from "node:crypto";
@@ -26,9 +28,11 @@ import { join } from "node:path";
 import {
   CONTRACT_VERSION,
   type FilamentProfile,
+  type Health,
   LIMITS,
   type Printer,
   type Reason,
+  type SandboxOffBody,
   type SliceFilament,
   slicerContract,
 } from "@platehouse/slicer-contract";
@@ -68,6 +72,32 @@ export interface StubCall {
   bytes: number;
 }
 
+/**
+ * What a route answers while the slicer's sandbox is off: 503 sandbox_off,
+ * before the body is read, connection closed. A slice outcome and a render
+ * answer both take it.
+ */
+export interface SandboxOffAnswer {
+  kind: "sandboxOff";
+  reason: SandboxOffBody["reason"];
+}
+
+/** A 503 sandbox_off answer for a slice outcome or a render answer. */
+export function sandboxOff(reason: SandboxOffBody["reason"]): SandboxOffAnswer {
+  return { kind: "sandboxOff", reason };
+}
+
+function sandboxOffBody(answer: SandboxOffAnswer): SandboxOffBody {
+  return slicerContract.sandboxOff.parse({
+    error: "sandbox_off",
+    reason: answer.reason,
+    detail:
+      answer.reason === "old_kernel"
+        ? "the kernel's Landlock ABI is below what the sandbox needs"
+        : "the sandbox check failed",
+  });
+}
+
 /** What the stub does with one slice request. */
 export type StubOutcome =
   /** 200 ok with numbers; time and weight default from the plate number. */
@@ -76,24 +106,33 @@ export type StubOutcome =
   | { kind: "failed"; code: number | null; reason: Reason; detail: string }
   /** 409 busy, before the body is read, connection closed. */
   | { kind: "busy" }
+  /** 503 sandbox_off, before the body is read, connection closed. */
+  | SandboxOffAnswer
   /** The connection is cut once the body is in, as when the slicer restarts mid-slice. */
   | { kind: "drop" }
   /** Nothing is answered until the stub stops. */
   | { kind: "hang" };
 
-/** A render route of contract v1 (Task 13). */
-export type RenderRoute = "/v1/scad/stl" | "/v1/scad/png" | "/v1/step/glb";
+/** A render route of contract v2 (OpenSCAD, STEP, and the STL preview of issue #316). */
+export type RenderRoute = "/v1/scad/stl" | "/v1/scad/png" | "/v1/step/glb" | "/v1/stl/png";
 
-const RENDER_ROUTES: readonly RenderRoute[] = ["/v1/scad/stl", "/v1/scad/png", "/v1/step/glb"];
+const RENDER_ROUTES: readonly RenderRoute[] = [
+  "/v1/scad/stl",
+  "/v1/scad/png",
+  "/v1/step/glb",
+  "/v1/stl/png",
+];
 
 /** What a render route answers to one request. */
 export type RenderAnswer =
   /** 200 with renderedBytes for the body, in the route's content type. */
   | { kind: "render" }
-  /** 422 render_failed (scad routes) or convert_failed (step) with this message. */
+  /** 422 render_failed (scad and stl routes) or convert_failed (step) with this message. */
   | { kind: "failed"; message: string }
   /** 409 busy, before the body is read, connection closed. */
   | { kind: "busy" }
+  /** 503 sandbox_off, before the body is read, connection closed. */
+  | SandboxOffAnswer
   /** The connection is cut once the body is in, as when the slicer restarts mid-render. */
   | { kind: "drop" };
 
@@ -113,6 +152,13 @@ export interface RenderStub {
   queue(route: RenderRoute, ...answers: RenderAnswer[]): void;
   /** What a route answers once its queue is empty; render when never set. */
   always(route: RenderRoute, answer: RenderAnswer): void;
+  /**
+   * Decides the answer from the body that arrived, for a request no queue or
+   * always script answers: a render or a failure, as a file's own content
+   * would (issue #389's property test marks some sources broken this way).
+   * Undefined keeps the default render. Cleared by reset().
+   */
+  decide(fn: ((route: RenderRoute, body: Buffer) => RenderAnswer | undefined) | null): void;
   /** Clears every script and the recorded calls. */
   reset(): void;
   callsTo(route: RenderRoute): RenderCall[];
@@ -122,29 +168,91 @@ const RENDER_CONTENT_TYPE: Readonly<Record<RenderRoute, string>> = {
   "/v1/scad/stl": "model/stl",
   "/v1/scad/png": "image/png",
   "/v1/step/glb": "model/gltf-binary",
+  "/v1/stl/png": "image/png",
 };
 
 const RENDER_LIMIT: Readonly<Record<RenderRoute, number>> = {
   "/v1/scad/stl": LIMITS.scadBodyBytes,
   "/v1/scad/png": LIMITS.scadBodyBytes,
   "/v1/step/glb": LIMITS.stepBodyBytes,
+  "/v1/stl/png": LIMITS.stlBodyBytes,
 };
 
 const RENDER_MAGIC: Readonly<Record<RenderRoute, Buffer>> = {
   "/v1/scad/stl": Buffer.from("solid stub\n", "latin1"),
   "/v1/scad/png": Buffer.from("\x89PNG\r\n\x1a\n", "latin1"),
   "/v1/step/glb": Buffer.from("glTF", "latin1"),
+  "/v1/stl/png": Buffer.from("\x89PNG\r\n\x1a\n", "latin1"),
 };
 
-/** The bytes the stub renders for a body on a route: the route's magic and the body's SHA-256. */
+/**
+ * A GLB laid out as the slicer's meshesToGlb writes one (apps/slicer/src/
+ * step.ts): one buffer, float32 positions and uint32 indices, the JSON chunk
+ * padded with spaces. It holds one triangle, and generator carries label, so
+ * two GLBs made from different bodies differ.
+ */
+export function stubGlb(label: string): Buffer {
+  const positions = Buffer.alloc(36);
+  [0, 0, 0, 10, 0, 0, 0, 10, 0].forEach((v, i) => {
+    positions.writeFloatLE(v, i * 4);
+  });
+  const indices = Buffer.alloc(12);
+  [0, 1, 2].forEach((v, i) => {
+    indices.writeUInt32LE(v, i * 4);
+  });
+  const bin = Buffer.concat([positions, indices]);
+  const json = {
+    asset: { version: "2.0", generator: label },
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1, mode: 4 }] }],
+    accessors: [
+      {
+        bufferView: 0,
+        componentType: 5126,
+        count: 3,
+        type: "VEC3",
+        min: [0, 0, 0],
+        max: [10, 10, 0],
+      },
+      { bufferView: 1, componentType: 5125, count: 3, type: "SCALAR" },
+    ],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 36, target: 34962 },
+      { buffer: 0, byteOffset: 36, byteLength: 12, target: 34963 },
+    ],
+    buffers: [{ byteLength: bin.length }],
+  };
+  let text = Buffer.from(JSON.stringify(json), "utf8");
+  const pad = (4 - (text.length % 4)) % 4;
+  text = Buffer.concat([text, Buffer.alloc(pad, 0x20)]);
+  const header = Buffer.alloc(12);
+  header.write("glTF", 0, "ascii");
+  header.writeUInt32LE(2, 4);
+  header.writeUInt32LE(12 + 8 + text.length + 8 + bin.length, 8);
+  const jsonHead = Buffer.alloc(8);
+  jsonHead.writeUInt32LE(text.length, 0);
+  jsonHead.writeUInt32LE(0x4e4f534a, 4);
+  const binHead = Buffer.alloc(8);
+  binHead.writeUInt32LE(bin.length, 0);
+  binHead.writeUInt32LE(0x004e4942, 4);
+  return Buffer.concat([header, jsonHead, text, binHead, bin]);
+}
+
+/**
+ * The bytes the stub renders for a body on a route: the route's magic and the
+ * body's SHA-256, or, for /v1/step/glb, a real GLB carrying them.
+ */
 export function renderedBytes(route: RenderRoute, body: Buffer | string): Buffer {
   const digest = createHash("sha256").update(body).digest("hex");
+  if (route === "/v1/step/glb") return stubGlb(`${route} ${digest}`);
   return Buffer.concat([RENDER_MAGIC[route], Buffer.from(`${route} ${digest}\n`, "latin1")]);
 }
 
 export interface SlicerStub {
   url: string;
-  /** The render routes (Task 13). */
+  /** The render routes. */
   renders: RenderStub;
   /** Every slice request in arrival order, busy ones included. */
   calls: StubCall[];
@@ -152,6 +260,8 @@ export interface SlicerStub {
   readonly profileRequests: number;
   /** The Orca version /v1/health, /v1/profiles and every slice report. */
   setOrca(version: string): void;
+  /** The sandbox state /v1/health reports; "on" with no reason is the default. */
+  setSandbox(sandbox: Health["sandbox"]): void;
   /** Decides each slice request's outcome; the default is ok. */
   onSlice(decide: (call: StubCall, n: number) => StubOutcome): void;
   /** Holds every slice answer until release() is called (ok answers keep their outcome). */
@@ -229,6 +339,12 @@ export async function startSlicerStub(
   opts: { orca?: string; printers?: Printer[]; filaments?: FilamentProfile[] } = {},
 ): Promise<SlicerStub> {
   let orca = opts.orca ?? "2.5.0";
+  let sandbox: Health["sandbox"] = {
+    state: "on",
+    reason: null,
+    detail: null,
+    allowUnsandboxed: false,
+  };
   const printers = opts.printers ?? STUB_PRINTERS;
   const filaments = opts.filaments ?? STUB_FILAMENTS;
   const calls: StubCall[] = [];
@@ -256,6 +372,7 @@ export async function startSlicerStub(
     if (outcome.kind === "busy") {
       return refuseEarly(res, 409, slicerContract.error.parse({ error: "busy" }));
     }
+    if (outcome.kind === "sandboxOff") return refuseEarly(res, 503, sandboxOffBody(outcome));
     if (length > LIMITS.sliceBodyBytes) {
       return refuseEarly(res, 413, slicerContract.error.parse({ error: "too_large" }));
     }
@@ -334,13 +451,19 @@ export async function startSlicerStub(
   const renderCalls: RenderCall[] = [];
   const renderQueue = new Map<RenderRoute, RenderAnswer[]>();
   const renderAlways = new Map<RenderRoute, RenderAnswer>();
+  let decideFn: ((route: RenderRoute, body: Buffer) => RenderAnswer | undefined) | null = null;
 
   async function render(req: IncomingMessage, res: ServerResponse, route: RenderRoute) {
-    const answer = renderQueue.get(route)?.shift() ?? renderAlways.get(route) ?? { kind: "render" };
+    const scripted = renderQueue.get(route)?.shift() ?? renderAlways.get(route);
+    let answer: RenderAnswer = scripted ?? { kind: "render" };
     const contentType = req.headers["content-type"];
     if (answer.kind === "busy") {
       renderCalls.push({ route, contentType, body: Buffer.alloc(0), answer: answer.kind });
       return refuseEarly(res, 409, slicerContract.error.parse({ error: "busy" }));
+    }
+    if (answer.kind === "sandboxOff") {
+      renderCalls.push({ route, contentType, body: Buffer.alloc(0), answer: answer.kind });
+      return refuseEarly(res, 503, sandboxOffBody(answer));
     }
     const chunks: Buffer[] = [];
     let total = 0;
@@ -352,6 +475,7 @@ export async function startSlicerStub(
       chunks.push(chunk as Buffer);
     }
     const body = Buffer.concat(chunks);
+    if (scripted === undefined && decideFn !== null) answer = decideFn(route, body) ?? answer;
     renderCalls.push({ route, contentType, body, answer: answer.kind });
     switch (answer.kind) {
       case "render": {
@@ -388,9 +512,13 @@ export async function startSlicerStub(
     always(route, answer) {
       renderAlways.set(route, answer);
     },
+    decide(fn) {
+      decideFn = fn;
+    },
     reset() {
       renderQueue.clear();
       renderAlways.clear();
+      decideFn = null;
       renderCalls.length = 0;
     },
     callsTo(route) {
@@ -415,6 +543,13 @@ export async function startSlicerStub(
               orca,
               openscad: "2026.11-RC0",
               busy: false,
+              sandbox,
+              timeouts: {
+                sliceSeconds: 180,
+                scadSeconds: 120,
+                stepSeconds: 120,
+                uploadSeconds: 600,
+              },
             }),
           );
         case "GET /v1/profiles":
@@ -463,6 +598,9 @@ export async function startSlicerStub(
     },
     setOrca(version) {
       orca = version;
+    },
+    setSandbox(next) {
+      sandbox = next;
     },
     onSlice(fn) {
       decide = fn;

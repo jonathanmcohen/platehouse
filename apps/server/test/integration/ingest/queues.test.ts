@@ -1,7 +1,7 @@
-// Build plan Task 8: the pg-boss queues. ingest runs two at once, slicer is a
-// singleton queue whose jobs Task 12 adds, and maintenance carries the cron
-//   jobs: Task 14's purgeExpired daily at 03:30 local time (issue #38), the
-// orphan sweep daily at 04:00 local time (PR #49 review) and Task 9's sweep
+// The pg-boss queues. ingest runs two at once, slicer is a
+// singleton queue whose jobs the estimates module adds, and maintenance carries the cron
+//   jobs: the trash's purgeExpired daily at 03:30 local time (issue #38), the
+// orphan sweep daily at 04:00 local time (PR #49 review) and the upload handler's sweep
 // of stale partial uploads every hour.
 import { setTimeout as sleep } from "node:timers/promises";
 import type { PgBoss } from "pg-boss";
@@ -10,6 +10,7 @@ import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { BOSS_SCHEMA, createBoss } from "../../../src/jobs/boss.js";
 import {
   INGEST_CONCURRENCY,
+  INGEST_EXPIRE_SECONDS,
   localTimeZone,
   MAINTENANCE_TASKS,
   PURGE_EXPIRED_CRON,
@@ -102,6 +103,22 @@ describe("queues", () => {
     expect((await boss.getQueue(QUEUE.slicer))?.policy).toBe("singleton");
     expect((await boss.getQueue(QUEUE.ingest))?.retryLimit).toBe(0);
     expect(await boss.getSchedules(QUEUE.maintenance)).toHaveLength(3);
+  });
+
+  // Issue #441: an ingest job may run for an hour before pg-boss expires it,
+  // on a queue an earlier release made with pg-boss's default too.
+  test("the ingest queue expires a job after an hour, a queue made before that included", async () => {
+    expect((await boss.getQueue(QUEUE.ingest))?.expireInSeconds).toBe(INGEST_EXPIRE_SECONDS);
+    await boss.updateQueue(QUEUE.ingest, { expireInSeconds: 900 });
+    const again = createBoss({ databaseUrl: dbUrl });
+    await again.start();
+    try {
+      await startQueues(again, deps());
+    } finally {
+      await again.stop({ graceful: false });
+    }
+    expect((await boss.getQueue(QUEUE.ingest))?.expireInSeconds).toBe(3600);
+    expect((await boss.getQueue(QUEUE.ingest))?.retryLimit).toBe(0);
   });
 });
 

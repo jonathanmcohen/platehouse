@@ -1,8 +1,9 @@
-// The headless routes through Traefik (build plan Task 22; AC-082 through
-// Traefik, AC-041, AC-080). Platehouse has two cookieless routes,
+// The headless routes through Traefik: the API works with a bearer token and
+// no cookie, a slicer link works with no session, and every page still needs
+// a login. Platehouse has two cookieless routes,
 // the Public API v1 and slicer links. If a proxy login or the app's session
-// gate covered either, it would redirect to login and pass every unit test
-// (Cairn's OAuth loop, v0.9.16). Each request here goes through Traefik on
+// gate covered either, it would redirect to login and still pass every unit
+// test, since unit tests never go through the proxy. Each request here goes through Traefik on
 // https://platehouse.e2e.test from a request context with no cookie at all.
 import { type APIRequestContext, expect, request, test } from "@playwright/test";
 import { ISSUER, ORIGIN } from "../support/env.js";
@@ -143,7 +144,7 @@ test.describe("UI routes through Traefik", () => {
     expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
-  test("a fresh browser signs in through the issuer and lands on the library", async ({
+  test("a fresh browser signs in through the issuer and returns to the page it asked for", async ({
     browser,
   }) => {
     const context = await browser.newContext({
@@ -153,8 +154,10 @@ test.describe("UI routes through Traefik", () => {
     try {
       const page = await context.newPage();
       await page.goto(`${ORIGIN}/settings`);
-      expect(new URL(page.url()).origin).toBe(ORIGIN);
-      await expect(page.getByRole("heading", { level: 1, name: "Library" })).toBeVisible();
+      const landed = new URL(page.url());
+      expect(landed.origin).toBe(ORIGIN);
+      expect(landed.pathname).toBe("/settings");
+      await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
       const cookies = await context.cookies(ORIGIN);
       const session = cookies.find((c) => c.name.startsWith("__Host-"));
       expect(session?.secure).toBe(true);

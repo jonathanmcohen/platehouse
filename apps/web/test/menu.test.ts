@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Build plan Task 18, AC-074 and AC-075: where keyboard focus goes when the
+// Where keyboard focus goes when the
 // narrow-screen menu closes. Following one of its links puts focus on the
 // main landmark, so the next Tab starts in the new section instead of at the
 // top of the document (the panel is hidden with the link inside it, and a
@@ -132,7 +132,7 @@ test("used without onNavigate, following a menu link puts focus back on the Menu
 // now puts focus on the main landmark after any client-side change of page,
 // once, in one place, as the skip link and the menu do. Back and Forward
 // leave focus where the browser restores it, and a search keeps focus in
-// the search box (Task 18).
+// the search box.
 let go: NavigateFunction;
 
 function GrabNavigate() {

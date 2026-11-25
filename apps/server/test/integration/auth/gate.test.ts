@@ -1,4 +1,4 @@
-// Build plan Task 15: the gate for session routes. A request with no live
+// The gate for session routes. A request with no live
 // session is refused: a page (a GET or HEAD that accepts HTML) is sent to
 // /auth/login on PUBLIC_ORIGIN, anything else gets 401 JSON. A session store
 // that fails answers 503 with no detail. Every state-changing request (any
@@ -43,18 +43,18 @@ describe("a session route with no session", () => {
     for (const method of ["GET", "HEAD"] as const) {
       const res = await t.app.inject({ method, url: "/models/abc", headers: { accept: HTML } });
       expect(res.statusCode, method).toBe(302);
-      expect(res.headers.location, method).toBe(`${TEST_ORIGIN}/auth/login`);
+      expect(res.headers.location, method).toBe(`${TEST_ORIGIN}/auth/login?next=/models/abc`);
       expect(res.headers["cache-control"], method).toBe("no-store");
     }
   });
 
-  test("the login redirect ignores a spoofed Host (AC-091)", async () => {
+  test("the login redirect ignores a spoofed Host and uses the configured origin", async () => {
     const res = await t.app.inject({
       method: "GET",
       url: "/models/abc",
       headers: { accept: HTML, host: "evil.example", "x-forwarded-host": "evil.example" },
     });
-    expect(res.headers.location).toBe(`${TEST_ORIGIN}/auth/login`);
+    expect(res.headers.location).toBe(`${TEST_ORIGIN}/auth/login?next=/models/abc`);
   });
 
   test("anything else gets 401 JSON", async () => {
@@ -131,8 +131,8 @@ describe("a session store that fails", () => {
 });
 
 describe("the Origin check on state-changing session requests: /app/api", () => {
-  // A session-class path under /app/api that no route serves (Task 21's
-  // /app/api routes answer 503 in this app, which has no app API), so a
+  // A session-class path under /app/api that no route serves (the settings
+  // and organising routes answer 503 in this app, which has no app API), so a
   // request past the gate is a plain 404.
   const url = "/app/api/no-such-route/abc";
 

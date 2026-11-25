@@ -1,7 +1,6 @@
 // MakerWorld details from the start of a .3mf's 3D/3dmodel.model. Ported by
-// behaviour from extractMakerWorld in automation Manyfold/makerworld-metadata
-// at 1ce8c57; the input is the makerWorldXml string build plan Task 6's
-// readProject returns (the model file read up to <resources, at most 256 KiB).
+// behaviour from an earlier Manyfold metadata script; the input is the
+// makerWorldXml string packages/threemf's readProject returns (the model file read up to <resources, at most 256 KiB).
 
 // Named entities: the five XML ones plus the HTML ones MakerWorld text uses
 // most. Anything else named is left as written. Non-ASCII targets are written
@@ -86,6 +85,23 @@ const GENERATORS: ReadonlySet<string> = new Set(["gridfinity layout tool"]);
 // collapsed (at most 900 UTF-8 bytes): the API's creator limit, 300, and far
 // under the 2704-byte btree entry limit of creators.name (#143).
 const MAX_DESIGNER_LENGTH = 300;
+
+/** The longest caption kept, in code points: the API's own limit for a caption. */
+export const MAX_CAPTION_CODE_POINTS = 2000;
+
+/** The first max code points of text; a character is never split. */
+export function cutCodePoints(text: string, max: number): string {
+  // Every code point is at most 2 UTF-16 units, so a shorter string fits.
+  if (text.length <= max) return text;
+  let end = 0;
+  let count = 0;
+  for (const ch of text) {
+    if (count === max) break;
+    end += ch.length;
+    count += 1;
+  }
+  return text.slice(0, end);
+}
 
 // The start tag of a <metadata name="..."> element, matched where it begins
 // (sticky). Like the converter's TAG, nothing in it may run past a <, so an
@@ -194,9 +210,12 @@ export function extractMakerWorld(modelXmlPrefix: string): MakerWorldDetails | n
   if (GENERATORS.has(designer.toLowerCase())) return null;
   const description = blankToNull(found.get("Description") ?? "");
   return {
-    title: text("Title"),
+    title: cutTitle(text("Title")),
     designer,
     descriptionHtml: description === null ? null : description.trim(),
     license: text("License"),
   };
 }
+
+const cutTitle = (title: string | null): string | null =>
+  title === null ? null : cutCodePoints(title, MAX_CAPTION_CODE_POINTS);

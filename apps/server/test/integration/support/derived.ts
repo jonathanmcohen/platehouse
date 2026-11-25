@@ -1,16 +1,22 @@
-// The derived-file tests' environment (build plan Task 13): the ingest env (a
+// The derived-file tests' environment: the ingest env (a
 // migrated Postgres 17, a bucket on the S3 test server, a temp folder) plus a
-// started pg-boss on the same database working Task 8's queues, the
+// started pg-boss on the same database working the job queues, the
 // contract-faithful slicer stub, and createDerived wired to all three. Ingest
-// gets Task 13's afterUpload as its afterCommit, as the app wires it.
+// gets derived.afterUpload as its afterCommit, as the app wires it.
 import { setTimeout as sleep } from "node:timers/promises";
 import type { PgBoss } from "pg-boss";
 import type { ModelFile } from "../../../src/db/types.js";
-import { createDerived, type Derived, derivedJobHandlers } from "../../../src/derived/derived.js";
+import {
+  createDerived,
+  type Derived,
+  type DerivedJob,
+  derivedJobHandlers,
+} from "../../../src/derived/derived.js";
+import { stlFromGlb } from "../../../src/derived/mesh.js";
 import { createIngest, type Ingest } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
-import { startQueues } from "../../../src/jobs/queues.js";
-import { type SlicerStub, startSlicerStub } from "../../support/slicer-stub.js";
+import { QUEUE, startQueues } from "../../../src/jobs/queues.js";
+import { renderedBytes, type SlicerStub, startSlicerStub } from "../../support/slicer-stub.js";
 import { type IngestEnv, startIngestEnv } from "./ingest.js";
 
 export interface DerivedEnv extends IngestEnv {
@@ -26,7 +32,14 @@ export interface DerivedEnv extends IngestEnv {
  * so three retries fit in a test's time; the limit and backoff stay.
  */
 export async function startDerivedEnv(
-  opts: { retryDelaySeconds?: number } = {},
+  opts: {
+    retryDelaySeconds?: number;
+    /**
+     * False starts no slicer worker, so jobs stay queued until a test runs
+     * them itself (the preview property test, issue #389).
+     */
+    slicerWorker?: boolean;
+  } = {},
 ): Promise<DerivedEnv> {
   const env = await startIngestEnv();
   let boss: PgBoss | undefined;
@@ -49,7 +62,7 @@ export async function startDerivedEnv(
       purgeExpired: async () => ({}),
       sweepOrphans: async () => ({}),
       sweepUploads: async () => ({}),
-      slicerJobs: derivedJobHandlers(derived),
+      ...(opts.slicerWorker === false ? {} : { slicerJobs: derivedJobHandlers(derived) }),
       pollingIntervalSeconds: 0.5,
     });
     const startedBoss = boss;
@@ -65,7 +78,12 @@ export async function startDerivedEnv(
         afterCommit: (stored) => derived.afterUpload(stored),
       }),
       async stop() {
-        await startedBoss.stop({ graceful: false });
+        // Graceful, as the server's own stop is (main.ts stopBoss): a handler
+        // still running (a backfill picture that queues the next batch when it
+        // finishes) ends before pg-boss closes its database, or its send
+        // fails afterwards with "Database not opened" as an unhandled
+        // rejection (issue #490).
+        await startedBoss.stop({ graceful: true, timeout: 20_000 });
         await startedStub.stop();
         await env.stop();
       },
@@ -93,19 +111,60 @@ export async function until<T>(
   }
 }
 
-/** The file row once its render or mesh has finished, ok or failed. */
+/**
+ * The file row once its work has finished, ok or failed: its render or mesh
+ * (derived_status) and its preview picture (preview_status, issue #380),
+ * neither still pending and at least one of them done. A .scad has only the
+ * first, an STL only the second, and a STEP file both.
+ */
 export async function settledFile(
   env: DerivedEnv,
   fileId: string,
   ms?: number,
 ): Promise<ModelFile> {
+  const done = (s: string | null | undefined) => s === "ok" || s === "failed";
   const file = await until(
     () => env.repos.files.get(fileId),
-    (f) => f?.derivedStatus === "ok" || f?.derivedStatus === "failed",
+    (f) =>
+      f !== undefined &&
+      f.derivedStatus !== "pending" &&
+      f.previewStatus !== "pending" &&
+      (done(f.derivedStatus) || done(f.previewStatus)),
     ms,
   );
   if (!file) throw new Error("file vanished");
   return file;
+}
+
+/**
+ * A file's slicer jobs once none is still created, retrying or active, with
+ * at least one found. pg-boss writes a job's state and output only after its
+ * handler returns, and the handler has already written the file row by then,
+ * so a read straight after settledFile can see a job still active with a null
+ * output (issue #490).
+ */
+export async function settledJobs(env: DerivedEnv, fileId: string, ms?: number) {
+  const live = new Set(["created", "retry", "active"]);
+  return until(
+    () => env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } }),
+    (jobs) => jobs.length > 0 && jobs.every((j) => !live.has(j.state)),
+    ms,
+  );
+}
+
+/**
+ * The preview the stub renders for a stored STEP mesh (issue #316): the STL
+ * the app makes from the GLB, as it arrives at /v1/stl/png.
+ */
+export async function meshPreviewBytes(glb: Buffer): Promise<Buffer> {
+  return renderedBytes("/v1/stl/png", await meshStl(glb));
+}
+
+/** The STL the app sends for a stored STEP mesh. */
+export async function meshStl(glb: Buffer): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stlFromGlb(glb).open()) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks);
 }
 
 /** An object's bytes, read back from the bucket. */

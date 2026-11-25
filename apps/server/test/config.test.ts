@@ -160,6 +160,8 @@ describe("loadConfig", () => {
     ["INBOX_SETTLE_SECONDS", "-15"],
     ["INBOX_DIR", "relative/inbox"],
     ["TMP_DIR", "relative/tmp"],
+    ["UPLOAD_TEMP_MAX_BYTES", "0"],
+    ["UPLOAD_TEMP_MAX_BYTES", "four-gigabytes"],
   ];
 
   it.each(invalid)("an invalid %s (%s) is named and never echoed", (key, value) => {
@@ -173,6 +175,14 @@ describe("loadConfig", () => {
     }
   });
 
+  it.each(["0", "abc"])("UPLOAD_TEMP_MAX_BYTES %s is refused as not a whole number", (value) => {
+    const err = configErrorOf(withValue(validEnv(), "UPLOAD_TEMP_MAX_BYTES", value));
+    expect(err.keys).toEqual(["UPLOAD_TEMP_MAX_BYTES"]);
+    expect(err.message).toBe(
+      "Invalid configuration: UPLOAD_TEMP_MAX_BYTES must be a whole number of 1 or more",
+    );
+  });
+
   it("reports every problem at once, in contract order", () => {
     const env = withValue(
       withValue(without(validEnv(), "DATABASE_URL"), "PORT", "70000"),
@@ -183,7 +193,7 @@ describe("loadConfig", () => {
     expect(err.keys).toEqual(["DATABASE_URL", "PORT", "LINK_SECRET"]);
   });
 
-  it("applies the contract defaults when optional keys are unset", () => {
+  it("applies the documented defaults when optional keys are unset", () => {
     const config = loadConfig(validEnv());
     expect(config.port).toBe(3000);
     expect(config.oidc.group).toBe("platehouse");
@@ -191,6 +201,8 @@ describe("loadConfig", () => {
     expect(config.inbox.dir).toBe("/data/inbox");
     expect(config.inbox.settleSeconds).toBe(15);
     expect(config.tmpDir).toBe("/data/tmp");
+    // 4 GiB for all unfinished uploads together.
+    expect(config.uploadTempMaxBytes).toBe(4294967296);
   });
 
   it("an empty optional value takes the default", () => {
@@ -212,6 +224,7 @@ describe("loadConfig", () => {
       SLICE_PLATE_SECONDS: "300",
       INBOX_DIR: "/srv/inbox",
       TMP_DIR: "/srv/tmp",
+      UPLOAD_TEMP_MAX_BYTES: "1073741824",
       INBOX_SETTLE_SECONDS: "30",
     });
     expect(config.publicOrigin).toBe(ORIGIN);
@@ -232,6 +245,7 @@ describe("loadConfig", () => {
     expect(config.inbox.dir).toBe("/srv/inbox");
     expect(config.inbox.settleSeconds).toBe(30);
     expect(config.tmpDir).toBe("/srv/tmp");
+    expect(config.uploadTempMaxBytes).toBe(1073741824);
   });
 
   it("SLICER_CONCURRENCY is not read: slices run one at a time (the maintainer, 2026-11-08, PR #49)", () => {

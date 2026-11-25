@@ -1,4 +1,4 @@
-// The ingest tests' environment (build plan Task 8): the library env (a
+// The ingest tests' environment: the library env (a
 // migrated Postgres 17 and a bucket on the S3 test server) plus a temp folder
 // for uploaded files and the builders for the files themselves. Every file is
 // made here from synthetic bytes; no designer file is read or committed.
@@ -64,20 +64,30 @@ export async function footprint(env: IngestEnv) {
 }
 
 // A minimal zip writer: every entry deflated, sizes and offsets true.
-export function buildZip(entries: Array<{ name: string; data: Buffer | string }>): Buffer {
+/**
+ * A zip of the entries, deflated, or stored as they are with stored: true. A
+ * stored zip needs no inflate to read, which runs on libuv's thread pool in
+ * real time, so a test on a fake clock reads it in the same simulated time
+ * on any machine (test/library/reconvert-lifecycle.test.ts).
+ */
+export function buildZip(
+  entries: Array<{ name: string; data: Buffer | string }>,
+  opts: { stored?: boolean } = {},
+): Buffer {
+  const method = opts.stored ? 0 : 8;
   const parts: Buffer[] = [];
   const centrals: Buffer[] = [];
   let offset = 0;
   for (const entry of entries) {
     const name = Buffer.from(entry.name, "utf8");
     const raw = typeof entry.data === "string" ? Buffer.from(entry.data, "utf8") : entry.data;
-    const body = deflateRawSync(raw);
+    const body = method === 8 ? deflateRawSync(raw) : raw;
     const crc = crc32(raw);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
     local.writeUInt16LE(0x0800, 6);
-    local.writeUInt16LE(8, 8);
+    local.writeUInt16LE(method, 8);
     local.writeUInt32LE(crc, 14);
     local.writeUInt32LE(body.length, 18);
     local.writeUInt32LE(raw.length, 22);
@@ -88,7 +98,7 @@ export function buildZip(entries: Array<{ name: string; data: Buffer | string }>
     central.writeUInt16LE(45, 4);
     central.writeUInt16LE(20, 6);
     central.writeUInt16LE(0x0800, 8);
-    central.writeUInt16LE(8, 10);
+    central.writeUInt16LE(method, 10);
     central.writeUInt32LE(crc, 16);
     central.writeUInt32LE(body.length, 20);
     central.writeUInt32LE(raw.length, 24);
@@ -123,6 +133,8 @@ export interface MakerWorldSpec {
 export interface ThreeMfSpec {
   /** How many plates, numbered from 1, each holding one object. */
   plates: number;
+  /** Entries stored rather than deflated (buildZip). */
+  stored?: boolean;
   /** Plates that carry Bambu's own slice numbers, sliced on a P1S (BBL C12). */
   sliced?: number[];
   /** The filament ids on each sliced plate; [1] when left out. */
@@ -221,7 +233,7 @@ export function build3mf(spec: ThreeMfSpec): Buffer {
     });
   }
   for (const n of indexes) entries.push({ name: `Metadata/plate_${n}.png`, data: png(`p${n}`) });
-  return buildZip(entries);
+  return buildZip(entries, { stored: spec.stored === true });
 }
 
 /** A zip that names no Bambu entry: a .3mf with no plate data. */

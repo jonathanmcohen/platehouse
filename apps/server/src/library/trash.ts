@@ -1,8 +1,9 @@
-// The trash (build plan Task 14; AC-063, Q11). Delete moves a model to the
+// The trash. Delete moves a model to the
 // trash, where it is invisible to the library, search and the API; restore
 // brings it back with its files, tags and collections, which a trashing never
 // touches. A trashed model is purged 30 days after it was trashed
-// (purgeExpired), or at once by Empty trash (emptyTrash). purgeExpired also
+// (purgeExpired), or at once by Empty trash (the app API, which calls
+// purgeExpired with a cutoff, organise.ts). purgeExpired also
 // finishes every purge that began and failed, however recently the model was
 // trashed, so a failed Empty trash does not wait 30 days for its retry.
 //
@@ -40,12 +41,12 @@
 // restoreModel refuses a model whose marker is set, with PurgeStarted: its
 // purge may have deleted some of its objects already, and the next purge
 // finishes it. Any other trashed model is restored without looking at the
-// bucket. An object lost some other way (AC-010 reconciliation counts stored
+// bucket. An object lost some other way (reconciling the bucket counts stored
 // rows against objects) shows as unavailable when it is read
 // (getBlobStream's BlobNotFound); it never makes a model unrestorable.
 //
-// The daily 03:30 schedule for purgeExpired belongs to the job runner (Task
-// 8), which registers it on the maintenance queue.
+// The daily 03:30 schedule for purgeExpired belongs to the job runner
+// (jobs/queues.ts), which registers it on the maintenance queue.
 import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { DB } from "../db/types.js";
@@ -263,24 +264,6 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
         // Postgres returns it (canonical lowercase), not the caller's text.
         return modelsRepo(trx).restore(trashed.id);
       });
-    },
-
-    /**
-     * Empty trash: purges every model in the trash. Throws PurgeIncomplete,
-     * after trying them all, when any could not be purged.
-     */
-    async emptyTrash(): Promise<PurgeResult> {
-      const trashed = await db
-        .selectFrom("models")
-        .select("id")
-        .where("trashedAt", "is not", null)
-        .orderBy("trashedAt")
-        .orderBy("id")
-        .execute();
-      return purgeAll(
-        trashed.map((m) => m.id),
-        undefined,
-      );
     },
 
     /**

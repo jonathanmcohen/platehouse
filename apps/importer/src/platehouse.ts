@@ -1,5 +1,5 @@
 // The importer's Platehouse client. It talks to Platehouse only through the
-// Public API v1 (build plan Task 16, apps/server/src/api/v1.ts and
+// Public API v1 (apps/server/src/api/v1.ts and
 // apps/server/src/uploads/tus.ts), as that contract stands:
 //
 //   GET  /api/v1/models?limit=1                 check: the API answers, the token works
@@ -24,7 +24,7 @@
 //   the repeat is 409 with trashed false, and the model is then read back by
 //   its externalRef rather than made again.
 // - Creating an upload retries too: an upload that never gets its bytes
-//   makes no model and is swept after 24 hours (Task 9).
+//   makes no model and is swept after 24 hours (the server's upload sweep).
 // - A PATCH is never sent blind twice: after a failed PATCH the client asks
 //   with HEAD where the upload stands and sends only the rest (tus resume).
 //   Platehouse keeps the bytes a cut-off PATCH delivered, so a failed PATCH
@@ -133,7 +133,7 @@ const BODY_QUOTE = 200;
 const POLL_MS = 1000;
 const POLL_LIMIT = 600;
 /**
- * One PATCH carries the rest of the file (Task 9), handed to fetch in pieces
+ * One PATCH carries the rest of the file (tus allows it), handed to fetch in pieces
  * this size; fetch asks for the next piece once it has sent the last, and
  * each ask restarts the idle clock.
  */

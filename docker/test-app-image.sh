@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the app image (docker/app.Dockerfile) the way a deployment does, against a
 # throwaway Postgres 17 and the S3 test server on a private Docker network,
-# and checks what it reports (build plan Task 24; AC-093, issues #31, #162).
+# and checks what its healthcheck reports (issues #31, #162).
 #
 #   docker/test-app-image.sh IMAGE healthy
 #     The container's own HEALTHCHECK, as the image defines it, reports
@@ -9,8 +9,10 @@
 #     image (apps/server/dist/src/db/migrations, beside the built migrate.js)
 #     is recorded in schema_migrations, and they are the files in
 #     apps/server/src/db/migrations when run from a checkout; the server runs
-#     as a non-root user; each favicon, app icon and the web manifest answers
-#     200 signed out; and no apps/importer or test folder is in the image.
+#     as a non-root user; /app/LICENSE is in the image; each favicon, app
+#     icon and the web manifest answers 200 signed out; one plate of a generated .3mf is read through the built
+#     plate mesh worker (issue #358); and no apps/importer or test folder is
+#     in the image.
 #
 #   docker/test-app-image.sh IMAGE unhealthy
 #     For an image built without apps/web/dist: the server starts and keeps
@@ -165,6 +167,9 @@ code="$(healthz)"
 uid="$(docker exec "$app" id -u)"
 echo "== GET /healthz: ${code}; the server runs as uid ${uid}"
 [ "$uid" != 0 ] || fail "the server runs as root"
+pid1="$(docker exec "$app" cat /proc/1/comm)"
+echo "== PID 1 is ${pid1}"
+[ "$pid1" = tini ] || fail "PID 1 is ${pid1}, not tini"
 
 if [ "$mode" = unhealthy ]; then
   [ "$code" = 503 ] || fail "GET /healthz answered ${code}, not 503, without the web build"
@@ -214,6 +219,74 @@ if [ -d "$here/apps/server/src/db/migrations" ]; then
   [ "$repo" = "$shipped" ] || fail "the image's migrations are not the repo's"
   echo "== the image's migrations are the repo's"
 fi
+
+# The plate mesh worker as the image ships it (issue #358): worker-read.js
+# starts dist/src/plate-mesh/worker.js beside itself, which imports
+# @platehouse/threemf through its built dist export. The tests run both from
+# source, so only this shows the built pair works: one plate of a .3mf made
+# here (one 20 mm cube, stored zip entries, no designer file) is read through
+# readPlateMeshInWorker inside the running container, with no Node flags, as
+# main.js runs it. A missing or broken worker.js fails here instead of
+# answering 500 for every plate's 3D view.
+# read, not $(cat <<...): bash 3.2 misparses a here-document inside $( )
+# whose text has unbalanced quotes. read returns 1 at the end of its input.
+IFS= read -r -d '' plate_check <<'JS' || true
+const { mkdtempSync, writeFileSync, rmSync } = require("node:fs");
+const { tmpdir } = require("node:os");
+const { join } = require("node:path");
+const { crc32 } = require("node:zlib");
+const cube = (s) => {
+  const v = [[0,0,0],[s,0,0],[s,s,0],[0,s,0],[0,0,s],[s,0,s],[s,s,s],[0,s,s]];
+  const t = [[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]];
+  return "<mesh><vertices>" + v.map(([x, y, z]) => `<vertex x="${x}" y="${y}" z="${z}"/>`).join("") +
+    "</vertices><triangles>" + t.map(([a, b, c]) => `<triangle v1="${a}" v2="${b}" v3="${c}"/>`).join("") +
+    "</triangles></mesh>";
+};
+const entries = [
+  ["[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>'],
+  ["_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>'],
+  ["3D/3dmodel.model", '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Application">BambuStudio-02.03.00.70</metadata><resources><object id="1" type="model">' + cube(20) + '</object></resources><build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 40 40 0" printable="1"/></build></model>'],
+  ["Metadata/model_settings.config", '<?xml version="1.0" encoding="UTF-8"?><config><object id="1"><metadata key="extruder" value="1"/></object><plate><metadata key="plater_id" value="1"/><model_instance><metadata key="object_id" value="1"/><metadata key="instance_id" value="0"/></model_instance></plate></config>'],
+];
+// A zip of stored entries: local headers, then the central directory and its end record.
+const parts = [], central = [];
+let offset = 0;
+for (const [name, text] of entries) {
+  const n = Buffer.from(name), d = Buffer.from(text), crc = crc32(d);
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt32LE(crc, 14);
+  local.writeUInt32LE(d.length, 18); local.writeUInt32LE(d.length, 22); local.writeUInt16LE(n.length, 26);
+  const head = Buffer.alloc(46);
+  head.writeUInt32LE(0x02014b50, 0); head.writeUInt16LE(20, 4); head.writeUInt16LE(20, 6); head.writeUInt32LE(crc, 16);
+  head.writeUInt32LE(d.length, 20); head.writeUInt32LE(d.length, 24); head.writeUInt16LE(n.length, 28); head.writeUInt32LE(offset, 42);
+  parts.push(local, n, d); central.push(head, n);
+  offset += 30 + n.length + d.length;
+}
+const cd = Buffer.concat(central), end = Buffer.alloc(22);
+end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10);
+end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+const dir = mkdtempSync(join(process.env.TMP_DIR || tmpdir(), "plate-check-"));
+const path = join(dir, "cube.3mf");
+writeFileSync(path, Buffer.concat([...parts, cd, end]));
+import(process.argv[1])
+  .then(({ readPlateMeshInWorker }) => readPlateMeshInWorker(path, 1, { execArgv: [] }))
+  .then((mesh) => {
+    if (mesh.plate !== 1 || mesh.instances.length !== 1 || mesh.triangles !== 12) {
+      throw new Error(`unexpected mesh: plate ${mesh.plate}, ${mesh.instances.length} instances, ${mesh.triangles} triangles`);
+    }
+    console.log(`plate 1 read in the built worker: ${mesh.triangles} triangles`);
+  })
+  .finally(() => rmSync(dir, { recursive: true, force: true }))
+  .catch((error) => { console.error(error); process.exit(1); });
+JS
+plate="$(docker exec -e TMP_DIR=/data/tmp -w /app/apps/server "$app" \
+  node -e "$plate_check" /app/apps/server/dist/src/plate-mesh/worker-read.js 2>&1)" ||
+  fail "the built plate mesh worker could not read a plate: ${plate}"
+echo "== ${plate}"
+
+# The licence text is in the image.
+docker exec "$app" test -s /app/LICENSE || fail "/app/LICENSE is missing or empty in the image"
+echo "== /app/LICENSE is in the image"
 
 # What must never be in the image.
 docker exec "$app" bash -c 'test ! -e /app/apps/importer' || fail "apps/importer is in the image"

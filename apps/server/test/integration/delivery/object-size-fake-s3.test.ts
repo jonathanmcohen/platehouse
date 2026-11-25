@@ -1,4 +1,4 @@
-// Build plan Task 17, PR #156 security review: delivery compares an object's
+// From the PR #156 security review: delivery compares an object's
 // real size with the recorded one before it sends a header, so the stream
 // carries the Content-Length the store answered GetObject with. Checked here
 // against the storage tests' scripted fake endpoint, so this file needs no

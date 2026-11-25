@@ -37,7 +37,10 @@
 services:
   platehouse:
     container_name: platehouse
-    image: ghcr.io/jonathanmcohen/platehouse:0.1.0
+    # The version tag is the pin: change it, and the slicer image below, to
+    # the release you want, and to the previous one to go back (0.1.0: see
+    # the slicer image below).
+    image: ghcr.io/jonathanmcohen/platehouse:0.1.1
     restart: unless-stopped
     # The server takes up to 30 s to stop cleanly. Docker's default 10 s
     # would kill it partway through.
@@ -90,9 +93,12 @@ services:
 
   platehouse-slicer:
     container_name: platehouse-slicer
-    # Pin an orca-X.Y.Z tag, or follow "stable", which moves to a new
-    # OrcaSlicer release only after it has passed a test slice.
-    image: ghcr.io/jonathanmcohen/platehouse-slicer:orca-2.5.1
+    # Keep this on the same version as the app: the version tag is the pin.
+    # orca-X.Y.Z follows the newest build of that OrcaSlicer version from main
+    # or a release, never a release candidate, and "stable" the newest such
+    # build. 0.1.0 has no slicer version tag: to go back to it use
+    # platehouse-slicer:orca-2.5.1-r3 with platehouse:0.1.0.
+    image: ghcr.io/jonathanmcohen/platehouse-slicer:0.1.1
     restart: unless-stopped
     # The image's own slicer user. No other container on the same host
     # should run as uid 10001: the sandbox's process limit counts every
@@ -103,6 +109,8 @@ services:
     environment:
       # The same per-plate time cap the app uses.
       SLICE_PLATE_SECONDS: ${SLICE_PLATE_SECONDS:-120}
+      # On a kernel older than Linux 6.12 the sandbox is off; "true" still lets slices and STEP previews run without it.
+      # SLICER_ALLOW_UNSANDBOXED: "false"
     read_only: true
     tmpfs:
       - /work:size=1g,mode=1777,noexec,nosuid,nodev

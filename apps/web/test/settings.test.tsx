@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// Build plan Task 21: the settings, trash and organising pages (AC-013
-// warning, AC-031 menu UI, AC-060, AC-061, AC-062, AC-063 UI, AC-083 UI).
+// The settings, trash and organising pages: the versioning warning, My
+// printers, rename, tags, collections, the trash and API tokens.
 //
 // Each page is rendered into jsdom inside a memory router and talks to a
 // fake /app/api (fakeApi below) through the global fetch, which records
@@ -14,13 +14,14 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, type ReactNode } from "react";
+import { act, type ReactNode, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { CollectionsPage } from "../src/collections/CollectionsPage";
 import { CreatorsPage } from "../src/creators/CreatorsPage";
 import { LibraryPage } from "../src/library/LibraryPage";
+import { ConfirmDialog, Dialog } from "../src/settings/Dialog";
 import { howLong, REREAD_SHOWS_CHANGE, WAITING_POLL_MS } from "../src/settings/PrinterMenu";
 import { SettingsPage } from "../src/settings/SettingsPage";
 import { VERSIONING_OFF_WARNING } from "../src/settings/VersioningBanner";
@@ -88,7 +89,23 @@ interface FakeState {
     prefix: string;
     createdAt: string;
     lastUsedAt: string | null;
+    /** Who made it; null for a token made before Platehouse recorded that (issue #322). */
+    createdBy: { subject: string; name: string | null } | null;
   }>;
+  /** Sign out everywhere's list (GET /app/api/users). */
+  users: Array<{
+    subject: string;
+    name: string | null;
+    sessions: number;
+    tokens: number;
+    you: boolean;
+  }>;
+  /** When true, a new token is refused because the session's sign-in is too old (issue #322). */
+  signInRequired: boolean;
+  /** When true, the token list and the user list cannot be read (500). */
+  listsFail: boolean;
+  /** When true, token creation and Sign out everywhere are over the session's limit (429). */
+  rateLimited: boolean;
   trash: Array<{
     id: string;
     name: string;
@@ -160,6 +177,22 @@ function json(status: number, body?: unknown): Response {
     headers: body === undefined ? {} : { "content-type": "application/json" },
   });
 }
+
+/** What the server answers a session over its limit (apps/server/src/auth/limit.ts). */
+function limited(): Response {
+  return new Response(JSON.stringify({ error: "rate_limited" }), {
+    status: 429,
+    headers: { "content-type": "application/json", "retry-after": "540" },
+  });
+}
+
+/** What the server answers an act on other people from an older sign-in. */
+const STALE_ANSWER = {
+  error: "sign_in_required",
+  message: "Sign in again first. Platehouse checks that you are still allowed in when you sign in.",
+  code: "sign_in_required",
+  signIn: "/auth/login?next=/settings",
+};
 
 function sameName(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
@@ -307,8 +340,20 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
       removed,
     });
   }
+  if (
+    method === "GET" &&
+    (path === "/app/api/tokens" || path === "/app/api/users") &&
+    state.listsFail
+  ) {
+    return json(500, { error: "internal_error" });
+  }
   if (method === "GET" && path === "/app/api/tokens") return json(200, { tokens: state.tokens });
   if (method === "POST" && path === "/app/api/tokens") {
+    if (state.rateLimited) return limited();
+    // A session signed in too long ago is refused, as the server does (issue #322).
+    if (state.signInRequired) {
+      return json(403, STALE_ANSWER);
+    }
     const token = freshToken();
     issued.push(token);
     const row = {
@@ -317,16 +362,56 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
       prefix: token.slice(0, 8),
       createdAt: "2026-11-12T10:00:00.000Z",
       lastUsedAt: null,
+      createdBy: { subject: "subject-me", name: "Synthetic Me" },
     };
     state.tokens = [row, ...state.tokens];
     return json(201, { ...row, token });
   }
   if (method === "DELETE" && seg[0] === "tokens") {
+    if (state.signInRequired) return json(403, STALE_ANSWER);
+    // A token already revoked elsewhere is 404, as the server answers it.
+    if (!state.tokens.some((t) => t.id === seg[1])) return json(404, { error: "not_found" });
     state.tokens = state.tokens.filter((t) => t.id !== seg[1]);
     return json(204);
   }
+  if (method === "GET" && path === "/app/api/users") return json(200, { users: state.users });
+  // Sign out everywhere, as the server does: every session of the user ends,
+  // and with revokeTokens every live token they made is revoked.
+  if (method === "POST" && path === "/app/api/users/sign-out") {
+    if (state.rateLimited) return limited();
+    if (state.signInRequired && body.subject !== "subject-me") return json(403, STALE_ANSWER);
+    const user = state.users.find((u) => u.subject === body.subject);
+    const sessionsEnded = user?.sessions ?? 0;
+    const theirs = state.tokens.filter((t) => t.createdBy?.subject === body.subject);
+    const tokensRevoked = body.revokeTokens === true ? theirs.length : 0;
+    if (body.revokeTokens === true) {
+      state.tokens = state.tokens.filter((t) => !theirs.includes(t));
+    }
+    state.users = state.users
+      .map((u) =>
+        u.subject === body.subject
+          ? { ...u, sessions: 0, tokens: body.revokeTokens === true ? 0 : u.tokens }
+          : u,
+      )
+      .filter((u) => u.sessions > 0 || u.tokens > 0);
+    return json(200, { sessionsEnded, tokensRevoked });
+  }
   if (method === "GET" && path === "/app/api/trash") {
-    return json(200, { models: state.trash, readAt: state.now });
+    // Paged as the server pages it: newest first, 100 to a page, a page past
+    // the end served as the last page.
+    const pageSize = Number(url.searchParams.get("limit") ?? 100);
+    const total = state.trash.length;
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Math.max(Number(url.searchParams.get("page") ?? 1), 1), pageCount);
+    const newestFirst = [...state.trash].sort((a, b) => b.trashedAt.localeCompare(a.trashedAt));
+    return json(200, {
+      models: newestFirst.slice((page - 1) * pageSize, page * pageSize),
+      readAt: state.now,
+      page,
+      pageSize,
+      pageCount,
+      total,
+    });
   }
   // Empty trash purges only the models trashed at or before the cutoff it is
   // sent, as the server does: a model trashed after the page read the list
@@ -380,7 +465,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     );
     return json(200, { models, nextCursor: null });
   }
-  // The library (Task 19's routes), for the Show in the library link: the
+  // The library's routes, for the Show in the library link: the
   // creator filter is the exact name and the collection filter ignores case,
   // as the server's search does (apps/server/src/library/search.ts).
   if (method === "GET" && path === "/app/api/library/tags") return json(200, { tags: [] });
@@ -485,8 +570,13 @@ beforeEach(() => {
         prefix: "ph_Ab3dE",
         createdAt: "2026-11-01T09:00:00.000Z",
         lastUsedAt: "2026-11-11T08:30:00.000Z",
+        createdBy: null,
       },
     ],
+    users: [{ subject: "subject-me", name: "Synthetic Me", sessions: 1, tokens: 0, you: true }],
+    signInRequired: false,
+    listsFail: false,
+    rateLimited: false,
     trash: [
       {
         id: "m-trashed-1",
@@ -692,6 +782,11 @@ function announced(): string {
   return [...document.querySelectorAll('[role="alert"]')].map((el) => el.textContent).join(" ");
 }
 
+/** What Sign out everywhere's live status line says after a change (role="status"). */
+function signOutStatus(): string {
+  return document.querySelector("[data-sign-out-status]")?.textContent ?? "";
+}
+
 /** The link whose text is name. */
 function link(name: string): HTMLAnchorElement {
   const found = [...document.querySelectorAll("a")].find((a) => a.textContent?.trim() === name);
@@ -838,6 +933,44 @@ describe("the settings page", () => {
       await step();
       expect(callsTo("GET", "/app/api/settings")).toHaveLength(reads);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the printer menu's poll pauses while the tab is hidden, and reads once and resumes when it is shown", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const setVisibility = (value: "visible" | "hidden") => {
+      Object.defineProperty(document, "visibilityState", { value, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+    try {
+      state.myPrinters = [P1S, X1C];
+      state.waiting = { [X1C]: 463 };
+      await show("/settings", <SettingsPage />);
+      const reads = () => callsTo("GET", "/app/api/settings").length;
+      await act(async () => {
+        setVisibility("hidden");
+      });
+      const hiddenAt = reads();
+      for (let i = 0; i < 3; i += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(WAITING_POLL_MS);
+        });
+        await settle();
+      }
+      expect(reads()).toBe(hiddenAt);
+      await act(async () => {
+        setVisibility("visible");
+      });
+      await settle();
+      expect(reads()).toBe(hiddenAt + 1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WAITING_POLL_MS);
+      });
+      await settle();
+      expect(reads()).toBe(hiddenAt + 2);
+    } finally {
+      setVisibility("visible");
       vi.useRealTimers();
     }
   });
@@ -1256,6 +1389,337 @@ describe("the settings page", () => {
     expect(text()).not.toContain("Office desktop");
   });
 
+  test("a token already revoked elsewhere is done: it leaves the list with no error", async () => {
+    await show("/settings", <SettingsPage />);
+    await click(button("Revoke Office desktop"));
+    state.tokens = [];
+    await click(button("Revoke", dialog() as HTMLElement));
+    expect(callsTo("DELETE", "/app/api/tokens/t0")).toHaveLength(1);
+    expect(dialog()).toBeNull();
+    expect(announced()).toBe("");
+    expect(text()).not.toContain("Office desktop");
+  });
+
+  test("a token created while the first list is still loading is kept when the list lands", async () => {
+    // The list's answer is read now, before the token exists, and arrives later.
+    let arrive: () => void = () => {};
+    const late = new Promise<void>((resolve) => {
+      arrive = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        const answer = await fakeApi(input, init);
+        const isList =
+          (init.method ?? "GET").toUpperCase() === "GET" &&
+          new URL(String(input), "https://platehouse.test").pathname === "/app/api/tokens";
+        if (isList) await late;
+        return answer;
+      }),
+    );
+    await show("/settings", <SettingsPage />);
+    expect(text()).toContain("Loading");
+    await type(labelled<HTMLInputElement>("Token name"), "Quick script");
+    await click(button("Create token"));
+    await click(button("Done", dialog() as HTMLElement));
+    await act(async () => arrive());
+    await settle();
+    expect(text()).toContain("Quick script");
+    expect(text()).toContain("Office desktop");
+  });
+
+  // Issue #322: who made each token, a fresh sign-in for a new one, and
+  // Sign out everywhere.
+  test("each token says who made it, or that who made it is unknown", async () => {
+    state.tokens.push(
+      {
+        id: "t5",
+        name: "Named maker",
+        prefix: "ph_Nm5aB",
+        createdAt: "2026-11-03T09:00:00.000Z",
+        lastUsedAt: null,
+        createdBy: { subject: "subject-5", name: "Synthetic Maker" },
+      },
+      {
+        id: "t6",
+        name: "Nameless maker",
+        prefix: "ph_Nl6cD",
+        createdAt: "2026-11-04T09:00:00.000Z",
+        lastUsedAt: null,
+        createdBy: { subject: "subject-6", name: null },
+      },
+    );
+    await show("/settings", <SettingsPage />);
+    const row = (name: string) =>
+      [...document.querySelectorAll("li")].find((li) => li.textContent?.includes(name));
+    expect(row("Office desktop")?.textContent).toContain("Made by an unknown user");
+    // A named maker is shown with their user id too, so two people with the
+    // same name can be told apart (PR #364 review).
+    expect(row("Named maker")?.textContent).toContain(
+      "Made by \u2068Synthetic Maker\u2069 (user id subject-5)",
+    );
+    expect(row("Nameless maker")?.textContent).toContain("Made by subject-6");
+  });
+
+  test("a token list and a user list that cannot be read are announced as alerts", async () => {
+    state.listsFail = true;
+    await show("/settings", <SettingsPage />);
+    const alerts = [...document.querySelectorAll('[role="alert"]')];
+    expect(alerts).toHaveLength(2);
+    for (const alert of alerts) expect(alert.classList.contains("studio-alert-alert")).toBe(true);
+  });
+
+  test("a token refused for an old sign-in says to sign in again, with a link that comes back here", async () => {
+    state.signInRequired = true;
+    await show("/settings", <SettingsPage />);
+    await type(labelled<HTMLInputElement>("Token name"), "Late script");
+    await click(button("Create token"));
+    expect(callsTo("POST", "/app/api/tokens")).toHaveLength(1);
+    expect(dialog()).toBeNull();
+    const alert = document.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("sign in again");
+    const again = link("Sign in again");
+    expect(again.getAttribute("href")).toBe("/auth/login?next=/settings");
+  });
+
+  test("a revoke refused for an old sign-in says to sign in again, and keeps the token", async () => {
+    state.signInRequired = true;
+    state.tokens = [
+      {
+        id: "t-stale",
+        name: "Stale script",
+        prefix: "ph_stale1",
+        createdAt: "2026-11-01T10:00:00.000Z",
+        lastUsedAt: null,
+        createdBy: { subject: "subject-other", name: null },
+      },
+    ];
+    await show("/settings", <SettingsPage />);
+    await click(button("Revoke Stale script"));
+    await click(button("Revoke", dialog() as HTMLElement));
+    expect(callsTo("DELETE", "/app/api/tokens/t-stale")).toHaveLength(1);
+    expect(text()).toContain("Stale script");
+    const alert = document.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("sign in again");
+    expect(link("Sign in again").getAttribute("href")).toBe("/auth/login?next=/settings");
+  });
+
+  test("Sign out everywhere refused for an old sign-in says to sign in again", async () => {
+    state.signInRequired = true;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 2,
+      tokens: 1,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")).toHaveLength(1);
+    expect(signOutStatus()).toBe("");
+    const alert = document.querySelector("[data-sign-out-refused]");
+    expect(alert?.textContent).toContain("sign in again");
+    expect(link("Sign in again").getAttribute("href")).toBe("/auth/login?next=/settings");
+  });
+
+  test("a token refused for too many tries says to wait and try again later", async () => {
+    state.rateLimited = true;
+    await show("/settings", <SettingsPage />);
+    await type(labelled<HTMLInputElement>("Token name"), "Busy script");
+    await click(button("Create token"));
+    expect(callsTo("POST", "/app/api/tokens")).toHaveLength(1);
+    expect(dialog()).toBeNull();
+    const alert = document.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain(
+      "Too many tries from this sign-in. Wait a few minutes, then try again.",
+    );
+  });
+
+  test("Sign out everywhere refused for too many tries says to wait and try again later", async () => {
+    state.rateLimited = true;
+    state.users.push({
+      subject: "subject-busy",
+      name: "Synthetic Busy",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Busy\u2069 (user id subject-busy) everywhere"));
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")).toHaveLength(1);
+    expect(signOutStatus()).toBe("");
+    expect(text()).toContain(
+      "Too many tries from this sign-in. Wait a few minutes, then try again.",
+    );
+  });
+
+  test("Sign out everywhere lists each user and asks before ending their sessions", async () => {
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 2,
+      tokens: 1,
+      you: false,
+    });
+    state.tokens.push({
+      id: "t7",
+      name: "Gone's script",
+      prefix: "ph_Gn7eF",
+      createdAt: "2026-11-05T09:00:00.000Z",
+      lastUsedAt: null,
+      createdBy: { subject: "subject-gone", name: "Synthetic Gone" },
+    });
+    await show("/settings", <SettingsPage />);
+    expect(text()).toContain("Sign out everywhere");
+    expect(text()).toContain("Synthetic Gone (user id subject-gone)");
+    expect(text()).toContain("Synthetic Me (user id subject-me) (you)");
+
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    const ask = dialog();
+    expect(ask?.textContent).toContain("\u2068Synthetic Gone\u2069 (user id subject-gone)");
+    await click(button("Cancel", ask as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")).toHaveLength(0);
+
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    const box = (dialog() as HTMLElement).querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(box?.checked).toBe(false);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: false,
+    });
+    expect(dialog()).toBeNull();
+    expect(signOutStatus()).toContain(
+      "Ended 2 sessions for \u2068Synthetic Gone\u2069 (user id subject-gone)",
+    );
+    // Its token was left alone.
+    expect(text()).toContain("Gone's script");
+  });
+
+  test("Sign out everywhere shows each name inside a bdi, the user id outside it", async () => {
+    state.users.push({
+      subject: "subject-rtl",
+      name: "\u05e9\u05dc\u05d5\u05dd Synthetic",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    const rows = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-sign-out-status] ~ ul li strong"),
+    );
+    expect(rows).toHaveLength(2);
+    const rtl = rows.find((row) => row.textContent?.includes("subject-rtl")) as HTMLElement;
+    const wrapped = rtl.querySelectorAll("bdi");
+    expect(wrapped).toHaveLength(1);
+    expect(wrapped[0]?.textContent).toBe("\u05e9\u05dc\u05d5\u05dd Synthetic");
+    expect(rtl.textContent).toBe("\u05e9\u05dc\u05d5\u05dd Synthetic (user id subject-rtl)");
+    const mine = rows.find((row) => row.textContent?.includes("subject-me")) as HTMLElement;
+    expect(mine.querySelector("bdi")?.textContent).toBe("Synthetic Me");
+    expect(mine.textContent).toBe("Synthetic Me (user id subject-me) (you)");
+  });
+
+  test("Sign out everywhere isolates the name in the button label, dialog, status line and token list", async () => {
+    state.users.push({
+      subject: "subject-iso",
+      name: "\u05e9\u05dc\u05d5\u05dd Synthetic",
+      sessions: 1,
+      tokens: 1,
+      you: false,
+    });
+    state.tokens.push({
+      id: "t9",
+      name: "Iso script",
+      prefix: "ph_Is0Ab",
+      createdAt: "2026-11-05T09:00:00.000Z",
+      lastUsedAt: null,
+      createdBy: { subject: "subject-iso", name: "\u05e9\u05dc\u05d5\u05dd Synthetic" },
+    });
+    const isolated = "\u2068\u05e9\u05dc\u05d5\u05dd Synthetic\u2069 (user id subject-iso)";
+    await show("/settings", <SettingsPage />);
+    expect(text()).toContain(`Made by ${isolated}`);
+    await click(button(`Sign out ${isolated} everywhere`));
+    expect(dialog()?.textContent).toContain(isolated);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(signOutStatus()).toContain(`for ${isolated}`);
+  });
+
+  test("Sign out everywhere can also revoke the user's tokens", async () => {
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 1,
+      you: false,
+    });
+    state.tokens.push({
+      id: "t8",
+      name: "Gone's script",
+      prefix: "ph_Gn8gH",
+      createdAt: "2026-11-05T09:00:00.000Z",
+      lastUsedAt: null,
+      createdBy: { subject: "subject-gone", name: "Synthetic Gone" },
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    const box = (dialog() as HTMLElement).querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(box).not.toBeNull();
+    await click(box as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: true,
+    });
+    expect(signOutStatus()).toContain("revoked 1 API token");
+    // The token list is read again, so the revoked token is gone from it.
+    expect(text()).not.toContain("Gone's script");
+  });
+
+  test("Sign out everywhere tells apart two people with the same name by their user id", async () => {
+    state.users.push(
+      { subject: "subject-twin-a", name: "Synthetic Twin", sessions: 1, tokens: 1, you: false },
+      { subject: "subject-twin-b", name: "Synthetic Twin", sessions: 1, tokens: 0, you: false },
+    );
+    await show("/settings", <SettingsPage />);
+    expect(text()).toContain("Synthetic Twin (user id subject-twin-a)");
+    expect(text()).toContain("Synthetic Twin (user id subject-twin-b)");
+
+    await click(button("Sign out \u2068Synthetic Twin\u2069 (user id subject-twin-b) everywhere"));
+    expect(dialog()?.textContent).toContain("\u2068Synthetic Twin\u2069 (user id subject-twin-b)");
+    expect(dialog()?.textContent).not.toContain("subject-twin-a");
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-twin-b",
+      revokeTokens: false,
+    });
+  });
+
+  test("Sign out everywhere names a person with no name by their user id alone", async () => {
+    state.users.push({
+      subject: "subject-nameless",
+      name: null,
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    expect(() => button("Sign out subject-nameless everywhere")).not.toThrow();
+  });
+
+  test("signing yourself out everywhere says so and offers to sign in again", async () => {
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Me\u2069 (user id subject-me) (you) everywhere"));
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-me",
+      revokeTokens: false,
+    });
+    expect(signOutStatus()).toContain("You are signed out everywhere");
+    expect(link("Sign in").getAttribute("href")).toBe("/auth/login");
+  });
+
   test("the settings page holds the trash", async () => {
     await show("/settings", <SettingsPage />);
     expect(text()).toContain("Old benchy");
@@ -1273,6 +1737,99 @@ describe("the trash", () => {
     expect(callsTo("POST", "/app/api/trash/m-trashed-1/restore")).toHaveLength(1);
     expect(text()).not.toContain("Old benchy");
     expect(text()).toContain("Broken clip");
+  });
+
+  /** The pager's link to page n, found by the label a screen reader reads. */
+  function pageLink(n: number): HTMLAnchorElement {
+    const found = document.querySelector<HTMLAnchorElement>(
+      `nav.ph-pager a[aria-label="Page ${n}"]`,
+    );
+    if (found === null) throw new Error(`no pager link to page ${n}`);
+    return found;
+  }
+
+  /** n trashed models, model 0 the newest, each a minute older than the last. */
+  function trashOf(n: number): FakeState["trash"] {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `0190f7a2-0000-7000-8000-${String(i).padStart(12, "0")}`,
+      name: `Model ${i}`,
+      creator: null,
+      trashedAt: new Date(Date.parse("2026-11-10T12:00:00.000Z") - i * 60_000).toISOString(),
+      purgeAt: "2026-12-10T12:00:00.000Z",
+      purgeStarted: false,
+    }));
+  }
+
+  test("the trash shows a pager when there is more than one page, and page 2 lists the next models", async () => {
+    state.trash = trashOf(101);
+    await show("/trash", <TrashPage />);
+    expect(text()).toContain("Model 0");
+    expect(text()).toContain("Model 99");
+    expect(text()).not.toContain("Model 100");
+    const pager = document.querySelector("nav.ph-pager");
+    expect(pager).not.toBeNull();
+    expect(pageLink(2).getAttribute("href")).toBe("/trash?page=2");
+    await click(pageLink(2));
+    expect(callsTo("GET", "/app/api/trash?page=2")).toHaveLength(1);
+    expect(text()).toContain("Model 100");
+    expect(text()).not.toContain("Model 0");
+    expect(pageLink(1).getAttribute("href")).toBe("/trash");
+  });
+
+  test("after the pager loads another page, focus is on the page line, not the body", async () => {
+    state.trash = trashOf(101);
+    await show("/trash", <TrashPage />);
+    await click(pageLink(2));
+    const active = document.activeElement as HTMLElement;
+    expect(active.tabIndex).toBe(-1);
+    expect(active.getAttribute("role")).toBe("status");
+    expect(active.textContent).toBe("Page 2 of 2");
+  });
+
+  test("restoring the last model of the last page never flashes the empty trash, and the address follows the page served", async () => {
+    state.trash = trashOf(101);
+    await show("/trash?page=2", <TrashPage />);
+    expect(text()).toContain("Model 100");
+    let flashed = false;
+    const watcher = new MutationObserver(() => {
+      if (text().includes("The trash is empty.")) flashed = true;
+    });
+    watcher.observe(document.body, { childList: true, subtree: true, characterData: true });
+    await click(button("Restore Model 100"));
+    watcher.disconnect();
+    expect(flashed).toBe(false);
+    expect(text()).toContain("Model 99");
+    expect(text()).not.toContain("The trash is empty.");
+    expect(callsTo("GET", "/app/api/trash")).toHaveLength(1);
+  });
+
+  test("the trash shows no pager when everything fits on one page", async () => {
+    await show("/trash", <TrashPage />);
+    expect(document.querySelector("nav.ph-pager")).toBeNull();
+  });
+
+  test("the pager in Settings keeps the settings address and uses its own parameter", async () => {
+    state.trash = trashOf(101);
+    await show("/settings", <SettingsPage />);
+    expect(pageLink(2).getAttribute("href")).toBe("/settings?trashPage=2");
+  });
+
+  test("a restore on page 2 reloads page 2, and Empty trash counts every page", async () => {
+    state.trash = trashOf(102);
+    await show("/trash?page=2", <TrashPage />);
+    expect(text()).toContain("Model 100");
+    await click(button("Restore Model 100"));
+    expect(text()).not.toContain("Model 100");
+    expect(callsTo("GET", "/app/api/trash?page=2").length).toBeGreaterThan(1);
+    expect(text()).toContain("Model 101");
+    await click(button("Empty trash"));
+    expect(dialog()?.textContent).toContain(
+      "All 101 models in the trash, on every page, are deleted for good",
+    );
+    await click(button("Empty trash", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
+      { cutoff: "2026-11-12T09:00:00.000Z" },
+    ]);
   });
 
   test("empty trash uses a themed dialog", async () => {
@@ -1332,7 +1889,7 @@ describe("the trash", () => {
     expect(dialog()).toBeNull();
   });
 
-  test("two restores in flight both stay restored, whichever answers last", async () => {
+  test("two restores in flight both stay restored when the first one sent answers last", async () => {
     await show("/trash", <TrashPage />);
     const release = hold("POST /app/api/trash/m-trashed-1/restore");
     await click(button("Restore Old benchy"));
@@ -1360,7 +1917,9 @@ describe("the trash", () => {
       },
     ];
     await click(button("Empty trash"));
-    expect(dialog()?.textContent).toContain("The 2 models listed here are deleted for good");
+    expect(dialog()?.textContent).toContain(
+      "All 2 models in the trash, on every page, are deleted for good",
+    );
     await click(button("Empty trash", dialog() as HTMLElement));
     // It sends the time the server read the list, not the models' ids.
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
@@ -1376,7 +1935,7 @@ describe("the trash", () => {
     await show("/trash", <TrashPage />);
     await click(button("Restore Old benchy"));
     await click(button("Empty trash"));
-    expect(dialog()?.textContent).toContain("The 1 model listed here is deleted for good");
+    expect(dialog()?.textContent).toContain("The 1 model in the trash is deleted for good");
     await click(button("Empty trash", dialog() as HTMLElement));
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
       { cutoff: "2026-11-12T09:00:00.000Z" },
@@ -1395,7 +1954,9 @@ describe("the trash", () => {
     }));
     await show("/trash", <TrashPage />);
     await click(button("Empty trash"));
-    expect(dialog()?.textContent).toContain("The 3000 models listed here are deleted for good");
+    expect(dialog()?.textContent).toContain(
+      "All 3000 models in the trash, on every page, are deleted for good",
+    );
     await click(button("Empty trash", dialog() as HTMLElement));
     const sent = callsTo("POST", "/app/api/trash/empty").map((c) => c.body);
     expect(sent).toEqual([{ cutoff: "2026-11-12T09:00:00.000Z" }]);
@@ -1907,6 +2468,7 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
       prefix: "ph_Zy9xW",
       createdAt: "2026-11-02T09:00:00.000Z",
       lastUsedAt: null,
+      createdBy: null,
     });
     await show("/settings", <SettingsPage />);
     const revoke = button("Revoke Office desktop");
@@ -2239,6 +2801,16 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
 // Issue #312: a tag is deleted from the Tags page, a collection from the
 // Collections page or its own page. A Delete asks first, naming how many
 // models still use it, when any do; one no model uses goes at once.
+/** Moves to the PLA tag's page by other means than a click on its link. */
+function Go() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate("/tags?name=PLA")}>
+      go
+    </button>
+  );
+}
+
 describe("deleting a tag or a collection", () => {
   /** The names the list shows, in order. */
   function listed(): string[] {
@@ -2330,11 +2902,11 @@ describe("deleting a tag or a collection", () => {
   });
 
   test("a collection is deleted from the Collections page, and its models stay", async () => {
-    state.unusedCollections = ["QA T28 test"];
+    state.unusedCollections = ["QA check"];
     await show("/collections", <CollectionsPage />);
-    expect(listed()).toEqual(["Desk", "Garage", "QA T28 test"]);
-    await click(button("Delete collection QA T28 test"));
-    expect(callsTo("DELETE", "/app/api/collections?name=QA%20T28%20test")).toHaveLength(1);
+    expect(listed()).toEqual(["Desk", "Garage", "QA check"]);
+    await click(button("Delete collection QA check"));
+    expect(callsTo("DELETE", "/app/api/collections?name=QA%20check")).toHaveLength(1);
 
     await click(button("Delete collection Garage"));
     const box = dialog();
@@ -2393,6 +2965,69 @@ describe("deleting a tag or a collection", () => {
     expect(callsTo("DELETE", "/app/api/collections?name=Desk%20gear%20%26%20more")).toHaveLength(1);
   });
 
+  test("a tag already deleted in another tab is done: the row goes, with no error", async () => {
+    state.unusedTags = ["qa-t28"];
+    await show("/tags", <TagsPage />);
+    state.unusedTags = [];
+    await click(button("Delete tag qa-t28"));
+    expect(callsTo("DELETE", "/app/api/tags?name=qa-t28")).toHaveLength(1);
+    expect(announced()).toBe("");
+    expect(listed()).not.toContain("qa-t28");
+    expect(statusLine().textContent).toBe("Deleted the tag qa-t28.");
+  });
+
+  test("a tag that models had, gone in another tab, is done from the dialog too", async () => {
+    await show("/tags", <TagsPage />);
+    await click(button("Delete tag PLA"));
+    const box = dialog();
+    state.models[0]?.tags.splice(0);
+    await click(button("Delete tag", box as HTMLElement));
+    expect(dialog()).toBeNull();
+    expect(announced()).toBe("");
+    expect(listed()).not.toContain("PLA");
+  });
+
+  test("a collection gone in another tab is done from its own page, which then shows the list", async () => {
+    await show("/collections?name=Garage", <CollectionsPage />);
+    state.models[1]?.collections.splice(1);
+    await click(button("Delete collection Garage"));
+    const box = dialog();
+    if (box !== null) await click(button("Delete collection", box));
+    expect(announced()).toBe("");
+    expect(document.querySelector("h1")?.textContent).toBe("Collections");
+    expect(statusLine().textContent).toBe("Deleted the collection Garage.");
+  });
+
+  test("a modifier-click on a row link is left to the browser: the view does not swap", async () => {
+    for (const init of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { button: 1 }]) {
+      await act(async () => root.unmount());
+      root = createRoot(container);
+      await show(
+        "/tags",
+        <>
+          <TagsPage />
+          <Go />
+        </>,
+      );
+      const row = link("PLA");
+      await act(async () => {
+        row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init }));
+      });
+      // The page stays on the list; a later move by other means is not a swap
+      // the link asked for, so focus is not pulled to the new heading.
+      expect(document.querySelector("h1")?.textContent).toBe("Tags");
+      await click(button("go"));
+      expect(document.querySelector("h2")?.textContent).toBe("PLA");
+      expect(document.activeElement).toBe(document.body);
+    }
+  });
+
+  test("a plain click on a row link still moves focus to the new heading", async () => {
+    await show("/tags", <TagsPage />);
+    await click(link("PLA"));
+    expect(document.activeElement).toBe(document.querySelector("h2"));
+  });
+
   test("creators cannot be deleted, and a tag's own page has no Delete", async () => {
     await show("/creators", <CreatorsPage />);
     expect([...document.querySelectorAll("button")].map((b) => b.textContent)).not.toContain(
@@ -2414,5 +3049,203 @@ describe("the pages' stylesheet", () => {
     expect(rules).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(rules).not.toMatch(/\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i);
     expect(rules).not.toMatch(/\b(?:black|white)\b/i);
+  });
+});
+
+function Harness({ nested }: { nested: boolean }) {
+  return (
+    <div id="outside-sibling">
+      <Dialog title="Outer" onClose={() => {}}>
+        <button type="button">Outer button</button>
+        {nested ? (
+          <ConfirmDialog
+            title="Inner"
+            message="Sure?"
+            confirmLabel="Go"
+            onConfirm={async () => {}}
+            onCancel={() => {}}
+          />
+        ) : null}
+      </Dialog>
+    </div>
+  );
+}
+
+const escaped: string[] = [];
+
+function Pair({ inner }: { inner: boolean }) {
+  return (
+    <Dialog title="Outer" onClose={() => escaped.push("outer")}>
+      <button type="button">Outer button</button>
+      {inner ? (
+        <Dialog title="Inner" onClose={() => escaped.push("inner")}>
+          <button type="button">Inner button</button>
+        </Dialog>
+      ) : null}
+    </Dialog>
+  );
+}
+describe("an open dialog isolates the rest of the page", () => {
+  function inertCount(): number {
+    return document.querySelectorAll("[inert]").length;
+  }
+
+  test("an open dialog makes the rest of the page inert, and closing it restores it", async () => {
+    const before = document.createElement("div");
+    before.id = "page-before";
+    document.body.prepend(before);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    expect(container.hasAttribute("inert")).toBe(false);
+    expect(document.querySelector(".ph-dialog")?.closest("[inert]")).toBeNull();
+    await act(async () => root.render(<div id="outside-sibling" />));
+    expect(inertCount()).toBe(0);
+    before.remove();
+  });
+
+  test("an element that was already inert stays inert after the dialog closes", async () => {
+    const other = document.createElement("div");
+    other.setAttribute("inert", "");
+    document.body.prepend(other);
+    await act(async () => root.render(<Harness nested={false} />));
+    await act(async () => root.render(<div />));
+    expect(other.hasAttribute("inert")).toBe(true);
+    other.remove();
+  });
+
+  test("a dialog opened from inside another keeps the outer isolation when it closes", async () => {
+    const before = document.createElement("div");
+    document.body.prepend(before);
+    await act(async () => root.render(<Harness nested={false} />));
+    const outerButton = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Outer button",
+    ) as HTMLButtonElement;
+    await act(async () => root.render(<Harness nested />));
+    // The inner dialog is usable; the outer dialog's own content is inert behind it.
+    const dialogs = document.querySelectorAll('[role="dialog"]');
+    expect(dialogs).toHaveLength(2);
+    expect(outerButton.closest("[inert]")).not.toBeNull();
+    expect(dialogs[1]?.closest("[inert]")).toBeNull();
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    expect(outerButton.closest("[inert]")).toBeNull();
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    before.remove();
+  });
+
+  test("an inner and an outer dialog mounted in the same commit release cleanly", async () => {
+    const before = document.createElement("div");
+    document.body.prepend(before);
+    await act(async () => root.render(<Harness nested />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(before.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    before.remove();
+  });
+
+  test("under StrictMode nothing is left inert after the dialog closes", async () => {
+    const before = document.createElement("div");
+    document.body.prepend(before);
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <Harness nested={false} />
+        </StrictMode>,
+      ),
+    );
+    expect(before.hasAttribute("inert")).toBe(true);
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <div />
+        </StrictMode>,
+      ),
+    );
+    expect(inertCount()).toBe(0);
+    before.remove();
+  });
+
+  test("a live region with nothing to focus stays readable; one with a control goes inert", async () => {
+    const status = document.createElement("div");
+    status.setAttribute("role", "status");
+    const live = document.createElement("div");
+    live.setAttribute("aria-live", "polite");
+    live.append(document.createElement("button"));
+    document.body.prepend(status, live);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(status.hasAttribute("inert")).toBe(false);
+    expect(live.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    status.remove();
+    live.remove();
+  });
+
+  test("a quiet live region that gains a control while the dialog is open goes inert", async () => {
+    const status = document.createElement("div");
+    status.setAttribute("role", "status");
+    document.body.prepend(status);
+    await act(async () => root.render(<Harness nested={false} />));
+    expect(status.hasAttribute("inert")).toBe(false);
+    await act(async () => {
+      status.append(document.createElement("button"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(status.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(inertCount()).toBe(0);
+    status.remove();
+  });
+
+  test("an element added beside the dialog while it is open is inert, and freed on close", async () => {
+    await act(async () => root.render(<Harness nested={false} />));
+    const late = document.createElement("div");
+    await act(async () => {
+      document.body.prepend(late);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(late.hasAttribute("inert")).toBe(true);
+    await act(async () => root.render(<div />));
+    expect(late.hasAttribute("inert")).toBe(false);
+    late.remove();
+  });
+
+  test("focus returns to the opener even when the browser blurs it as it goes inert", async () => {
+    const opener = document.createElement("button");
+    opener.textContent = "Open";
+    document.body.prepend(opener);
+    opener.focus();
+    // An engine that drops focus from an element the moment it becomes inert.
+    const set = Element.prototype.setAttribute;
+    const spy = vi.spyOn(Element.prototype, "setAttribute").mockImplementation(function (
+      this: Element,
+      name: string,
+      value: string,
+    ) {
+      set.call(this, name, value);
+      if (name === "inert" && this.contains(document.activeElement)) {
+        (document.activeElement as HTMLElement).blur();
+      }
+    });
+    await act(async () => root.render(<Harness nested={false} />));
+    spy.mockRestore();
+    await act(async () => root.render(<div />));
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  test("Escape with focus on the body closes the dialog; with two open only the inner one", async () => {
+    escaped.length = 0;
+    await act(async () => root.render(<Pair inner />));
+    (document.activeElement as HTMLElement | null)?.blur();
+    await press(document.body, "Escape");
+    expect(escaped).toEqual(["inner"]);
+    await act(async () => root.render(<Pair inner={false} />));
+    (document.activeElement as HTMLElement | null)?.blur();
+    await press(document.body, "Escape");
+    expect(escaped).toEqual(["inner", "outer"]);
   });
 });

@@ -1,4 +1,4 @@
-// The render client's timers (build plan Task 13, PR #60 review). A render
+// The render client's timers (PR #60 review). A render
 // request has two budgets: the time to send its body, which for a STEP file
 // streamed from the bucket can be long, and the slicer's own time cap for the
 // program plus 30 s, which starts once the body is sent. A slow body must not
@@ -9,19 +9,21 @@
 // It also pins how the client tells a slicer that cannot render right now (it
 // takes no connection, or its OpenSCAD sandbox self-test failed) from a lost
 // connection and from OpenSCAD's own verdict on the file.
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import {
   isRetryable,
   postRender,
   RENDER_TIMEOUT_MS,
   RENDER_UPLOAD_TIMEOUT_MS,
   RenderFailed,
-  SANDBOX_OFF_PREFIX,
+  SandboxOff,
   SlicerDown,
   SlicerUnreachable,
 } from "../../../src/derived/client.js";
@@ -30,6 +32,17 @@ import { StoreUnavailable } from "../../../src/storage/s3.js";
 const GLB = "model/gltf-binary";
 
 let server: Server | undefined;
+
+/** Where each request's answer is streamed, as a job's temp folder would hold it. */
+let dir = "";
+
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), "render-client-"));
+});
+
+afterAll(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
 
 afterEach(async () => {
   const s = server;
@@ -80,6 +93,7 @@ function stepRequest(body: Readable) {
     accept: GLB,
     refusal: "convert" as const,
     tooLarge: "too large",
+    answer: { path: join(dir, "mesh.glb") },
   };
 }
 
@@ -87,11 +101,13 @@ describe("render request timers", () => {
   test("the program's time starts once the body is sent, so a slow body still gets its answer", async () => {
     const baseUrl = await slicer();
     // The body takes about 600 ms to arrive, three times the program budget.
-    const bytes = await postRender(
+    const answer = await postRender(
       { baseUrl, timeoutMs: 200, uploadTimeoutMs: 5_000 },
       stepRequest(trickle(6, 100)),
     );
-    expect(bytes.toString("utf8")).toBe("glb:chunk1;chunk2;chunk3;chunk4;chunk5;chunk6;");
+    expect((await readFile(answer.path)).toString("utf8")).toBe(
+      "glb:chunk1;chunk2;chunk3;chunk4;chunk5;chunk6;",
+    );
   });
 
   test("a program that runs past its time after the body is sent is given up on", async () => {
@@ -210,6 +226,7 @@ function scadRequest() {
     accept: "model/stl",
     refusal: "render" as const,
     tooLarge: "too large",
+    answer: { path: join(dir, "render.stl") },
   };
 }
 
@@ -246,14 +263,28 @@ describe("a slicer that cannot render right now", () => {
     expect(isRetryable(error)).toBe(true);
   });
 
-  test("a 422 saying OpenSCAD renders are off is the slicer's fault, not the file's", async () => {
-    const message = `${SANDBOX_OFF_PREFIX} the sandbox self-test failed (the probe was readable).`;
+  test("a 503 sandbox_off is the slicer's sandbox, not the file's: SandboxOff with its reason", async () => {
+    const baseUrl = await answering(503, {
+      error: "sandbox_off",
+      reason: "old_kernel",
+      detail: "the kernel is too old",
+    });
+    const error = await failure(postRender(target(baseUrl), scadRequest()));
+    expect(error).toBeInstanceOf(SandboxOff);
+    expect((error as SandboxOff).reason).toBe("old_kernel");
+    expect(error).not.toBeInstanceOf(SlicerDown);
+    expect(error).not.toBeInstanceOf(RenderFailed);
+    expect(isRetryable(error)).toBe(false);
+  });
+
+  test("a 422 render_failed is always RenderFailed, whatever its message", async () => {
+    const message =
+      "OpenSCAD renders are off: the sandbox self-test failed (the probe was readable).";
     const baseUrl = await answering(422, { error: "render_failed", message });
     const error = await failure(postRender(target(baseUrl), scadRequest()));
-    expect(error).toBeInstanceOf(SlicerDown);
-    expect(error).not.toBeInstanceOf(RenderFailed);
-    expect((error as Error).message).toContain(message);
-    expect(isRetryable(error)).toBe(false);
+    expect(error).toBeInstanceOf(RenderFailed);
+    expect(error).not.toBeInstanceOf(SlicerDown);
+    expect((error as Error).message).toBe(message);
   });
 
   test("OpenSCAD's own render error is still the file's: RenderFailed with its message", async () => {
@@ -264,11 +295,34 @@ describe("a slicer that cannot render right now", () => {
     expect((error as Error).message).toBe(message);
   });
 
-  test("the sandbox-off prefix is the one the slicer writes in apps/slicer/src/server.ts", async () => {
+  // Issue #316: /v1/stl/png is new in this release. A slicer image older
+  // than the app answers it 404 not_found. That says nothing about the file,
+  // so the job waits for the slicer, as for one that is down, instead of
+  // marking every STL failed until it is uploaded again.
+  test("a 404 from a render route is a slicer older than the app: down, not the file's fault", async () => {
+    const baseUrl = await answering(404, { error: "not_found" });
+    const error = await failure(
+      postRender(target(baseUrl), {
+        route: "/v1/stl/png",
+        body: Buffer.from("solid x\nendsolid x\n"),
+        contentType: "application/octet-stream",
+        accept: "image/png",
+        refusal: "render",
+        tooLarge: "too large",
+        answer: { path: join(dir, "preview.png") },
+      }),
+    );
+    expect(error).toBeInstanceOf(SlicerDown);
+    expect((error as Error).message).toContain("/v1/stl/png");
+    expect(isRetryable(error)).toBe(false);
+  });
+
+  test("the slicer answers sandbox_off in apps/slicer/src/server.ts", async () => {
     const slicerServer = await readFile(
       fileURLToPath(new URL("../../../../slicer/src/server.ts", import.meta.url)),
       "utf8",
     );
-    expect(slicerServer).toContain(`message: \`${SANDBOX_OFF_PREFIX} `);
+    expect(slicerServer).toContain('error: "sandbox_off"');
+    expect(slicerServer).not.toContain("OpenSCAD renders are off:");
   });
 });

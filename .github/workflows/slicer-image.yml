@@ -1,9 +1,13 @@
-# Slicer image workflow (build plan Task 25; AC-037, AC-036 image side).
+# Slicer image workflow: a daily check keeps the slicer image on the newest
+# stable OrcaSlicer, publishing only after a smoke slice passes, and every image
+# names the Orca version inside it so the app can re-estimate when it changes.
 #
 # Keeps ghcr.io/jonathanmcohen/platehouse-slicer current with OrcaSlicer:
 #
 #   detect: pick the Orca version -> resolve its pins -> check the registry
-#   build:  build (load) -> smoke slice -> Trivy report (never fails)
+#   build:  OCI labels -> build (load) -> smoke slice -> whole container suite
+#           -> check the labels
+#           -> Trivy report (never fails)
 #           -> push by digest -> check the pushed image is the one tested
 #           -> tag orca-X.Y.Z, the run tag and, on a run from a release
 #           tag, the release's version tag -> move stable
@@ -18,23 +22,26 @@
 #   the daily run asks the registry.
 # - on a pushed release tag v*.*.*, at the latest Orca release, so a change to
 #   the slicer wrapper ships with the release. It always builds. A prerelease
-#   tag (v0.1.0-rc.1) publishes orca-X.Y.Z and its run tag but
-#   leaves stable alone (the maintainer, 2026-11-15); a plain vX.Y.Z tag moves it. The
-#   daily run never promotes such a version, as its orca-X.Y.Z exists; the
-#   run's summary says so.
+#   tag (v0.1.0-rc.1) publishes only its run tag and its X.Y.Z-rc.N version
+#   tag, and leaves orca-X.Y.Z and stable alone (the maintainer, 2026-11-15;
+#   issue #435); so does a plain vX.Y.Z tag that is not the highest release
+#   (a backport such as v0.1.2 after v0.2.0): it publishes only its run tag
+#   and its version tag. Only the highest plain release moves both (#450). The next daily run builds
+#   that Orca version when its orca-X.Y.Z does not exist yet, and moves both;
+#   the run's summary says so.
 # - by hand (workflow_dispatch), at orca_version when given, else the latest
 #   release. It must be started from main or a release tag (like release.yml,
 #   it refuses any other branch before anything is built, so unreviewed slicer
-#   code never reaches stable); from main or a plain vX.Y.Z tag it always
-#   builds and moves stable, from a prerelease tag it leaves stable alone, as
-#   a push of that tag would. force_fail fails the smoke
+#   code never reaches stable); from main or the highest plain vX.Y.Z tag it
+#   always builds and moves stable, from a prerelease tag or a backport tag it
+#   leaves orca-X.Y.Z and stable alone, as a push of that tag would. force_fail fails the smoke
 #   slice on purpose after it ran, to test the failure path.
 #   GitHub runs a schedule or a dispatch only for a workflow file on the
 #   default branch, so neither works until this file reaches main.
 #
-# The pins. apps/slicer/Dockerfile pins Orca 2.5.0 by the AppImage's sha256
-# (ORCA_SHA256) and the commit its tag points to (ORCA_SRC_SHA, for the
-# profile JSON). For the version picked here both are resolved again: the
+# The pins. apps/slicer/Dockerfile pins its Orca version (ORCA_VERSION) by
+# the AppImage's sha256 (ORCA_SHA256) and the commit its tag points to
+# (ORCA_SRC_SHA, for the profile JSON). For the version picked here both are resolved again: the
 # sha256 from the release asset's digest in GitHub's API, the commit from git
 # ls-remote (the peeled commit of an annotated tag, else the tag's own), and
 # both are passed as build args with ORCA_VERSION. If either cannot be
@@ -55,14 +62,14 @@
 # the image a second time, by digest and with no tag, and its manifest digest
 # (docker/build-push-action's digest output, never imageid; PR #217) must
 # equal the tested build's, or the job fails before any tag. Then orca-X.Y.Z
-# and the run tag, orca-X.Y.Z-r<run number> (orca-X.Y.Z-r<run number>.<attempt>
+# (not on a prerelease tag) and the run tag, orca-X.Y.Z-r<run number> (orca-X.Y.Z-r<run number>.<attempt>
 # on a re-run, which keeps the run number; issue #221), are pointed at that
 # digest and read back, and
-# only then stable (not on a prerelease tag).
+# only then stable (neither orca-X.Y.Z nor stable on a prerelease tag or a backport tag).
 #
 # The release's version tag. A run started from a release tag vX.Y.Z or
 # vX.Y.Z-rc.N (its push, a re-run of it, or a run by hand from that tag) also
-# tags the image X.Y.Z or X.Y.Z-rc.N, in the same create as the orca tags,
+# tags the image X.Y.Z or X.Y.Z-rc.N, in the same create as the run tag,
 # so the build made for a release can be found afterwards by the same name as
 # the app image's platehouse:X.Y.Z. Daily runs and runs from main tag no
 # version. This workflow never moves rc: .github/workflows/rc-tag.yml runs
@@ -79,17 +86,17 @@
 # tag. A failure inside it (a readback, or a passing GHCR error) can leave
 # orca-X.Y.Z, and stable if it had got that far, at the new digest; the step
 # records the tags it reached and the failure issue lists them. The daily run
-# then sees orca-X.Y.Z and never retries, so the issue says to run by hand.
+# then sees orca-X.Y.Z (if it was made) and never retries, so the issue says to run by hand.
 #
-# Rollback: README.md, "Slicer image". Point stable back at the previous
+# Rollback: RELEASING.md, "Slicer image". Point stable back at the previous
 # orca-X.Y.Z with the same imagetools command.
 #
-# The image is amd64 only (the plan: OpenSCAD has no current arm64 build).
-# Actions are pinned to the exact tags release.yml uses. Every job after detect
+# The image is amd64 only (OpenSCAD has no current arm64 build).
+# Actions are pinned to full commit SHAs, with the release tag as a comment (#420). Every job after detect
 # carries an explicit !cancelled() condition, because a skip propagates down a
-# needs chain unless a job says otherwise. Buildx provenance is off (AC-094: no build
-# attestation). Each job gets only the permissions it uses; together they are
-# the plan's contents: read, packages: write and issues: write.
+# needs chain unless a job says otherwise. Buildx provenance is off (no build
+# attestation, by the release rules). Each job gets only the permissions it uses;
+# together they are contents: read, packages: write and issues: write.
 name: slicer-image
 
 on:
@@ -114,10 +121,13 @@ on:
 permissions:
   contents: read
 
-# Never cancel a publish part way; a second run waits for the first, so two
-# runs never move stable at the same time.
+# Never cancel a publish part way. Each ref has its own group, so a release tag's
+# run never waits behind, or is replaced as the pending run by, a scheduled or
+# manual run on another ref (issue #451): GitHub keeps one run going and one
+# pending per group. Two runs still never move stable together: the stable job
+# below has a group of its own, shared by every ref.
 concurrency:
-  group: slicer-image
+  group: slicer-image-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -130,8 +140,47 @@ defaults:
     shell: bash
 
 jobs:
+  # A run from a tag (a tag push, or a dispatch on a tag) publishes only a
+  # commit on main or a release/ branch that has a successful ci run, as
+  # release.yml's gate requires (issue #450). Daily and main runs skip it.
+  gate:
+    name: Check the tag's commit
+    if: ${{ github.ref_type == 'tag' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    # actions: read lets the job list the ci runs of the tagged commit.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The commit is on main or a release branch
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          if ! git branch -r --contains "$SHA" | grep -Eq '^[[:space:]]*origin/(main$|release/)'; then
+            echo "::error::${SHA} is on neither origin/main nor an origin/release/ branch; nothing is built"
+            exit 1
+          fi
+          echo "${SHA} is on a branch that takes releases"
+
+      - name: CI passed for the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: node .github/scripts/release-gate.mjs ci "$SHA"
+
   detect:
     name: Find the OrcaSlicer release to build
+    needs: gate
+    # The gate is skipped on a daily or main run, and must have passed on a tag run.
+    if: ${{ !cancelled() && (needs.gate.result == 'success' || needs.gate.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -140,13 +189,14 @@ jobs:
     outputs:
       version: ${{ steps.pick.outputs.version }}
       stable: ${{ steps.pick.outputs.stable }}
+      orca: ${{ steps.pick.outputs.orca }}
       release: ${{ steps.pick.outputs.release }}
       orca_sha256: ${{ steps.pins.outputs.orca_sha256 }}
       orca_src_sha: ${{ steps.pins.outputs.orca_src_sha }}
       build: ${{ steps.registry.outputs.build }}
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -164,8 +214,11 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
           {
-            # stable moves on daily and manual runs and on a plain vX.Y.Z tag;
-            # a prerelease tag publishes the orca tags and leaves stable alone.
+            # stable moves on daily and manual runs and on a plain vX.Y.Z tag that
+            # is the highest release (a backport leaves it alone);
+            # a prerelease tag leaves stable alone, and orca-X.Y.Z too, which
+            # deployments pin: only the run tag and the release's version are
+            # published for it. orca-X.Y.Z moves on every other run.
             # A run by hand builds apps/slicer from the ref it was started on,
             # so it must start from main or a release tag, as release.yml's
             # gate requires: a dispatch from any other branch would publish
@@ -174,6 +227,7 @@ jobs:
             # (X.Y.Z or X.Y.Z-rc.1 for v0.1.0-rc.1), tagged beside the orca
             # tags; empty for a daily run or a run from main.
             stable=true
+            orca=true
             release=""
             if [ "$EVENT" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ] && [[ "$REF" != refs/tags/* ]]; then
               echo "::error::${REF} is not main or a release tag; a run by hand must start from main or a vX.Y.Z tag, so nothing is built"
@@ -187,12 +241,26 @@ jobs:
               fi
               if [[ ! "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                 stable=false
-                echo "${REF#refs/tags/} is a prerelease tag: stable will not move"
+                orca=false
+                echo "${REF#refs/tags/} is a prerelease tag: stable and orca-X.Y.Z will not move"
+              fi
+              if [ "$stable" = "true" ]; then
+                # stable only moves to the highest stable tag in the repository
+                # (checked again by the stable job, after the build), so a
+                # backport such as v0.1.2 after v0.2.0 leaves it alone.
+                refs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v" --jq '.[].ref')"
+                latest="$(printf '%s\n' "$refs" | sed -n 's#^refs/tags/##p' | node .github/scripts/release-gate.mjs latest "${REF#refs/tags/}")"
+                if [ "$latest" != "true" ]; then
+                  stable=false
+                  orca=false
+                  echo "${REF#refs/tags/} is not the highest release: stable and orca-X.Y.Z will not move"
+                fi
               fi
               release="${REF#refs/tags/v}"
               echo "The image will also be tagged ${release}, the release's version"
             fi
             echo "stable=${stable}" >>"$GITHUB_OUTPUT"
+            echo "orca=${orca}" >>"$GITHUB_OUTPUT"
             echo "release=${release}" >>"$GITHUB_OUTPUT"
             if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$INPUT_VERSION" ]; then
               if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -283,7 +351,7 @@ jobs:
       - name: Log in to GHCR
         id: login
         if: ${{ github.event_name == 'schedule' }}
-        uses: docker/login-action@v4.8.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -367,7 +435,7 @@ jobs:
 
       - name: Upload the log tail
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: failure-detect
           path: failure/detect.txt
@@ -394,15 +462,15 @@ jobs:
       BUILDKIT_PROGRESS: plain
     steps:
       - name: Check out
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - name: Set up Node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -411,13 +479,37 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4.4.1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The standard OCI labels, as release.yml sets them on the app image
+      # (issue #317): version, revision, source, created, title, description,
+      # url and licenses, so a running slicer says which build it is. Without
+      # them the image showed the Ubuntu base's version, 24.04, and no
+      # revision (the 0.1.1-rc.1 live check). Only the labels are used; the
+      # tags come from the tag step. The version is the release's on a run
+      # from a release tag (the semver entry, as in release.yml: v0.1.1-rc.2
+      # gives 0.1.1-rc.2) and the Orca version on every other run (the raw
+      # entry, enabled only when detect found no release tag). The title and
+      # description are the slicer's own, not the repository's. Both builds
+      # take these labels from this one step, so the pushed image still
+      # matches the tested one.
+      - name: Labels for this image
+        id: labels
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=${{ needs.detect.outputs.version }},enable=${{ needs.detect.outputs.release == '' }}
+          labels: |
+            org.opencontainers.image.title=platehouse-slicer
+            org.opencontainers.image.description=OrcaSlicer and OpenSCAD behind the Platehouse slicer API
 
       # 1) The image for this Orca version, loaded into the runner's Docker so
       #    the smoke slice can run it.
       - name: Build (load)
         id: load
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: apps/slicer/Dockerfile
@@ -425,6 +517,7 @@ jobs:
           load: true
           provenance: false
           tags: ${{ env.LOCAL }}
+          labels: ${{ steps.labels.outputs.labels }}
           build-args: |
             ORCA_VERSION=${{ needs.detect.outputs.version }}
             ORCA_SHA256=${{ needs.detect.outputs.orca_sha256 }}
@@ -472,6 +565,82 @@ jobs:
             echo "The smoke slice passed for OrcaSlicer ${VERSION}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/smoke.log"
 
+      # 2b) The whole container suite against the same image, so a new
+      #     OrcaSlicer version is checked by every container test (refusal
+      #     codes, limits, STEP, renders) and not only the smoke slice. It runs
+      #     after the smoke step, so force_fail works as before, and before
+      #     anything is scanned, pushed or tagged: a failure publishes nothing.
+      #     The STEP sample is fetched as ci.yml fetches it.
+      #     EXPECTED_ORCA_VERSION is the version this run built, which the
+      #     health and profiles tests check the image reports; without it
+      #     they expect the Dockerfile's own pin, as in ci.yml.
+      - name: Fetch the STEP sample
+        env:
+          NIST_URL: https://www.nist.gov/system/files/documents/noindex/2024/06/19/NIST-PMI-STEP-Files.zip
+          NIST_SHA256: 8fa78429e6d8d9b0d7681d223b6aa9ec98c3772185c55b1a0e3679b21c181911
+          NIST_STEP_SHA256: e081d518484d5c708c6729353237f94a7d97da2b74a10d60d4c0d146d67a5855
+        run: |
+          dir="$RUNNER_TEMP/step"
+          mkdir -p "$dir"
+          curl -fsSL --retry 3 -o "$dir/nist.zip" "$NIST_URL"
+          echo "$NIST_SHA256  $dir/nist.zip" | sha256sum -c -
+          unzip -j -q "$dir/nist.zip" 'NIST-PMI-STEP-Files/AP203 geometry only/nist_ctc_01_asme1_rd.stp' -d "$dir"
+          echo "$NIST_STEP_SHA256  $dir/nist_ctc_01_asme1_rd.stp" | sha256sum -c -
+          echo "STEP_SAMPLE=$dir/nist_ctc_01_asme1_rd.stp" >>"$GITHUB_ENV"
+      - name: Whole container suite
+        id: suite
+        env:
+          SLICER_IMAGE: ${{ env.LOCAL }}
+          SLICER_IMAGE_PREBUILT: "1"
+          EXPECTED_ORCA_VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            status=0
+            pnpm exec vitest run --project container --reporter=default --reporter=json --outputFile=suite-report.json || status=$?
+            if [ -s suite-report.json ]; then
+              total="$(jq '.numTotalTests' suite-report.json)"
+              skipped="$(jq '.numPendingTests + .numTodoTests' suite-report.json)"
+              ran=$((total - skipped))
+              echo "suite: ${ran} tests ran, ${skipped} skipped, ${total} collected"
+            fi
+            if [ "$status" -ne 0 ]; then
+              echo "::error::the container suite failed (vitest exit ${status}); its output above names the test"
+              exit "$status"
+            fi
+            if [ ! -s suite-report.json ]; then
+              echo "::error::No tests ran (vitest wrote no report)"
+              exit 1
+            fi
+            if [ "$ran" -eq 0 ]; then
+              echo "::error::No tests ran"
+              exit 1
+            fi
+            echo "The whole container suite passed"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/suite.log"
+
+      # The tested image carries the labels, before anything is pushed: the
+      # version the run should have (the release's on a run from a release
+      # tag, else the Orca version), this commit and this repository, and the
+      # rest present (docker/check-image-labels.sh, as release.yml runs it).
+      # The push below has the same digest as this build, so it has the same
+      # labels.
+      - name: Check the labels
+        id: labelcheck
+        env:
+          LABELS_VERSION: ${{ steps.labels.outputs.version }}
+          RELEASE: ${{ needs.detect.outputs.release }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            want="${RELEASE:-$VERSION}"
+            if [ "$LABELS_VERSION" != "$want" ]; then
+              echo "::error::metadata-action gave the version '${LABELS_VERSION}', not '${want}' (the release's version on a run from a release tag, else the Orca version)"
+              exit 1
+            fi
+            docker/check-image-labels.sh local "$LOCAL" "$want" "$GITHUB_SHA" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/labelcheck.log"
+
       # A report only (the maintainer, 2026-11-15): fixable HIGH and CRITICAL findings in
       # the built image, as a table in this log, before anything is pushed.
       # It never fails the job: exit-code 0, and continue-on-error covers the
@@ -481,7 +650,7 @@ jobs:
       # context.
       - name: Trivy report (informational, does not fail the job)
         continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.LOCAL }}
           severity: HIGH,CRITICAL
@@ -493,7 +662,7 @@ jobs:
 
       - name: Log in to GHCR
         id: login
-        uses: docker/login-action@v4.8.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -503,13 +672,14 @@ jobs:
       #    should be a cache hit; step 4 checks that it was.
       - name: Push by digest
         id: push
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: apps/slicer/Dockerfile
           platforms: linux/amd64
           provenance: false
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: ${{ steps.labels.outputs.labels }}
           build-args: |
             ORCA_VERSION=${{ needs.detect.outputs.version }}
             ORCA_SHA256=${{ needs.detect.outputs.orca_sha256 }}
@@ -545,18 +715,19 @@ jobs:
             echo "The pushed image is the tested image, manifest ${TESTED}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/check.log"
 
-      # 5) The version tags (orca-X.Y.Z, the run tag and, on a run from a
-      #    release tag, the release's version RELEASE), read back; then
-      #    stable, read back, unless this is a prerelease tag's run
-      #    (MOVE_STABLE false). A carbon copy each (--prefer-index=false), so
-      #    every tag is the tested digest.
-      - name: Tag the image and move stable
+      # 5) The version tags (orca-X.Y.Z unless this is a prerelease tag's run
+      #    (MOVE_ORCA false), the run tag and, on a run from a release tag,
+      #    the release's version RELEASE), read back. A carbon copy each
+      #    (--prefer-index=false), so every tag is the tested digest. stable
+      #    moves in the stable job after this one (issue #451).
+      - name: Tag the image
         id: tag
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
           RUN_NUMBER: ${{ github.run_number }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           MOVE_STABLE: ${{ needs.detect.outputs.stable }}
+          MOVE_ORCA: ${{ needs.detect.outputs.orca }}
           RELEASE: ${{ needs.detect.outputs.release }}
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
@@ -574,8 +745,14 @@ jobs:
             # leaving the first attempt's tag on the image it named.
             run_tag="orca-${VERSION}-r${RUN_NUMBER}"
             if [ "$RUN_ATTEMPT" -gt 1 ]; then run_tag="${run_tag}.${RUN_ATTEMPT}"; fi
+            # The stable job runs only on "true"; an empty or odd decision would
+            # skip it silently, so it fails here, before any tag.
             if [ "$MOVE_STABLE" != "true" ] && [ "$MOVE_STABLE" != "false" ]; then
               echo "::error::detect gave no stable decision ('${MOVE_STABLE}'); nothing is tagged"
+              exit 1
+            fi
+            if [ "$MOVE_ORCA" != "true" ] && [ "$MOVE_ORCA" != "false" ]; then
+              echo "::error::detect gave no orca decision ('${MOVE_ORCA}'); nothing is tagged"
               exit 1
             fi
             # RELEASE is empty, or the semver version of the release tag the
@@ -591,12 +768,16 @@ jobs:
             # tagged: the tags this step has pointed, or is pointing, at the
             # digest, for the failure issue. Written before each create, so a
             # create or readback that fails part way still names its tags.
-            tags="orca-${VERSION}, ${run_tag}"
-            release_args=()
-            if [ -n "$RELEASE" ]; then
-              tags="${tags}, ${RELEASE}"
-              release_args=(-t "${IMAGE}:${RELEASE}")
-            fi
+            # names: the tags of this run, in the order they are made and read
+            # back; orca-X.Y.Z only when MOVE_ORCA is true.
+            names=()
+            if [ "$MOVE_ORCA" = "true" ]; then names+=("orca-${VERSION}"); fi
+            names+=("$run_tag")
+            if [ -n "$RELEASE" ]; then names+=("$RELEASE"); fi
+            tags="$(printf ', %s' "${names[@]}")"
+            tags="${tags:2}"
+            create_args=()
+            for name in "${names[@]}"; do create_args+=(-t "${IMAGE}:${name}"); done
             echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
             readback() {
               local got
@@ -606,26 +787,15 @@ jobs:
                 exit 1
               fi
             }
-            docker buildx imagetools create --prefer-index=false \
-              -t "${IMAGE}:orca-${VERSION}" -t "${IMAGE}:${run_tag}" "${release_args[@]}" "$src"
-            readback "${IMAGE}:orca-${VERSION}"
-            readback "${IMAGE}:${run_tag}"
-            if [ -n "$RELEASE" ]; then readback "${IMAGE}:${RELEASE}"; fi
-            if [ "$MOVE_STABLE" = "true" ]; then
-              tags="${tags}, stable"
-              echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
-              docker buildx imagetools create --prefer-index=false -t "${IMAGE}:stable" "$src"
-              readback "${IMAGE}:stable"
-            else
-              echo "A prerelease tag's run: stable is left where it was"
-            fi
+            docker buildx imagetools create --prefer-index=false "${create_args[@]}" "$src"
+            for name in "${names[@]}"; do readback "${IMAGE}:${name}"; done
             {
               echo "### Published ${IMAGE} for OrcaSlicer ${VERSION}"
               echo ""
               echo "- digest: \`${DIGEST}\`"
               echo "- tags: ${tags}"
-              if [ "$MOVE_STABLE" != "true" ]; then
-                echo "- stable not moved (prerelease tag). The daily run will not move it either: it sees orca-${VERSION} and builds nothing. stable reaches this version on a plain release tag or a run by hand."
+              if [ "$MOVE_ORCA" != "true" ]; then
+                echo "- orca-${VERSION} and stable not moved (a prerelease tag, or a release below the highest one). The next daily run builds orca-${VERSION} if it does not exist yet and moves both; the highest plain release tag or a run by hand moves them too."
               fi
             } >>"$GITHUB_STEP_SUMMARY"
             echo "Published ${tags} at ${DIGEST}"
@@ -638,8 +808,11 @@ jobs:
         env:
           JOB: build
           OUTCOMES: >-
+            labels=${{ steps.labels.outcome }}
             load=${{ steps.load.outcome }}
             smoke=${{ steps.smoke.outcome }}
+            suite=${{ steps.suite.outcome }}
+            labelcheck=${{ steps.labelcheck.outcome }}
             login=${{ steps.login.outcome }}
             push=${{ steps.push.outcome }}
             check=${{ steps.check.outcome }}
@@ -653,12 +826,15 @@ jobs:
             fi
           done
           case "$failed" in
+            labels) name="Labels for this image" ;;
             load) name="Build (load)" ;;
             smoke) name="Smoke slice" ;;
+            suite) name="Whole container suite" ;;
+            labelcheck) name="Check the labels" ;;
             login) name="Log in to GHCR" ;;
             push) name="Push by digest" ;;
             check) name="Check the pushed image is the one tested" ;;
-            tag) name="Tag the image and move stable" ;;
+            tag) name="Tag the image" ;;
             *) name="an unnamed step of the build job (checkout, setup or install)" ;;
           esac
           mkdir -p failure
@@ -677,17 +853,129 @@ jobs:
 
       - name: Upload the log tail
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: failure-build
           path: failure/build.txt
           if-no-files-found: ignore
           retention-days: 7
 
+  # Moves stable to the digest the build tested and tagged, in a short job of
+  # its own so the group that serialises it holds nothing else (issue #451).
+  # It runs only after a successful build, and only when detect said stable
+  # moves: not on a prerelease tag's run. A re-run of the failed job moves it
+  # again at the same digest.
+  stable:
+    name: Move stable
+    needs: [detect, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.detect.outputs.stable == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: slicer-image-stable
+      cancel-in-progress: false
+    # Read by the failure issue: the build's tags plus stable, set before the
+    # create, so a move that fails part way still names stable.
+    outputs:
+      tagged: ${{ steps.move.outputs.tagged }}
+    steps:
+      # A tag run checks again, from the live tags, that no higher release
+      # has been pushed since detect looked: the build takes a while, and a
+      # lower tag must never move stable after a higher one has.
+      - name: Check out
+        if: ${{ github.ref_type == 'tag' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Still the highest release
+        id: recheck
+        if: ${{ github.ref_type == 'tag' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          refs="$(gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" --jq '.[].ref')"
+          latest="$(printf '%s\n' "$refs" | sed -n 's#^refs/tags/##p' | node .github/scripts/release-gate.mjs latest "$TAG")"
+          if [ "$latest" = "true" ]; then
+            echo "move=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "move=false" >>"$GITHUB_OUTPUT"
+            echo "${TAG} is no longer the highest release: stable is not moved"
+          fi
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        id: login
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move stable
+        id: move
+        if: ${{ steps.recheck.outputs.move != 'false' }}
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+          BUILD_TAGGED: ${{ needs.build.outputs.tagged }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::the build returned no digest (${DIGEST:-none}); stable is not moved"
+              exit 1
+            fi
+            src="${IMAGE}@${DIGEST}"
+            echo "tagged=${BUILD_TAGGED}, stable" >>"$GITHUB_OUTPUT"
+            docker buildx imagetools create --prefer-index=false -t "${IMAGE}:stable" "$src"
+            got="$(docker buildx imagetools inspect "${IMAGE}:stable" --format '{{.Manifest.Digest}}')"
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::${IMAGE}:stable is ${got}, not ${DIGEST}"
+              exit 1
+            fi
+            echo "- stable now points at \`${DIGEST}\`" >>"$GITHUB_STEP_SUMMARY"
+            echo "stable now points at ${DIGEST}"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/move.log"
+
+      - name: Keep the failing step's log tail
+        if: ${{ failure() }}
+        run: |
+          mkdir -p failure
+          {
+            echo "step: Move stable"
+            if [ -s "$RUNNER_TEMP/logs/move.log" ]; then
+              tail -n 80 "$RUNNER_TEMP/logs/move.log"
+            else
+              echo "(no log was kept for this step; see the run's log)"
+            fi
+          } >failure/stable.txt
+          cat failure/stable.txt
+
+      - name: Upload the log tail
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: failure-stable
+          path: failure/stable.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Opens an issue when a job failed, and, on a push (a release tag), when one
+  # was cancelled: a tag run whose build or stable move was cancelled left the
+  # release without its slicer image and nothing else says so (issue #451).
+  # A run cancelled by hand reports too; the issue says which job.
   report-failure:
     name: Open an issue on failure
-    needs: [detect, build]
-    if: ${{ !cancelled() && (needs.detect.result == 'failure' || needs.build.result == 'failure') }}
+    needs: [gate, detect, build, stable]
+    if: ${{ always() && (needs.gate.result == 'failure' || needs.detect.result == 'failure' || needs.build.result == 'failure' || needs.stable.result == 'failure' || (github.event_name == 'push' && (needs.gate.result == 'cancelled' || needs.detect.result == 'cancelled' || needs.build.result == 'cancelled' || needs.stable.result == 'cancelled'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -697,7 +985,7 @@ jobs:
       # says so and links the run.
       - name: Download the log tail
         continue-on-error: true
-        uses: actions/download-artifact@v8.0.2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: failure-*
           path: failure
@@ -712,7 +1000,10 @@ jobs:
           VERSION: ${{ needs.detect.outputs.version }}
           INPUT_VERSION: ${{ inputs.orca_version }}
           EVENT: ${{ github.event_name }}
-          TAGGED: ${{ needs.build.outputs.tagged }}
+          TAGGED: ${{ needs.stable.outputs.tagged || needs.build.outputs.tagged }}
+          CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}
+          GATE_RESULT: ${{ needs.gate.result }}
+          REF_NAME: ${{ github.ref_name }}
           DIGEST: ${{ needs.build.outputs.digest }}
           STABLE: ${{ needs.detect.outputs.stable }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -721,8 +1012,15 @@ jobs:
           if [ -z "$version" ] && [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then version="$INPUT_VERSION"; fi
           if [ -z "$version" ]; then version="(version not found)"; fi
           title="Slicer image failed for OrcaSlicer ${version}"
+          # The release gate refusing a tag is not a failed Orca build: its
+          # issue is titled for the tag and says how to get the gate to pass.
+          gate_refused=false
+          if [ "$GATE_RESULT" = "failure" ] || [ "$GATE_RESULT" = "cancelled" ]; then
+            gate_refused=true
+            title="Slicer image release gate refused ${REF_NAME}"
+          fi
           tail=""
-          for f in failure/detect.txt failure/build.txt; do
+          for f in failure/detect.txt failure/build.txt failure/stable.txt; do
             if [ -s "$f" ]; then tail="$(cat "$f")"; fi
           done
           if [ -z "$tail" ]; then
@@ -730,9 +1028,20 @@ jobs:
           fi
           # Keep the code block intact and the body under GitHub's limit.
           tail="$(printf '%s\n' "$tail" | sed 's/```/'"'''"'/g' | tail -c 50000)"
-          # TAGGED is empty unless the tag step began. Once it has, orca-X.Y.Z
-          # may exist, and the daily run then reports Up to date for this
-          # version and never builds it again, so it cannot be the retry.
+          # TAGGED is empty unless the tag step began. Once it has, a run that
+          # moves orca-X.Y.Z (STABLE true) may have left it, and the daily run
+          # then reports Up to date for this version and never builds it again,
+          # so it cannot be the retry. A prerelease tag's run (STABLE false)
+          # never creates orca-X.Y.Z, so the daily run still builds it if absent.
+          if [ "$gate_refused" = "true" ]; then
+            {
+              echo "The slicer image workflow's release gate refused ${REF_NAME} (${EVENT} run), so nothing was built or pushed and no tag was created or moved. The gate refuses when the tagged commit is not on main or a release/ branch, when it has no successful push or dispatch ci run, or when the check did not finish."
+              echo ""
+              echo "Run: ${RUN_URL}"
+              echo ""
+              echo "To fix: read the gate job's log for which of these it was. If the commit has no green ci run, get one with "'`gh workflow run ci.yml --ref <branch at that commit>`'" if needed, wait for it to pass, then re-run the failed jobs of this run from its page (Re-run failed jobs)."
+            } >body.md
+          else
           {
             if [ -z "$TAGGED" ]; then
               echo "The slicer image workflow failed for OrcaSlicer ${version} (${EVENT} run). No tag was created or moved, so stable still points at the last image that passed; nothing needs rolling back."
@@ -740,10 +1049,14 @@ jobs:
               echo "The slicer image workflow failed for OrcaSlicer ${version} (${EVENT} run) while tagging. These tags had been pointed, or were being pointed, at ${DIGEST:-the pushed digest}: ${TAGGED}. Check each with docker buildx imagetools inspect before relying on it."
               echo ""
               if [[ ", ${TAGGED}," == *", stable,"* ]]; then
-                echo "stable may now point at that digest. If it should not, roll it back (README.md, Rolling the slicer back)."
+                echo "stable may now point at that digest. If it should not, roll it back (RELEASING.md, Rolling the slicer back)."
               else
                 echo "stable was not touched and still points at the last image that passed."
               fi
+            fi
+            if [ "$CANCELLED" = "true" ]; then
+              echo ""
+              echo "A job of this run was cancelled, by a person or by GitHub, so the image for this version may be missing from the registry. Re-run the cancelled jobs from the run's page, or run the workflow again (Actions, slicer-image, Run workflow), before relying on this release's slicer image."
             fi
             echo ""
             echo "rc is not moved by this workflow: the rc-tag workflow points it at the newest version with both images published after every run of slicer-image or release, so rc fixes itself on the next successful run of either workflow, or when rc-tag is run by hand (Actions, rc-tag, Run workflow)."
@@ -762,7 +1075,7 @@ jobs:
               # Only the tag step sets TAGGED, so detect succeeded. Re-run failed jobs
               # re-runs build and the jobs after it and keeps detect's outputs
               # (version, pins, stable=false); Re-run all jobs would run detect again.
-              echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run failed jobs). That re-runs the build job and the jobs after it and keeps detect's outputs, so it builds ${version} again and leaves stable alone; a run by hand would move stable. Use Re-run failed jobs, not Re-run all jobs: Re-run all jobs runs detect again, which reads OrcaSlicer's latest release again and builds a newer version instead if Orca has shipped one since this run. The re-run gets its own "'`orca-'"${version}"'-r<run>.<attempt>`'" tag and leaves this run's tag alone. The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date."
+              echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run failed jobs). That re-runs the build job and the jobs after it and keeps detect's outputs, so it builds ${version} again and leaves stable alone; a run by hand would move stable. Use Re-run failed jobs, not Re-run all jobs: Re-run all jobs runs detect again, which reads OrcaSlicer's latest release again and builds a newer version instead if Orca has shipped one since this run. The re-run gets its own "'`orca-'"${version}"'-r<run>.<attempt>`'" tag and leaves this run's tag alone. This run does not move orca-${version}, so the daily run builds ${version} itself if orca-${version} is not in the registry yet."
             elif [ -n "$TAGGED" ]; then
               echo "To fix: read the run's log, fix the cause, then run the workflow by hand (Actions, slicer-image, Run workflow, orca_version ${version}). The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date and never moves stable to this version."
             elif [ "$EVENT" = "schedule" ]; then
@@ -773,6 +1086,7 @@ jobs:
               echo "To fix: read the run's log, fix the cause, then run the workflow again (Actions, slicer-image, Run workflow). The next daily run retries this version only if ${orca_tag} is not in the registry yet."
             fi
           } >body.md
+          fi
           existing="$(gh issue list --repo "$REPO" --state open --limit 200 --json number,title | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "$REPO" --body-file body.md

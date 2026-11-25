@@ -2,8 +2,8 @@
 // against a migrated Postgres 17 and a started pg-boss on the same database,
 // so its queries read the real schema and pg-boss's real job table. The
 // slicer is a fake health() (it is asked for nothing else), and the inbox's
-// failed/ folder is a temporary folder. Sessions are in memory (Task 15's
-// test support). Every model, file and message here is synthetic.
+// failed/ folder is a temporary folder. Sessions are in memory (the login
+// tests' support). Every model, file and message here is synthetic.
 //
 // What it pins:
 // - an empty library answers zeros, no events and nothing working;
@@ -58,7 +58,14 @@ const X1C = "Bambu Lab X1 Carbon 0.4 nozzle";
 const ORCA = "2.5.0";
 const OPENSCAD = "2026.10.01";
 
-const HEALTHY: Health = { contract: 1, orca: ORCA, openscad: OPENSCAD, busy: false } as Health;
+const HEALTHY: Health = {
+  contract: 2,
+  orca: ORCA,
+  openscad: OPENSCAD,
+  busy: false,
+  sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+  timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+};
 
 let pgc: TestPostgres;
 let auth: TestAuth;
@@ -176,7 +183,14 @@ async function addFile(
   db: Kysely<DB>,
   modelId: string,
   kind: FileKind,
-  opts: { size?: number; derivedStatus?: string; derivedMessage?: string; name?: string } = {},
+  opts: {
+    size?: number;
+    derivedStatus?: string;
+    derivedMessage?: string;
+    previewStatus?: string;
+    previewMessage?: string;
+    name?: string;
+  } = {},
 ): Promise<string> {
   const size = opts.size ?? 100;
   const blobId = await addBlob(db, modelId, size);
@@ -195,6 +209,8 @@ async function addFile(
       sha256: createHash("sha256").update(id).digest(),
       derivedStatus: opts.derivedStatus ?? null,
       derivedMessage: opts.derivedMessage ?? null,
+      previewStatus: opts.previewStatus ?? null,
+      previewMessage: opts.previewMessage ?? null,
     })
     .execute();
   return id;
@@ -335,6 +351,9 @@ describe("an empty library", () => {
       openscad: OPENSCAD,
       printerId: P1S,
       printerName: "Bambu Lab P1S, 0.4 mm nozzle",
+      sandbox: "on",
+      sandboxReason: null,
+      unsandboxed: false,
     });
   });
 });
@@ -347,6 +366,7 @@ describe("a library with trash, estimates, jobs and failures", () => {
   let sliceFailedPlate: string;
   let renderFile: string;
   let stepFile: string;
+  let previewFile: string;
   let apiModel: string;
   let uploadedModel: string;
   let plainModel: string;
@@ -362,7 +382,13 @@ describe("a library with trash, estimates, jobs and failures", () => {
     const plateA = await addPlate(db, tmf, 1, "Base");
     const plateB = await addPlate(db, tmf, 2);
     sliceFailedPlate = await addPlate(db, tmf, 3, "Lid");
-    await addFile(db, liveModel, "stl", { size: 200 });
+    // Issue #380: an STL whose picture failed, from its own column.
+    previewFile = await addFile(db, liveModel, "stl", {
+      size: 200,
+      name: "Hook.stl",
+      previewStatus: "failed",
+      previewMessage: "The preview picture could not be rendered. OpenSCAD said: ERROR: bad facet",
+    });
     renderFile = await addFile(db, liveModel, "scad", {
       size: 30,
       name: "Knob.scad",
@@ -497,8 +523,14 @@ describe("a library with trash, estimates, jobs and failures", () => {
   test("lists failed renders and conversions on live models, with the message scrubbed", () => {
     const events = v.events.items.filter((e) => e.type === "render_failed");
     expect(events.map((e) => (e.type === "render_failed" ? e.file.id : "")).sort()).toEqual(
-      [renderFile, stepFile].sort(),
+      [renderFile, stepFile, previewFile].sort(),
     );
+    const preview = events.find((e) => e.type === "render_failed" && e.kind === "preview");
+    expect(preview).toMatchObject({
+      file: { id: previewFile, name: "Hook.stl" },
+      message: "The preview picture could not be rendered. OpenSCAD said: ERROR: bad facet",
+      messageCodes: ["previewRejected"],
+    });
     const scad = events.find((e) => e.type === "render_failed" && e.kind === "scad");
     expect(scad).toMatchObject({
       model: { id: liveModel, name: "Live Model" },
@@ -571,7 +603,7 @@ describe("a library with trash, estimates, jobs and failures", () => {
     expect(estimateModels).not.toContain("Trashed Model");
   });
 
-  test("answers the same shape the second time, from one snapshot", async () => {
+  test("a second read of an unchanged library answers the same", async () => {
     const again = await view(env);
     expect(again.library).toEqual(v.library);
     expect(again.estimates.total).toBe(v.estimates.total);
@@ -593,6 +625,9 @@ describe("the slicer's health", () => {
       openscad: null,
       printerId: P1S,
       printerName: "Bambu Lab P1S, 0.4 mm nozzle",
+      sandbox: null,
+      sandboxReason: null,
+      unsandboxed: null,
     });
   });
 

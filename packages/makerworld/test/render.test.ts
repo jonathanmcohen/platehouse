@@ -7,7 +7,7 @@ import { DESIGNER_PAYLOADS, htmlEscape } from "./support/payloads.js";
 
 // renderMarkdown is markdown-it (html off, linkify off, http(s) links only)
 // with its output passed through DOMPurify. The web app runs it in the
-// browser (build plan Task 20); here jsdom stands in for the browser's DOM.
+// browser (the model page); here jsdom stands in for the browser's DOM.
 
 interface Parsed {
   root: HTMLElement;
@@ -304,7 +304,7 @@ describe("escaped designer text beside misnested inline tags renders literally t
   });
 });
 
-// The maintainer's decision, 2026-11-08 (build plan Task 7): descriptions never render
+// The maintainer's decision, 2026-11-08: descriptions never render
 // images. markdown-it's image rule is off, so ![alt](url) is a "!" and a link
 // to the address, and DOMPurify forbids img, so no description can load a
 // remote address whatever the Markdown holds.

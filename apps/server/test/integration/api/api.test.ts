@@ -1,6 +1,9 @@
-// Build plan Task 16: per-client tokens and the Public API v1, against
-// Postgres 17 and the S3 test server (AC-081 token half, AC-082 app side,
-// AC-083, AC-084, AC-085, AC-091 for the API description).
+// Per-client tokens and the Public API v1, against
+// Postgres 17 and the S3 test server: tokens keep working while the OIDC
+// provider is down, the API needs no cookie, each client has its own token
+// that is shown once and never logged, the API adds and finds but never
+// deletes, a bad token is 401 with no CORS headers, and the API description
+// is built from the configured public origin.
 //
 // Everything is real but the login: tokens in api_tokens, the library over
 // the database and the bucket, the tus upload handler on pg-boss's ingest
@@ -8,7 +11,7 @@
 // captures from buildApp's logger stream for every request it makes. The
 // last test reads that log: no token this file used, live, revoked or made
 // up, appears in any line, with or without its ph_ prefix. The issuer is
-// Task 15's local mock, stopped for the AC-081 test.
+// the login tests' local mock, stopped for the issuer-down test.
 //
 // Every token is made by the run and every file is generated; nothing here
 // is a real secret or a designer file.
@@ -28,7 +31,7 @@ import {
 } from "../../../src/api/tokens.js";
 import { createApiLibrary, FILE_UNAVAILABLE_MESSAGE } from "../../../src/api/v1.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
-import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
+import { type DisplayContext, plateNumbersMany } from "../../../src/estimates/display.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { startQueues } from "../../../src/jobs/queues.js";
 import { createRepos } from "../../../src/repos/index.js";
@@ -203,7 +206,7 @@ beforeAll(async () => {
       },
     },
     displayContext: async () => CONTEXT,
-    plateNumbers: (ctx, id) => plateNumbers(env.db, ctx, id),
+    plateNumbersMany: (ctx, ids) => plateNumbersMany(env.db, ctx, ids),
   });
   t = await authTestApp({
     api: { tokens, library },
@@ -919,7 +922,7 @@ describe("the OpenAPI document", () => {
   });
 });
 
-describe("AC-081: with the issuer down", () => {
+describe("with the issuer down, API tokens keep working", () => {
   test("login is unavailable and a token request still works", async () => {
     // Nothing in this file has logged in, so the app has not discovered the
     // issuer yet and has nothing cached to fall back on.

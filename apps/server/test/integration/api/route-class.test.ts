@@ -1,4 +1,4 @@
-// Build plan Task 16 with Task 15's route-class gate: every Public API v1
+// The Public API v1 behind the route-class gate: every Public API v1
 // route, the tus upload routes at /api/v1/uploads included, is bearer-class.
 // A bearer-class request is never sent to login and never needs Origin; a
 // session cookie, or a token sent as a cookie, never authenticates it. The
@@ -53,7 +53,7 @@ const emptyLibrary: ApiLibrary = {
   removeFromCollection: async () => false,
 };
 
-/** The operations of the Public API v1 contract, as Fastify registers them. */
+/** The Public API v1's operations (api/v1.ts, documented in api/openapi.ts), as Fastify registers them. */
 const CONTRACT: Array<[string, string]> = [
   ["/api/v1/openapi.json", "GET"],
   ["/api/v1/models", "GET"],

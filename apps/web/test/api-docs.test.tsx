@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-// The API reference in Settings (the 0.1.0 API documentation; AC-084,
-// AC-085 for what it describes, AC-070 to AC-075 for how it looks). It
+// The API reference in Settings (the 0.1.0 API documentation): it describes
+// what the API can and cannot do, and follows the app's look, themes, phone
+// width, contrast and keyboard rules. It
 // renders apps/web/src/api-docs/openapi.json, the document the server's
 // test writes from the routes themselves (apps/server/test/api/
 // openapi.test.ts checks that copy is current), so these tests read the
@@ -9,8 +10,8 @@
 // The page is rendered into jsdom inside a memory router. The settings page
 // around it talks to a small fake /app/api through the global fetch, which
 // records every call, so a test can show the reference itself fetches
-// nothing. Live checks in both themes and at 375 px are qa-engineer's
-// (AC-076); here the stylesheet is checked to use only studio.css's tokens.
+// nothing. Live checks in both themes and at 375 px are done by hand in a
+// browser; here the stylesheet is checked to use only studio.css's tokens.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +19,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { ApiReference } from "../src/api-docs/ApiReference";
+import { ApiReference, Paragraphs } from "../src/api-docs/ApiReference";
 import {
   type ApiDocument,
   examplesOf,
@@ -361,5 +362,24 @@ describe("the page's stylesheet", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const css = readFileSync(join(here, "../src/api-docs/api-docs.css"), "utf8");
     expect(css).not.toMatch(/url\(|@import/);
+  });
+});
+
+describe("repeated paragraphs", () => {
+  test("a description that repeats a paragraph renders each one, with no duplicate-key warning", async () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    const holder = document.createElement("div");
+    document.body.append(holder);
+    const r = createRoot(holder);
+    await act(async () => r.render(<Paragraphs text={"Same.\n\nOther.\n\nSame."} />));
+    expect([...holder.querySelectorAll("p")].map((p) => p.textContent)).toEqual([
+      "Same.",
+      "Other.",
+      "Same.",
+    ]);
+    expect(warn).not.toHaveBeenCalled();
+    await act(async () => r.unmount());
+    holder.remove();
+    warn.mockRestore();
   });
 });

@@ -1,4 +1,5 @@
-// The library's app API (build plan Task 19; AC-061, AC-064, AC-073), for the
+// The library's app API (search, the tag filter, and cards that never download
+// a model file), for the
 // web app's library page:
 //
 //   GET /app/api/library?q&tag&collection&creator&cursor&limit&printer
@@ -10,19 +11,22 @@
 //   GET /app/api/library/ids?q&tag&collection&creator&printer&sort
 //       { ids: string[], capped }  every match's id, for Select all matching
 //   GET /app/api/library/tags
-//       { tags: string[] }      the tag names live models carry
+//       { tags: [{ name, models }] }  the tags live models carry, with how many
+//       each has, most-used first (then by name)
 //
-// - Both routes are session-class (the Route classes contract: /app/api is
-//   unlisted, so session). The gate (auth/gate.ts) refuses a request without
-//   a session before these handlers run. Neither route changes anything, so
+// - Every route is session-class (the route classes table in auth/gate.ts:
+//   /app/api is unlisted, so session). The gate refuses a request without
+//   a session before these handlers run. No route changes anything, so
 //   the gate's Origin check has nothing to check here.
-// - The page is Task 14's search (library/search.ts): name, caption, creator
+// - The page is the library's search (library/search.ts): name, caption, creator
 //   and tag, best match first, the tag, collection and creator filters, and
 //   its cursor; trashed models never appear.
 // - A card is read from the database alone. Its image is plate 1's thumbnail
-//   blob of the model's first .3mf, named as /blobs/<id> (Task 17's route),
-//   and only a stored blob of kind thumbnail is ever named, so rendering the
-//   library never fetches a model file (AC-073). This module is given no
+//   blob of the model's first .3mf, named as /blobs/<id> (the delivery route, delivery/download.ts),
+//   or, for a model whose first file is an STL or STEP file, that file's
+//   rendered preview picture (issue #316). Only a stored blob of kind
+//   thumbnail or render_png of the same model is ever named, so rendering
+//   the library never fetches a model file. This module is given no
 //   store at all.
 // - printer= is the header's printer switch: one of My printers, whose
 //   numbers the cards show instead of the default printer's. Anything else
@@ -33,7 +37,7 @@
 //   queues a slice.
 // - Time and weight are for that printer (settings.printer_id when no
 //   switch is given; "the selected printer" below), from
-//   Task 12's plateNumbers per plate: a plate has numbers for that printer
+//   the estimates module's plateNumbers per plate: a plate has numbers for that printer
 //   when the file's own numbers are for it or a current Platehouse estimate
 //   is. A card has totals only when every plate does, else partial. While
 //   the printer menu cannot be read (the slicer is down or slow), the file's
@@ -41,8 +45,9 @@
 //   names by its id and the file by its BBL model id; a card without totals
 //   then says numbersUnavailable, not partial, since nothing is known to be
 //   missing. Current Platehouse estimates still count then. A model
-//   with no plates (STL, STEP, SCAD) has neither; its card shows the
-//   file-type icon for fileKind.
+//   with no plates (STL, STEP, SCAD) has neither; its card shows its
+//   preview picture when it has one (STL and STEP), else the file-type
+//   icon for fileKind.
 // - The display context (the settings row and the printer menu) is read once
 //   per page by readDisplayContext and shared by every plate's lookup. The
 //   menu is the estimates service's listPrinters, which asks the slicer's
@@ -50,10 +55,9 @@
 //   slicer at most once, never once per plate, and waits for it at most
 //   DISPLAY_MENU_TIMEOUT_MS, so a slicer that accepts connections but never
 //   answers does not hold the page for the slicer client's 10 s request
-//   timeout. Each plate's
-//   lookup is two queries, and at most PLATE_NUMBERS_CONCURRENCY run at once
-//   (mapLimit), so a page of many plates leaves most of the database pool to
-//   the ingest and slicer workers.
+//   timeout. The page's plates are read together, in two queries in all
+//   (plateNumbersMany), so a page of many plates leaves most of the database
+//   pool to the ingest and slicer workers (issue #456).
 // - Numbered pages: ?page= (from 1) asks for one page of limit cards, 48 when
 //   limit is left out (LIBRARY_PAGE_SIZE), up to 200, instead of following a
 //   cursor; the two cannot be mixed. The page is a slice of the same ranked
@@ -97,6 +101,7 @@ import type { Printer } from "@platehouse/slicer-contract";
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import type { DB, FileKind } from "../db/types.js";
+import { hasPreviewPicture, isPictureShown } from "../derived/picture.js";
 import {
   type DisplayContext,
   type Numbers,
@@ -114,7 +119,7 @@ import {
   type SortPrinter,
 } from "../repos/models.js";
 
-/** The library's routes, every one session-class (the Route classes contract). */
+/** The library's routes, every one session-class (the route classes table in auth/gate.ts). */
 export const LIBRARY_API_PATHS: readonly string[] = Object.freeze([
   "/app/api/library",
   "/app/api/library/ids",
@@ -125,7 +130,7 @@ export const LIBRARY_API_PATHS: readonly string[] = Object.freeze([
 export const LIBRARY_PAGE_SIZE = 48;
 
 /** Most cards one request computes, numbered page or cursor page. */
-const MAX_PAGE_SIZE = 200;
+export const MAX_PAGE_SIZE = 200;
 
 /**
  * Most matches a numbered page request reads, ranked, to slice its page from
@@ -206,32 +211,6 @@ export function sortPrinterFor(ctx: DisplayContext): SortPrinter {
     fileNozzle: selected?.nozzle ?? null,
     fileNumbersCount: selected !== undefined && first?.id === selected.id,
   };
-}
-
-/** Most plate number lookups one page runs at once; the pool holds 10 connections. */
-export const PLATE_NUMBERS_CONCURRENCY = 4;
-
-/**
- * fn over every item, at most limit calls in flight, the results in the
- * items' order. The first failure rejects the whole map.
- */
-export async function mapLimit<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  async function worker(): Promise<void> {
-    while (next < items.length) {
-      const i = next;
-      next += 1;
-      out[i] = await fn(items[i] as T);
-    }
-  }
-  const workers = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(Array.from({ length: workers }, worker));
-  return out;
 }
 
 /** What readDisplayContext reads; main.ts hands it the settings repo and the estimates service. */
@@ -324,7 +303,7 @@ function printerFields(ctx: DisplayContext) {
   };
 }
 
-/** Where Task 17 serves a blob's bytes; the card names its thumbnail by it. */
+/** Where file delivery serves a blob's bytes; the card names its thumbnail by it. */
 export const BLOB_PREFIX = "/blobs/";
 
 /** One card in the library grid. */
@@ -335,7 +314,11 @@ export interface LibraryCard {
   tags: string[];
   /** Plates across the model's .3mf files. */
   plateCount: number;
-  /** /blobs/<id> of plate 1's thumbnail in the model's first .3mf; null when there is none. */
+  /**
+   * /blobs/<id> of plate 1's thumbnail in the model's first .3mf, or of the
+   * preview picture of a model whose first file is an STL or STEP file;
+   * null when there is none.
+   */
   thumbnail: string | null;
   /** The kind of the file the card stands for, for the file-type icon; null for a model with no files. */
   fileKind: FileKind | null;
@@ -416,8 +399,8 @@ export interface AppLibrary {
    * are more. Cursor and page are ignored.
    */
   ids(query: AppLibraryQuery): Promise<MatchingIds>;
-  /** Tag names live models carry, for the tag filter, alphabetical ignoring case. */
-  tags(): Promise<string[]>;
+  /** Tag names live models carry, for the tag filter, most-used first (with how many models carry each). */
+  tags(): Promise<Array<{ name: string; models: number }>>;
 }
 
 export interface AppLibraryDeps {
@@ -427,8 +410,11 @@ export interface AppLibraryDeps {
    * (readDisplayContext), read once per page.
    */
   displayContext(): Promise<DisplayContext>;
-  /** Task 12's plateNumbers for one plate with that context (estimates/display.ts). */
-  plateNumbers(ctx: DisplayContext, plateId: string): Promise<PlateNumbers>;
+  /** The estimates module's plateNumbersMany for several plates with that context (estimates/display.ts). */
+  plateNumbersMany(
+    ctx: DisplayContext,
+    plateIds: readonly string[],
+  ): Promise<Map<string, PlateNumbers>>;
   /** Most matches a numbered page reads; PAGED_MATCH_CAP. Smaller in tests. */
   pagedMatchCap?: number;
 }
@@ -559,12 +545,27 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
     const ids = models.map((m) => m.id);
     if (ids.length === 0) return [];
     const [files, plates, tagRows] = await Promise.all([
+      // Each file with its preview picture (issue #316) only when that is a
+      // stored render_png blob of the same model: never a source blob.
       db
         .selectFrom("files")
-        .select(["id", "modelId", "kind"])
-        .where("modelId", "in", ids)
-        .orderBy("createdAt")
-        .orderBy("id")
+        .leftJoin("blobs as preview", (join) =>
+          join
+            .onRef("preview.id", "=", "files.renderPngBlobId")
+            .onRef("preview.modelId", "=", "files.modelId")
+            .on("preview.kind", "=", "render_png")
+            .on("preview.state", "=", "stored"),
+        )
+        .select([
+          "files.id",
+          "files.modelId",
+          "files.kind",
+          "files.previewStatus",
+          "preview.id as previewId",
+        ])
+        .where("files.modelId", "in", ids)
+        .orderBy("files.createdAt")
+        .orderBy("files.id")
         .execute(),
       // Every plate of the page's models, with its thumbnail only when that is
       // a stored thumbnail blob of the same model: never a source blob.
@@ -599,13 +600,12 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
         .execute(),
     ]);
 
+    const read = await deps.plateNumbersMany(
+      ctx,
+      plates.map((p) => p.plateId),
+    );
     const numbers = new Map(
-      await mapLimit(
-        plates,
-        PLATE_NUMBERS_CONCURRENCY,
-        async (p) =>
-          [p.plateId, numbersFor(await deps.plateNumbers(ctx, p.plateId), printerId)] as const,
-      ),
+      plates.map((p) => [p.plateId, numbersFor(read.get(p.plateId) ?? {}, printerId)] as const),
     );
 
     return models.map((model) => {
@@ -613,7 +613,19 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
       const first3mf = own.find((f) => f.kind === "3mf");
       const ownPlates = plates.filter((p) => p.modelId === model.id);
       const plate1 = ownPlates.find((p) => p.fileId === first3mf?.id && p.index === 1);
-      const thumbnail = plate1?.thumbnailId ?? null;
+      // The card stands for its first .3mf, else its first file. A .3mf
+      // shows plate 1's thumbnail; an STL or STEP file its preview picture
+      // (issue #316) while the picture's own status says to show it (issue
+      // #380); a SCAD keeps the icon (a choice made with the library page).
+      const shown = first3mf ?? own[0];
+      const thumbnail =
+        first3mf !== undefined
+          ? (plate1?.thumbnailId ?? null)
+          : shown !== undefined &&
+              hasPreviewPicture(shown.kind) &&
+              isPictureShown(shown.previewStatus)
+            ? shown.previewId
+            : null;
       let timeSeconds: number | null = 0;
       let weightGrams: number | null = 0;
       for (const plate of ownPlates) {
@@ -636,7 +648,7 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
         tags: tagRows.filter((t) => t.modelId === model.id).map((t) => t.name),
         plateCount: ownPlates.length,
         thumbnail: thumbnail === null ? null : `${BLOB_PREFIX}${thumbnail}`,
-        fileKind: (first3mf ?? own[0])?.kind ?? null,
+        fileKind: shown?.kind ?? null,
         timeSeconds: known ? timeSeconds : null,
         weightGrams: known ? weightGrams : null,
         partial: unmatched && !noMenu,
@@ -672,22 +684,20 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
     },
 
     async tags() {
-      const rows = await db
+      // Live models only: a tag only trashed models carry is left out, as a
+      // restore brings it back. Most-used first, so the web app's first 30 are
+      // the ones that narrow the library most (issue #458).
+      return db
         .selectFrom("tags")
-        .select("tags.name")
-        .where(({ exists, selectFrom }) =>
-          exists(
-            selectFrom("modelTags")
-              .innerJoin("models", "models.id", "modelTags.modelId")
-              .select("modelTags.tagId")
-              .whereRef("modelTags.tagId", "=", "tags.id")
-              .where("models.trashedAt", "is", null),
-          ),
-        )
+        .innerJoin("modelTags", "modelTags.tagId", "tags.id")
+        .innerJoin("models", "models.id", "modelTags.modelId")
+        .where("models.trashedAt", "is", null)
+        .select(["tags.name", sql<number>`count(models.id)::int`.as("models")])
+        .groupBy(["tags.id", "tags.name"])
+        .orderBy(sql`count(models.id)`, "desc")
         .orderBy(sql`lower(tags.name)`)
         .orderBy("tags.name")
         .execute();
-      return rows.map((r) => r.name);
     },
   };
 }

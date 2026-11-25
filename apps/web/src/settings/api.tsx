@@ -1,5 +1,4 @@
-// The web app's calls to its own JSON API under /app/api (build plan Task
-// 21), shared by the settings, trash and organising pages. Plain fetch: the
+// The web app's calls to its own JSON API under /app/api, shared by the settings, trash and organising pages. Plain fetch: the
 // browser sends the session cookie and, on every POST, PUT, PATCH and
 // DELETE, the Origin header the server's gate checks, so nothing here adds
 // a credential. An answer that is not a success becomes an AppApiError
@@ -36,9 +35,26 @@ export class AppApiError extends Error {
 }
 
 /**
+ * The login that comes back to Settings, for a fresh sign-in. Fixed here
+ * rather than read from the refusal, so an answer can never send the browser
+ * anywhere else.
+ */
+export const SIGN_IN_AGAIN_URL = "/auth/login?next=/settings";
+
+/** True for the server's refusal of an act that needs a sign-in more recent than the session's. */
+export function needsSignIn(failure: unknown): boolean {
+  return (
+    failure instanceof AppApiError &&
+    failure.status === 403 &&
+    (failure.body as { error?: unknown } | null)?.error === "sign_in_required"
+  );
+}
+
+/**
  * The words for each refusal the app API names by code (its error, or a finer
  * code beside it). The English words are the server's own sentences, so an
- * English page reads exactly what the server wrote.
+ * English page reads exactly what the server wrote. rate_limited (the 429 of a
+ * session over its limit) comes with no sentence, so every page shows its words.
  */
 const CODE_KEYS: Readonly<Record<string, MessageKey>> = {
   unknown_printer: "api.unknownPrinter",
@@ -49,6 +65,7 @@ const CODE_KEYS: Readonly<Record<string, MessageKey>> = {
   token_name_length: "api.tokenNameLength",
   titles_not_previewed: "api.titlesNotPreviewed",
   plan_changed: "api.planChanged",
+  rate_limited: "api.rateLimited",
 };
 
 /**
@@ -94,9 +111,11 @@ export async function appApi<T = undefined>(
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
+  options: { signal?: AbortSignal } = {},
 ): Promise<T> {
   const headers: Record<string, string> = { accept: "application/json" };
   const init: RequestInit = { method, headers, credentials: "same-origin" };
+  if (options.signal !== undefined) init.signal = options.signal;
   if (body !== undefined) {
     headers["content-type"] = "application/json";
     init.body = JSON.stringify(body);
@@ -152,8 +171,9 @@ export interface Loaded<T> {
    * Changes the data the page shows, after a change it made. Give it an
    * updater (prev => next) whenever the next value is built from the current
    * one: it gets the data as it is when the change lands, so two changes in
-   * flight never undo each other. An updater does nothing while nothing is
-   * loaded.
+   * flight never undo each other. An updater given while the first answer is
+   * still on its way is kept and applied to that answer when it lands, so a
+   * change made meanwhile is merged in, not overwritten.
    */
   set(next: T | ((prev: T) => T)): void;
   /**
@@ -180,22 +200,33 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
   const sent = useRef(0);
   /** The number of the GET whose answer is on screen. */
   const shown = useRef(0);
+  /** Whether an answer for the path is on screen. */
+  const loaded = useRef(false);
+  /** Updaters given before the first answer, applied to it when it lands. */
+  const early = useRef<Array<(prev: T) => T>>([]);
 
   useEffect(() => {
     current.current = path;
     if (path === null) return;
     let live = true;
     const mine = ++sent.current;
+    loaded.current = false;
+    early.current = [];
     setData(undefined);
     setError(undefined);
     appApi<T>("GET", path).then(
       (value) => {
         if (!live || mine < shown.current) return;
         shown.current = mine;
-        setData(value);
+        loaded.current = true;
+        const merged = early.current.reduce((now, update) => update(now), value);
+        early.current = [];
+        setData(merged);
+        setError(undefined);
       },
       (failure: unknown) => {
-        if (live) setError(errorText(failure, words.current));
+        // A newer answer is on screen: data and "could not load" never show together.
+        if (live && mine >= shown.current) setError(errorText(failure, words.current));
       },
     );
     return () => {
@@ -205,10 +236,16 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
 
   const set = useCallback((next: T | ((prev: T) => T)) => {
     if (typeof next !== "function") {
+      loaded.current = true;
+      early.current = [];
       setData(next);
       return;
     }
     const update = next as (prev: T) => T;
+    if (!loaded.current) {
+      early.current.push(update);
+      return;
+    }
     setData((prev) => (prev === undefined ? prev : update(prev)));
   }, []);
 
@@ -216,16 +253,26 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
     if (path === null) return false;
     const mine = ++sent.current;
     try {
-      const value = await appApi<T>("GET", path);
+      const value = (await appApi<T>("GET", path)) as T;
       if (current.current !== path) return false;
       // A newer answer is already on screen: it holds at least what this one would.
       if (mine < shown.current) return true;
       shown.current = mine;
-      setData(value);
+      loaded.current = true;
+      const merged = early.current.reduce((now, update) => update(now), value);
+      early.current = [];
+      setData(merged);
       setError(undefined);
       return true;
     } catch (failure) {
-      if (current.current === path) setError(errorText(failure, words.current));
+      if (current.current === path) {
+        // The last good data stays on a failed refresh: blanking a list because
+        // one poll failed is worse than a list a moment old. So the words must
+        // not claim nothing loaded: with data on screen they say the refresh
+        // failed (and why); with none, the plain reason is the whole story.
+        const reason = errorText(failure, words.current);
+        setError(loaded.current ? words.current.t("api.refreshFailed", { reason }) : reason);
+      }
       return false;
     }
   }, [path]);

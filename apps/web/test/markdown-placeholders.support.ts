@@ -73,7 +73,11 @@ export function htmlNodes(markdown: string): HtmlNode[] {
 
 /** Each raw HTML node GitHub would strip from a Markdown text, as "label:line: <tag>". */
 export function barePlaceholders(label: string, markdown: string): string[] {
-  return htmlNodes(markdown)
-    .filter((n) => !(n.single && n.tag in ALLOWED_TAGS))
-    .map((n) => `${label}:${n.line}: ${n.html}${n.single ? "" : " ..."}`);
+  return (
+    htmlNodes(markdown)
+      // Object.hasOwn, not "in": "in" also finds Object.prototype's keys, so
+      // a bare <constructor> would pass as an allowed tag.
+      .filter((n) => !(n.single && Object.hasOwn(ALLOWED_TAGS, n.tag)))
+      .map((n) => `${label}:${n.line}: ${n.html}${n.single ? "" : " ..."}`)
+  );
 }

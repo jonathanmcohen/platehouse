@@ -1,13 +1,18 @@
-// Orca return codes -> contract reasons (build plan, Slicer HTTP contract v1,
-// Reason map as amended). The codes and messages are OrcaSlicer v2.5.0's own:
+// Orca return codes -> contract reasons (Slicer HTTP contract 2's reason
+// map, as amended). The codes and messages are OrcaSlicer v2.5.0's own:
 // src/libslic3r/Utils.hpp and src/OrcaSlicer.cpp cli_errors, read for the
 // slicing gate (tools/slicing-gate/lib/classify.mjs) at commit 40ecc66.
 //
 // -50, -61, -63 to -65, -67 and -69 (empty plate, bed type, collisions,
 // vase mode, TPU count, mixed filament) are not among the legitimate
-// refusals AC-034 names. By the maintainer's decision (2026-11-08) they take the
+// refusals (a process that does not fit the printer, a plate too big for its
+// bed, a dual-nozzle source on a single-nozzle printer). By the maintainer's decision (2026-11-08) they take the
 // contract's "anything else" and are slicer_error, with Orca's message as
 // the detail.
+//
+// -50 stays slicer_error by code. slice() (server.ts) answers bed_too_small
+// for a clean -50 when the plate has objects; an empty or unknown-count plate
+// keeps slicer_error.
 import type { Reason } from "@platehouse/slicer-contract";
 
 export const ORCA_MESSAGES: Readonly<Record<number, string>> = Object.freeze({
