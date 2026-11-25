@@ -106,8 +106,8 @@ jobs:
       # docker/app.Dockerfile, docker/check-image-labels.sh (the slicer
       # image's label check step runs it), docker/test-app-image.sh, docker/app.Dockerfile.dockerignore, the root
       # tsconfig.json and tools/brand/tsconfig.json (workflowpins.test.mjs),
-      # apps/slicer/Dockerfile, two slicer container test files, README.md and
-      # CHANGELOG.md. A gate test that starts reading another file outside
+      # apps/slicer/Dockerfile, two slicer container test files, README.md,
+      # RELEASING.md and CHANGELOG.md. A gate test that starts reading another file outside
       # tools/slicing-gate adds it here, or a PR changing only that file skips
       # the test and still goes green. ciworkflow.test.mjs scans the gate tests,
       # and the modules they import, for such reads and fails on one missing
@@ -135,7 +135,7 @@ jobs:
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|base-images|docs-pages)\.yml$|\.github/scripts/(rc-target|apt-snapshot|base-images|release-gate)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|docker/app\.Dockerfile\.dockerignore$|pnpm-workspace\.yaml$|tsconfig\.json$|tools/brand/tsconfig\.json$|e2e/compose\.yml$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|base-images|docs-pages)\.yml$|\.github/scripts/(rc-target|apt-snapshot|base-images|release-gate)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|docker/app\.Dockerfile\.dockerignore$|pnpm-workspace\.yaml$|tsconfig\.json$|tools/brand/tsconfig\.json$|e2e/compose\.yml$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|RELEASING\.md$|CHANGELOG\.md$)' <<<"$changed"; then
               echo "The slicing gate or a file its tests read changed; the gate tests run."
             else
               tests=false

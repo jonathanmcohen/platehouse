@@ -88,7 +88,7 @@
 # records the tags it reached and the failure issue lists them. The daily run
 # then sees orca-X.Y.Z (if it was made) and never retries, so the issue says to run by hand.
 #
-# Rollback: README.md, "Slicer image". Point stable back at the previous
+# Rollback: RELEASING.md, "Slicer image". Point stable back at the previous
 # orca-X.Y.Z with the same imagetools command.
 #
 # The image is amd64 only (OpenSCAD has no current arm64 build).
@@ -1049,7 +1049,7 @@ jobs:
               echo "The slicer image workflow failed for OrcaSlicer ${version} (${EVENT} run) while tagging. These tags had been pointed, or were being pointed, at ${DIGEST:-the pushed digest}: ${TAGGED}. Check each with docker buildx imagetools inspect before relying on it."
               echo ""
               if [[ ", ${TAGGED}," == *", stable,"* ]]; then
-                echo "stable may now point at that digest. If it should not, roll it back (README.md, Rolling the slicer back)."
+                echo "stable may now point at that digest. If it should not, roll it back (RELEASING.md, Rolling the slicer back)."
               else
                 echo "stable was not touched and still points at the last image that passed."
               fi

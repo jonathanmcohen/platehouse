@@ -841,6 +841,8 @@ for (const [name, input, want] of [
   // ciworkflow.test.mjs reads README.md, so a README-only change runs the
   // tests; the image is not built from it, so the image build is skipped.
   ["a push touching only the README runs the tests, not the image build", { event: "push", before: SHA, changed: ["README.md"] }, TESTS],
+  // RELEASING.md holds the rollback section ciworkflow.test.mjs reads.
+  ["a push touching only RELEASING.md runs the tests, not the image build", { event: "push", before: SHA, changed: ["RELEASING.md"] }, TESTS],
   ["a push touching the gate runs both", { event: "push", before: SHA, changed: ["tools/slicing-gate/README.md"] }, RUN],
   // PR #17 review: git diff --name-only lists only the new path of a rename, so
   // a module moved out of the gate (say into packages/threemf/) left
@@ -985,6 +987,7 @@ for (const [file, want] of [
   ["apps/slicer/test/container/smoke.test.ts", TESTS],
   ["apps/slicer/test/container/support/slicer.ts", TESTS],
   ["README.md", TESTS],
+  ["RELEASING.md", TESTS],
   ["CHANGELOG.md", TESTS],
 ]) {
   test(`gate jobs decision: a PR touching only ${file} runs the gate tests`, () => {
@@ -1226,6 +1229,7 @@ test("gate jobs decision: every file the gate tests read outside tools/slicing-g
     "apps/slicer/test/container/smoke.test.ts",
     "apps/slicer/test/container/support/slicer.ts",
     "README.md",
+    "RELEASING.md",
     "CHANGELOG.md",
   ]) {
     assert.ok(reads.has(known), `the scan finds ${known}: ${[...reads.keys()].join(", ")}`);
@@ -2926,10 +2930,10 @@ test("slicer-image issue: with no kept tail it says so, and a tail cannot break 
   assert.doesNotMatch(stepBlock(report, "Open or update the issue"), /\n {8}(if|continue-on-error):/);
 });
 
-// The rollback the README gives, as a carbon copy so stable's
+// The rollback RELEASING.md gives, as a carbon copy so stable's
 // digest is the old version's.
-test("slicer-image: the README holds the rollback command, and the workflow points to it", () => {
-  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+test("slicer-image: RELEASING.md holds the rollback command, and the workflow points to it", () => {
+  const readme = readFileSync(join(ROOT, "RELEASING.md"), "utf8");
   assert.ok(
     readme.includes(
       [
@@ -2940,16 +2944,16 @@ test("slicer-image: the README holds the rollback command, and the workflow poin
     ),
     "the rollback command",
   );
-  assert.match(slicerText(), /^# Rollback: README\.md, "Slicer image"\./m);
+  assert.match(slicerText(), /^# Rollback: RELEASING\.md, "Slicer image"\./m);
   assert.match(readme, /^## Slicer image$/m);
 });
 
 // A failure in the tag step can leave the orca tags in place, and the daily run
 // never builds a version whose orca-X.Y.Z exists, prerelease-published ones
-// included. The README, the CHANGELOG and the workflow header must not say
+// included. RELEASING.md, the CHANGELOG and the workflow header must not say
 // otherwise.
 test("slicer-image: the docs do not claim a failure never tags, and say what the daily run will not do", () => {
-  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+  const readme = readFileSync(join(ROOT, "RELEASING.md"), "utf8");
   const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
   assert.doesNotMatch(readme, /When a run fails, no tag is created or moved/);
   assert.doesNotMatch(changelog, /A failure tags nothing/);
@@ -2957,7 +2961,7 @@ test("slicer-image: the docs do not claim a failure never tags, and say what the
   const section = readme.slice(readme.indexOf("## Slicer image"), readme.indexOf("### Rolling the slicer back"));
   assert.match(section, /lists the tags it had already pointed at the new digest/);
   assert.match(section, /A prerelease tag leaves `orca-X\.Y\.Z` and `stable` where they were/);
-  // Issue #221: the run tag rule, in both README sections.
+  // Issue #221: the run tag rule, in both RELEASING.md sections.
   assert.match(section, /`orca-X\.Y\.Z-r<run number>\.<attempt>`/);
   assert.match(section, /reads OrcaSlicer's latest release again/);
   // A prerelease tag's tag-step failure is fixed with Re-run failed jobs,
@@ -2966,7 +2970,7 @@ test("slicer-image: the docs do not claim a failure never tags, and say what the
   assert.match(section, /the issue suggests Re-run failed jobs/);
   assert.match(section, /warns against Re-run all jobs/);
   assert.doesNotMatch(section, /roll `stable` back/);
-  const rollback = readme.slice(readme.indexOf("### Rolling the slicer back"), readme.indexOf("## Layout"));
+  const rollback = readme.slice(readme.indexOf("### Rolling the slicer back"), readme.indexOf("### The rc tag"));
   assert.match(rollback, /`orca-X\.Y\.Z-r<run number>` tag, or `orca-X\.Y\.Z-r<run number>\.<attempt>` for a re-run/);
   assert.match(changelog, /lists any tag the run had already pointed at the new digest/);
 });
