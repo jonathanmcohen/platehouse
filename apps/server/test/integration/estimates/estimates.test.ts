@@ -1086,6 +1086,34 @@ describe("My printers", () => {
     return jobs.filter((j) => ["created", "retry", "active"].includes(j.state));
   }
 
+  /** The ids of the platehouse estimates for these plates and this printer, in any status. */
+  async function estimateIdsOf(
+    plateIds: readonly string[],
+    printerId: string,
+  ): Promise<Set<string>> {
+    if (plateIds.length === 0) return new Set();
+    const rows = await env.db
+      .selectFrom("estimates")
+      .select("id")
+      .where("plateId", "in", [...plateIds])
+      .where("source", "=", "platehouse")
+      .where("printerId", "=", printerId)
+      .execute();
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /** The distinct estimates, among `among`, with a queued slice job for this printer. */
+  async function queuedEstimateIds(
+    printerId: string,
+    among: ReadonlySet<string>,
+  ): Promise<Set<string>> {
+    return new Set(
+      (await queuedJobs())
+        .filter((j) => j.data.printerId === printerId && among.has(j.data.estimateId))
+        .map((j) => j.data.estimateId),
+    );
+  }
+
   /** A slice job left over from earlier work: sent to the slicer queue for an estimate that may already be finished. */
   async function leftoverJob(
     estimateId: string,
@@ -1495,14 +1523,19 @@ describe("My printers", () => {
         () => stub.calls.length,
         (n) => n > before,
       );
+      // Only this test's own estimates: a finished estimate's leftover job can
+      // be queued behind the held slice (#490), and the poll's library copy and
+      // an urgent copy can both be queued for one estimate, so count distinct ids.
       await until(
-        // Distinct estimates, not jobs: the poll's library copy and an urgent
-        // copy (or a recovered one) can both be queued for one estimate.
         async () =>
-          new Set(
-            (await queuedJobs())
-              .filter((j) => j.data.printerId === A1)
-              .map((j) => j.data.estimateId),
+          (
+            await queuedEstimateIds(
+              A1,
+              await estimateIdsOf(
+                plates.map((p) => p.id),
+                A1,
+              ),
+            )
           ).size,
         (n) => n === 3,
       );
@@ -1541,22 +1574,28 @@ describe("My printers", () => {
     const held = stub.hold();
     const before = stub.calls.length;
     try {
-      await upload({ plates: 3 });
+      const { plates } = await upload({ plates: 3 });
       await until(
         () => stub.calls.length,
         (n) => n > before,
       );
       // The slice is held and the queue is singleton, so this job stays queued.
       await leftoverJob(doneA1?.id ?? "", A1, SLICE_PRIORITY.library);
+      // Only this test's own estimates: a finished estimate's leftover job can
+      // be queued behind the held slice (#490), and the poll's library copy and
+      // an urgent copy can both be queued for one estimate, so count distinct ids.
       await until(
         async () =>
-          new Set(
-            (await queuedJobs())
-              .filter((j) => j.data.printerId === A1)
-              .map((j) => j.data.estimateId),
+          (
+            await queuedEstimateIds(
+              A1,
+              await estimateIdsOf(
+                plates.map((p) => p.id),
+                A1,
+              ),
+            )
           ).size,
         (n) => n === 3,
-        15_000,
       );
       const saved = await estimates.savePrinters({ printers: [P1S], defaultId: P1S });
       expect(saved).toEqual({ added: [], removed: [A1] });
