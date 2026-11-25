@@ -22,8 +22,9 @@
 # changes job, only when docs/, apps/docs, apps/web/public (the icons it
 # serves), the workspace files its install reads, this workflow or
 # .node-version changes. It only builds, at the placeholder address: it is
-# the pull-request check, and nothing here is deployed. Publishing to GitHub Pages is docs-pages.yml, on main only.
-# Nothing depends on it.
+# the pull-request check, and nothing here is deployed. docs-pages.yml
+# publishes the site to GitHub Pages, from the highest release tag. Nothing
+# depends on it.
 #
 # The two slicing gate jobs keep their own path scoping, decided by the changes
 # job (issue #222). The gate tests are quick, so they run when tools/slicing-gate

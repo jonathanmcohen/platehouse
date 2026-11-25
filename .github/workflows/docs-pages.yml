@@ -28,7 +28,9 @@
 # rule, then run this workflow by hand from the tag.
 #
 # A tag push starts this workflow beside the image builds, so the docs can go
-# live some minutes before both images are out.
+# live some minutes before both images are out, and stay live if release.yml's
+# gate then refuses the images; RELEASING.md, "The docs site", says how to take
+# them back.
 #
 # The site's address comes from the Pages setup, not from this repository:
 # actions/configure-pages reports the origin and the base path, and the build

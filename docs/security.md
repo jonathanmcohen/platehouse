@@ -326,17 +326,16 @@ container, the slicer, which is locked down.
   the files it writes itself, such as the slice's time and memory report, in the job folder above
   it, out of OrcaSlicer's reach.
 - **The sandbox is checked first.** At start-up the slicer checks that the sandbox really blocks a
-  read outside the job folder, and runs no render, slice or STEP conversion until that check
-  passes. It needs Linux 6.12 or newer (Landlock ABI 6). The sandbox can also be off on a newer kernel; see
-  [The sandbox is off on a new kernel](./troubleshooting.md#the-sandbox-is-off-on-a-new-kernel).
-  On an older kernel, or while the check
-  fails, renders and STL pictures are off. Slices and STEP conversions are off too, unless
-  `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer: then they run without the sandbox, with only
-  the limits above and the container's own isolation. Without the sandbox, a slice or STEP
-  conversion can also read and change other files the slicer's user can reach, including
-  leftovers of earlier jobs, reach the app over the internal network and send signals to the
-  slicer's own processes. A program that keeps running after its job can also read or change later
-  jobs' files, other members' files included.
+  read outside the job folder, and runs no render, slice or STEP conversion until that check passes.
+  It needs Linux 6.12 or newer (Landlock ABI 6). The sandbox can also be off on a newer kernel; see
+  [The sandbox is off on a new kernel](./troubleshooting.md#the-sandbox-is-off-on-a-new-kernel). On
+  an older kernel, or while the check fails, renders and STL pictures are off. Slices and STEP
+  conversions are off too, unless `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer: then they
+  run without the sandbox, with only the limits above and the container's own isolation. Without the
+  sandbox, a slice or STEP conversion can also read and change other files the slicer's user can
+  reach, including leftovers of earlier jobs, reach the app over the internal network and send
+  signals to the slicer's own processes. A program that keeps running after its job can also read or
+  change later jobs' files, other members' files included.
 
 **What it does not do:**
 

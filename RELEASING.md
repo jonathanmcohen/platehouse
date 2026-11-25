@@ -4,8 +4,9 @@ This page is for maintainers. Pushing a `v*` tag releases Platehouse: `v0.1.1` i
 `v0.2.0-rc.1` a release candidate. For each tag, `release.yml` publishes the app image
 (`ghcr.io/jonathanmcohen/platehouse`), `slicer-image.yml` publishes the slicer image
 (`ghcr.io/jonathanmcohen/platehouse-slicer`), and `rc-tag.yml` then moves the `rc` tags. Once
-both images of a release are out, `release-notes.yml` opens a draft GitHub Release. All four are
-in `.github/workflows/`.
+both images of a release are out, `release-notes.yml` opens a draft GitHub Release. `docs-pages.yml`
+runs on each tag push too, and publishes the docs site only from the highest release tag. All five
+are in `.github/workflows/`.
 
 ## Cutting a release
 
@@ -18,10 +19,12 @@ in `.github/workflows/`.
    git push origin vX.Y.Z
    ```
 
-3. Wait for the release, slicer-image and rc-tag runs to succeed. For a release (not a
-   candidate), once both images are out, release-notes opens a draft Release, "Platehouse X.Y.Z",
-   with the images, their digests and the changelog links filled in. If no draft appears, run
-   release-notes by hand from main with the tag (Actions, release-notes, Run workflow).
+3. Wait for the release, slicer-image and rc-tag runs to succeed. The docs-pages run on the tag
+   publishes the docs site when the tag is the highest release, without waiting for the images
+   (see [The docs site](#the-docs-site)). For a release (not a candidate), once both images are
+   out, release-notes opens a draft Release, "Platehouse X.Y.Z", with the images, their digests and
+   the changelog links filled in. If no draft appears, run release-notes by hand from main with the
+   tag (Actions, release-notes, Run workflow).
 4. Publish any security advisories the release fixes, with `X.Y.Z` as the patched version, once
    both images are out.
 5. Open the draft. Write Summary, What's new and Known issues, check Before you upgrade, fill in
@@ -41,10 +44,12 @@ in `.github/workflows/`.
 
 ## The release gate
 
-A `v*` tag publishes only for a commit with a successful ci run (a push or a manual dispatch) on
-main or a `release/**` branch. `.github/scripts/release-gate.mjs`, called from `release.yml`,
-waits for a ci run that is still going and fails when none succeeded. `latest` only moves to the
-highest stable release, never to a release candidate or a backport.
+A `v*` tag publishes images only for a commit with a successful ci run (a push or a manual
+dispatch) on main or a `release/**` branch. `.github/scripts/release-gate.mjs`, called from
+`release.yml`, waits for a ci run that is still going and fails when none succeeded. `latest` only
+moves to the highest stable release, never to a release candidate or a backport. The docs site
+does not wait for this gate: docs-pages publishes from the tag on its push, so it can be live
+before the gate refuses the images (see [The docs site](#the-docs-site) for the way back).
 
 ## The docs site
 
@@ -72,12 +77,19 @@ also matches rc and throwaway tags. The workflow's decision step skips those, an
 whose commit is on neither main nor a `release/**` branch, but it is not a security control: a
 tag runs the workflow file at its own commit, so a tag on a commit with a changed workflow can
 leave the step out. The server-side controls are this environment rule and a tag ruleset on
-`refs/tags/v*` that lets only admins create, move or delete those tags. Without the rule, a tag's
-deploy job fails with an environment protection error and the site stays as it was: add the
-rule, then run docs-pages by hand from the tag.
+`refs/tags/v*` (Settings, Rules) that lets only admins create, move or delete those tags.
+Without the environment rule, a tag's deploy job fails with an environment protection error and
+the site stays as it was: add the rule, then run docs-pages by hand from the tag.
 
 A tag push runs docs-pages beside the image builds, so the docs can go live some minutes before
-both images are out.
+both images are out, and stay live if the release gate then refuses the images. To take them back
+in that case, delete the tag, then run docs-pages by hand from the previous release tag
+(Actions, docs-pages, Run workflow, choosing that tag):
+
+```sh
+git push origin --delete refs/tags/vX.Y.Z
+git tag -d vX.Y.Z
+```
 
 ### Publishing a docs fix
 
