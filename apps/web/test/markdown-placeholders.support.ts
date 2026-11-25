@@ -21,6 +21,8 @@ import { gfm } from "micromark-extension-gfm";
  */
 export const ALLOWED_TAGS: Record<string, string> = {
   img: "README.md's first line shows the logo at a fixed size, which Markdown image syntax cannot set",
+  allowlistwarning:
+    "six docs pages render the shared allowlist warning (docs/reverse-proxy/_allowlist-warning.md) as an MDX component, and GitHub shows nothing in its place (an accepted cost: the docs site is the reading place)",
 };
 
 /** One raw HTML node: its line and its text (the first line, for a block). */

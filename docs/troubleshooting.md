@@ -54,12 +54,12 @@ and never logs a secret, token or slicer link.
   away), or when the server no longer knows the upload. Look for the model in the library before
   sending the file again: it often appears once the import finishes. If it is still missing after
   an hour, press **Retry**.
-- **"The server is out of room for uploads"**: the server refused the upload with 507.
-  Unfinished uploads already hold `UPLOAD_TEMP_MAX_BYTES` together, `TMP_DIR` already holds
-  10,000 uploads, or this one would leave the disk under `TMP_DIR` with less than 1 GiB free or
-  fewer than 10,000 free inodes. The free space counts the bytes other unfinished uploads are
-  still to receive, so a 507 can come while the disk still shows room. Nothing was saved.
-  The server logs each refusal with the session or token it was for:
+- **"The server is out of room for uploads"**: the server refused the upload with 507, because
+  the total of unfinished uploads, the 10,000 uploads or the free disk or inodes under `TMP_DIR`
+  ran out (the rules are in [Upload limits](./storage.md#upload-limits)). Nothing was saved. A 507
+  can come while the disk still shows room, because the free space counts the bytes other
+  unfinished uploads are still to receive. The server logs each refusal with the session or token
+  it was for:
   - For `UPLOAD_TEMP_MAX_BYTES`, the line also names the three users holding the most bytes.
     Free space on that disk or raise `UPLOAD_TEMP_MAX_BYTES` in `.env`, or wait for their uploads
     to finish or be removed. A `docker-compose.yml` copied before the example passed this setting
@@ -70,19 +70,17 @@ and never logs a secret, token or slicer link.
     are kept for a day after their import, so this clears as they age out.
   - For the free space or inodes, it names no one: free space on the disk under `TMP_DIR`.
 
-  **Retry** may also work once other uploads have finished. See
-  [Storage](./storage.md#what-is-stored-where).
+  **Retry** may also work once other uploads have finished.
 - **"Too many of your uploads are unfinished"**: the server refused the upload with 429, because
-  your session already has 20 uploads that have not finished. Nothing was saved.
-  The dialog sends three at a time, so the others are usually in another tab or were left by an
-  earlier batch that stopped part way. An unfinished upload is deleted an hour after it was
-  created if it has received nothing, and 24 hours after otherwise. Let the others finish, then
-  press **Retry**.
+  your session already has 20 uploads that have not finished (see
+  [Upload limits](./storage.md#upload-limits)). Nothing was saved. The dialog sends three at a
+  time, so the others are usually in another tab or were left by an earlier batch that stopped
+  part way. Let the others finish, then press **Retry**.
 - **"You have sent a great many files recently"**: the server refused the upload with 429,
   because your session or API token already has 2,000 uploads on the server, finished ones
-  included. A finished upload's record is kept for a day after its import, so this clears by
-  itself: try again tomorrow. Nothing was saved. Whoever runs Platehouse can see it in the
-  server's log, which names the session or token refused.
+  included (see [Upload limits](./storage.md#upload-limits)). This clears by itself: try again
+  tomorrow. Nothing was saved. Whoever runs Platehouse can see it in the server's log, which names
+  the session or token refused.
 - **"No Bambu plate data in this file"**: the `.3mf` was stored, but Platehouse could not read plate
   data from it. It may be damaged, not a Bambu or OrcaSlicer project, or over one of the safety
   limits (for example more than 128 plates).
