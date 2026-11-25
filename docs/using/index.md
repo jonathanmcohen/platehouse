@@ -114,7 +114,7 @@ Space on it) and a toolbar appears above the grid with the number selected.
   tags, select them under one view that shows them all, such as the whole library with no search
   or filter. **Select** again, or Escape, ends Select mode and clears the selection. Escape does not
   end Select mode while you are typing in a text field: there it is left to the field, and in the
-  search box it clears the search.
+  search box it clears the text you typed.
 - While the page checks which selected models a new search or filter shows, the actions wait. If
   that check fails, the toolbar says so and offers **Try again**.
 
