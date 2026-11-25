@@ -28,6 +28,7 @@ import {
   keysOf,
   readObject,
   settledFile,
+  settledJobs,
   startDerivedEnv,
   until,
 } from "../support/derived.js";
@@ -162,7 +163,7 @@ describe("STL previews (issue #316)", () => {
     expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
     // No wait and no retry: one call, one job, that ended failed.
     expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(1);
-    const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
+    const jobs = await settledJobs(env, fileId);
     expect(jobs).toHaveLength(1);
     expect(jobs[0]?.output).toMatchObject({ status: "failed", reason: "sandbox_off" });
     expect(jobs[0]?.retryCount).toBe(0);

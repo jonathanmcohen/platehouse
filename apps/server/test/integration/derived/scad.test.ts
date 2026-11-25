@@ -41,6 +41,7 @@ import {
   keysOf,
   readObject,
   settledFile,
+  settledJobs,
   startDerivedEnv,
   until,
 } from "../support/derived.js";
@@ -434,7 +435,7 @@ describe("a slicer that cannot render right now (uses no retry)", () => {
       derivedMessage: DERIVED_MESSAGES.sandboxOffKernel,
     });
     expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
-    const jobs = await jobsFor(fileId);
+    const jobs = await settledJobs(env, fileId);
     expect(jobs).toHaveLength(1);
     expect(jobs[0]?.output).toMatchObject({ status: "failed", reason: "sandbox_off" });
     expect(jobs[0]?.retryCount).toBe(0);
@@ -575,7 +576,7 @@ describe("a slicer that stays down (issue #100)", () => {
     await expect(env.store.getBlobStream(stagedBlob.key)).rejects.toBeInstanceOf(BlobNotFound);
 
     // It stopped waiting, and the wait used none of the job's retries.
-    const jobs = await jobsFor(fileId);
+    const jobs = await settledJobs(env, fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     const replacementJobs = jobs.filter((j) => j.data.sourceBlobId === staged.sourceBlobId);
     expect(replacementJobs).toHaveLength(3);
@@ -600,7 +601,7 @@ describe("a slicer that stays down (issue #100)", () => {
       renderStlBlobId: null,
       renderPngBlobId: null,
     });
-    const jobs = await jobsFor(fileId);
+    const jobs = await settledJobs(env, fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     expect(jobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
   });
@@ -636,7 +637,7 @@ describe("a slicer that stays down (issue #100)", () => {
       renderedBytes("/v1/scad/stl", second),
     );
 
-    const jobs = await jobsFor(fileId);
+    const jobs = await settledJobs(env, fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     expect(jobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
   });
@@ -735,7 +736,7 @@ describe("a store that cannot be reached (uses no retry)", () => {
     await expect(env.store.getBlobStream(stagedBlob.key)).rejects.toBeInstanceOf(BlobNotFound);
 
     // It stopped waiting, and the wait used none of the job's retries.
-    const jobs = await jobsFor(fileId);
+    const jobs = await settledJobs(env, fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     const replacementJobs = jobs.filter((j) => j.data.sourceBlobId === staged.sourceBlobId);
     expect(replacementJobs).toHaveLength(3);
@@ -760,7 +761,7 @@ describe("a store that cannot be reached (uses no retry)", () => {
       renderPngBlobId: null,
     });
     expect(env.stub.renders.calls).toHaveLength(0);
-    const jobs = await jobsFor(fileId);
+    const jobs = await settledJobs(env, fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     expect(jobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
   });
@@ -918,7 +919,7 @@ describe("a store that answers and refuses (issue #102)", () => {
     expect(await keysOf(env, modelId)).toEqual(oldKeys);
     await expect(env.store.getBlobStream(stagedBlob.key)).rejects.toBeInstanceOf(BlobNotFound);
     expect(env.stub.renders.calls).toHaveLength(0);
-    expect((await jobsFor(fileId)).filter((j) => LIVE.has(j.state))).toEqual([]);
+    expect((await settledJobs(env, fileId)).filter((j) => LIVE.has(j.state))).toEqual([]);
   });
 
   test("a source object that is gone gets the storage message on the first attempt, with no retry", async () => {
