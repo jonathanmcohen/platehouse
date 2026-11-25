@@ -77,7 +77,7 @@ import { AboutTab, MakerWorldLink, makerWorldHref } from "./AboutTab";
 import { derivedMessageIn, FilesTab, formatSize, previewStatusWords, viewable } from "./FilesTab";
 import type { Platform } from "./OpenInSlicer";
 import { PlatesTab } from "./PlatesTab";
-import { PlateViewer } from "./PlateViewer";
+import { PageStatusSlot, PlateViewer } from "./PlateViewer";
 import { type ThreeLoader, Viewer3d } from "./Viewer3d";
 
 export type FileKind = "3mf" | "stl" | "step" | "scad";
@@ -293,6 +293,20 @@ interface Refused {
   answers: number;
 }
 
+/**
+ * What a successful Retry says, for the model with this id. It is for one
+ * plate (its file's name and index); it goes once that plate's estimate has
+ * settled, which is told by the plate having been seen estimating and not
+ * any more (busy), or no longer being on the page.
+ */
+interface Queued {
+  id: string;
+  words: string;
+  fileName: string;
+  plateIndex: number;
+  busy: boolean;
+}
+
 /** A plate in words for a message: "plate 2" or "plate 2 Huge". */
 function plateWords(target: RetryTarget, t: I18n["t"]): string {
   return target.plate.name === null
@@ -330,7 +344,9 @@ export function ModelPage({
   const { choice, settle: settlePrinter } = printer;
   const [refused, setRefused] = useState<Refused | null>(null);
   /** What a successful Retry says, for that model's id; the latest of this and the refusal wins. */
-  const [queued, setQueued] = useState<{ id: string; words: string } | null>(null);
+  const [queued, setQueued] = useState<Queued | null>(null);
+  /** The page's status region, where a plate's 3D view says why it has none. */
+  const [statusRegion, setStatusRegion] = useState<HTMLElement | null>(null);
   /** Whether the last answer made the page forget its printer choice, so the next request only asks for it again. */
   const forgetting = useRef(false);
   if (refused !== null && refused.id !== id) setRefused(null);
@@ -463,6 +479,9 @@ export function ModelPage({
     const plate = plateWords(target, t);
     setQueued({
       id,
+      fileName: target.fileName,
+      plateIndex: target.plate.index,
+      busy: false,
       words: target.inFile
         ? t("model.numbers.queuedIn", { plate, file: target.fileName })
         : t("model.numbers.queued", { plate }),
@@ -526,6 +545,14 @@ export function ModelPage({
   }
 
   const { model } = current;
+  if (queued !== null) {
+    const queuedPlate = model.files
+      .find((f) => f.name === queued.fileName)
+      ?.plates.find((p) => p.index === queued.plateIndex);
+    const estimating = queuedPlate !== undefined && isEstimating(queuedPlate);
+    if (estimating && !queued.busy) setQueued({ ...queued, busy: true });
+    else if (!estimating && (queued.busy || queuedPlate === undefined)) setQueued(null);
+  }
   return (
     <DropZone onFiles={(files) => onFiles?.(files, model.id)}>
       {notice?.id !== model.id ? null : notice.kind === "signed-out" ? (
@@ -541,7 +568,7 @@ export function ModelPage({
         </div>
       )}
       {/* Always in the page, so a screen reader hears what is put in it. */}
-      <div role="status">
+      <div role="status" ref={setStatusRegion}>
         {refused === null ? null : (
           <p className="studio-alert studio-alert-alert">
             {t("model.numbers.notRetryable", {
@@ -552,18 +579,20 @@ export function ModelPage({
         )}
         {queued === null ? null : <p className="studio-muted">{queued.words}</p>}
       </div>
-      <ModelDetail
-        key={model.id}
-        model={model}
-        onRetry={retry}
-        onChoosePrinter={choosePrinter}
-        chosenPrinter={choice}
-        onRename={rename}
-        loadThree={loadThree}
-        navigateTo={navigateTo}
-        platform={platform}
-        {...(onFiles === undefined ? {} : { onAddFiles: () => onFiles([], model.id) })}
-      />
+      <PageStatusSlot.Provider value={statusRegion}>
+        <ModelDetail
+          key={model.id}
+          model={model}
+          onRetry={retry}
+          onChoosePrinter={choosePrinter}
+          chosenPrinter={choice}
+          onRename={rename}
+          loadThree={loadThree}
+          navigateTo={navigateTo}
+          platform={platform}
+          {...(onFiles === undefined ? {} : { onAddFiles: () => onFiles([], model.id) })}
+        />
+      </PageStatusSlot.Provider>
     </DropZone>
   );
 }

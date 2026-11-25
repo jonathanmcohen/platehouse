@@ -1376,6 +1376,58 @@ describe("failed plate shows the plain reason and a retry button", () => {
     expect(container.querySelector('[data-plate] [role="status"]')).toBeNull();
   });
 
+  test("the queued message goes once that plate's estimate has numbers", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(text(pageStatus())).toBe("Estimate queued for plate 2 (Huge)");
+    models.set(
+      MODEL_ID,
+      model([
+        threeMf([
+          plate(1, "Base", { file: fileNumbers(1) }),
+          plate(2, "Huge", { platehouse: estimate("current") }),
+          plate(3, "Lid", { file: fileNumbers(3) }),
+        ]),
+      ]),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    await settle();
+    expect(text(pageStatus())).toBe("");
+  });
+
+  test("the queued message goes once that plate's estimate has failed again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(text(pageStatus())).toBe("Estimate queued for plate 2 (Huge)");
+    models.set(MODEL_ID, failedModel());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    await settle();
+    expect(text(pageStatus())).toBe("");
+  });
+
+  test("the queued message stays while that plate is still estimating", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    await settle();
+    expect(text(pageStatus())).toBe("Estimate queued for plate 2 (Huge)");
+  });
+
   test("with several .3mf files the queued message names the file too", async () => {
     models.set(
       MODEL_ID,
@@ -2242,7 +2294,7 @@ describe("a .3mf plate's 3D view (issue #358)", () => {
   }
 
   function alertText(): string {
-    return text(container.querySelector('.studio-viewer [role="alert"]'));
+    return text(container.querySelector('[role="status"]'));
   }
 
   const meshRequests = () => requests.filter((r) => r.includes("/mesh"));
@@ -2388,6 +2440,21 @@ describe("a .3mf plate's 3D view (issue #358)", () => {
     },
   );
 
+  test("the reason is said in the page's one status region, present before the failure, not in an alert", async () => {
+    meshAnswer = () => json({ error: "no_mesh", code: "too_large", message: "x" }, 422);
+    await render(pageAt(MODEL_ID));
+    const region = container.querySelector('[role="status"]');
+    expect(region).not.toBeNull();
+    expect(text(region)).toBe("");
+    await click(toggle());
+    expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
+    expect(container.querySelector('[role="status"]')).toBe(region);
+    expect(text(region)).toBe(
+      "Base has no 3D view: its objects are too large to show in the browser.",
+    );
+    expect(container.querySelector('.studio-viewer [role="alert"]')).toBeNull();
+  });
+
   test("a file that cannot be read right now keeps the picture and says to try again later", async () => {
     meshAnswer = () => json({ error: "unavailable", message: "x" }, 503);
     await render(pageAt(MODEL_ID));
@@ -2491,10 +2558,10 @@ describe("a .3mf plate's 3D view (issue #358)", () => {
     expect(alertText()).not.toBe("");
     const strip = [...container.querySelectorAll<HTMLButtonElement>(".studio-plate-strip button")];
     await click(strip[1]);
-    expect(container.querySelector('.studio-viewer [role="alert"]')).toBeNull();
+    expect(alertText()).toBe("");
     // Back on the first plate, the reason is not shown again until asked.
     await click(strip[0]);
-    expect(container.querySelector('.studio-viewer [role="alert"]')).toBeNull();
+    expect(alertText()).toBe("");
     await click(toggle());
     expect(alertText()).toMatch(/Base has no 3D view/);
   });
