@@ -110,8 +110,11 @@ async function inFlight(): Promise<number> {
 }
 
 /**
- * Jobs still to run on the slicer and maintenance queues (created, retry or
- * active), by queue, state and kind, so a timed-out drain names what it waited on.
+ * Jobs still to run (created, retry or active), by queue, state and kind, so a
+ * timed-out drain names what it waited on: every job on the slicer queue, and
+ * on the maintenance queue only a poll-orca task already due to start. That is
+ * the poll savePrinters sends; a scheduled task stuck in retry, or one waiting
+ * on a later start, would otherwise time out every test after it.
  */
 async function liveQueueJobs(): Promise<
   Array<{ name: string; state: string; kind: string | null; n: number }>
@@ -120,24 +123,28 @@ async function liveQueueJobs(): Promise<
     select name, state::text as state, coalesce(data->>'kind', data->>'task') as kind,
            count(*)::int as n
     from ${BOSS_JOB}
-    where name in (${QUEUE.slicer}, ${QUEUE.maintenance})
-      and state in ('created', 'retry', 'active')
+    where state in ('created', 'retry', 'active')
+      and (name = ${QUEUE.slicer}
+           or (name = ${QUEUE.maintenance}
+               and data->>'task' = ${MAINTENANCE_TASKS.pollOrca}
+               and start_after <= now()))
     group by name, state, coalesce(data->>'kind', data->>'task')
     order by name, state, kind
   `.execute(env.db);
   return rows;
 }
 
-/** No estimate is pending or running, and no job is left on either queue. */
+/** No estimate is pending or running, and no job liveQueueJobs counts is left. */
 async function settled() {
   return { estimates: await inFlight(), jobs: await liveQueueJobs() };
 }
 
 /**
  * Waits until the slicer queue has drained: no estimate is pending or running,
- * and no job is left on the slicer or maintenance queue. It waits out leftover
- * no-op slice jobs, and the maintenance poll savePrinters sends, so neither
- * crosses into the next test's counted window (#490).
+ * no job is left on the slicer queue, and no poll-orca task is due on the
+ * maintenance queue. It waits out leftover no-op slice jobs, and the poll
+ * savePrinters sends, so neither crosses into the next test's counted window
+ * (#490).
  */
 async function drain(): Promise<void> {
   const done = (v: Awaited<ReturnType<typeof settled>>) => v.estimates === 0 && v.jobs.length === 0;
