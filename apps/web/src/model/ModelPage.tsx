@@ -255,7 +255,7 @@ export function needsPolling(model: ModelView): boolean {
 
 type Load =
   | { id: string; status: "loading" }
-  | { id: string; status: "ready"; model: ModelView }
+  | { id: string; status: "ready"; model: ModelView; seq: number }
   | { id: string; status: "missing" }
   | { id: string; status: "failed" }
   | { id: string; status: "signed-out" };
@@ -291,6 +291,22 @@ interface Refused {
   id: string;
   target: RetryTarget;
   answers: number;
+}
+
+/**
+ * What a successful Retry says, for the model with this id. It is for one
+ * plate (its file's name and index); it goes once an answer to a request
+ * started after the Retry (afterSeq on) shows that plate no longer
+ * estimating, or no longer on the page. An answer to an earlier request,
+ * such as a poll still in flight, still shows the failed estimate and is
+ * not taken as the result.
+ */
+interface Queued {
+  id: string;
+  words: string;
+  fileName: string;
+  plateIndex: number;
+  afterSeq: number;
 }
 
 /** A plate in words for a message: "plate 2" or "plate 2 Huge". */
@@ -330,7 +346,9 @@ export function ModelPage({
   const { choice, settle: settlePrinter } = printer;
   const [refused, setRefused] = useState<Refused | null>(null);
   /** What a successful Retry says, for that model's id; the latest of this and the refusal wins. */
-  const [queued, setQueued] = useState<{ id: string; words: string } | null>(null);
+  const [queued, setQueued] = useState<Queued | null>(null);
+  /** The number of the last model request started, so an answer is known to be from before or after a Retry. */
+  const requestSeq = useRef(0);
   /** Whether the last answer made the page forget its printer choice, so the next request only asks for it again. */
   const forgetting = useRef(false);
   if (refused !== null && refused.id !== id) setRefused(null);
@@ -376,6 +394,8 @@ export function ModelPage({
       timer = undefined;
       if (inFlight) return;
       inFlight = true;
+      requestSeq.current += 1;
+      const seq = requestSeq.current;
       try {
         const res = await fetch(
           `/app/api/models/${encodeURIComponent(id)}${printerQuery(choice)}`,
@@ -408,7 +428,7 @@ export function ModelPage({
         polling.current = needsPolling(model);
         answeredAt.current = Date.now();
         setNotice(null);
-        setLoad({ id, status: "ready", model });
+        setLoad({ id, status: "ready", model, seq });
         settlePrinter(model.printer);
         if (polling.current) askLater();
       } catch {
@@ -463,6 +483,9 @@ export function ModelPage({
     const plate = plateWords(target, t);
     setQueued({
       id,
+      fileName: target.fileName,
+      plateIndex: target.plate.index,
+      afterSeq: requestSeq.current + 1,
       words: target.inFile
         ? t("model.numbers.queuedIn", { plate, file: target.fileName })
         : t("model.numbers.queued", { plate }),
@@ -526,6 +549,13 @@ export function ModelPage({
   }
 
   const { model } = current;
+  if (queued !== null) {
+    const queuedPlate = model.files
+      .find((f) => f.name === queued.fileName)
+      ?.plates.find((p) => p.index === queued.plateIndex);
+    const estimating = queuedPlate !== undefined && isEstimating(queuedPlate);
+    if (!estimating && current.seq >= queued.afterSeq) setQueued(null);
+  }
   return (
     <DropZone onFiles={(files) => onFiles?.(files, model.id)}>
       {notice?.id !== model.id ? null : notice.kind === "signed-out" ? (

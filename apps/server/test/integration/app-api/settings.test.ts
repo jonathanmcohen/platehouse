@@ -503,15 +503,14 @@ describe("the settings page", () => {
       expect(await pollJobs()).toBeGreaterThan(pollsBefore);
       // Running the poll queues one slice job per plate.
       await estimates.pollOrca();
-      // Live jobs (a worker may have claimed one), by estimate: a poll the
+      // Jobs in any state (a worker may have claimed or finished one, and
+      // pg-boss writes a finished job's state late), by estimate: a poll the
       // maintenance worker runs at the same time may send a copy.
       const sliceJobs = await boss.findJobs<{ printerId: string; estimateId: string }>(
         QUEUE.slicer,
         {},
       );
-      const forX1C = sliceJobs.filter(
-        (j) => j.data.printerId === X1C && ["created", "retry", "active"].includes(j.state),
-      );
+      const forX1C = sliceJobs.filter((j) => j.data.printerId === X1C);
       expect(new Set(forX1C.map((j) => j.data.estimateId)).size).toBe(queued);
       // The settings answer shows that work waiting for the X1C.
       expect((await call("GET", "/app/api/settings")).json()).toMatchObject({

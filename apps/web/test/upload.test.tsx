@@ -194,6 +194,13 @@ function visibleStatus(el: Element | null): string | undefined {
   return copy.textContent ?? "";
 }
 
+/** The text a screen reader reads in linear browsing: every node but those under aria-hidden. */
+function readText(node: Node): string {
+  if (node instanceof Element && node.getAttribute("aria-hidden") === "true") return "";
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+  return [...node.childNodes].map(readText).join("");
+}
+
 function rowOf(name: string): HTMLElement {
   const row = container.querySelector<HTMLElement>(`[data-upload="${name}"]`);
   if (row === null) throw new Error(`no row for ${name}`);
@@ -1259,6 +1266,48 @@ describe("many files, slow imports and failures", () => {
     await render(node(() => {}));
     await settle();
     expect([...dialogRegion().children]).toHaveLength(1);
+  });
+
+  test("an unsupported-type row reads its file name once in linear browsing, and the announcement still names the file", async () => {
+    const { start, fetchResult } = stubUploads(added);
+    const notes = new File([new Uint8Array(5)], "qa.txt");
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[notes]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    const read = readText(rowOf("qa.txt")).trim();
+    expect(read).toMatch(/^qa\.txt: Not a supported file type/);
+    expect(read.split("qa.txt")).toHaveLength(2);
+    expect(dialogRegion().textContent).toMatch(/^qa\.txt: Not a supported file type/);
+  });
+
+  test("a row with a progress bar reads its file name once in linear browsing, the bar naming no file", async () => {
+    const { start, fetchResult } = stubUploads(added);
+    const part = new File([new Uint8Array(5)], "part.stl");
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[part]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    const row = rowOf("part.stl");
+    const bar = row.querySelector("progress");
+    expect(bar?.getAttribute("aria-label")).toBe("Upload progress");
+    const read = readText(row) + (bar?.getAttribute("aria-label") ?? "");
+    expect(read.split("part.stl")).toHaveLength(2);
+    expect(readText(row)).toMatch(/^part\.stl: /);
   });
 
   test("a row added while the dialog is closed is not announced", async () => {

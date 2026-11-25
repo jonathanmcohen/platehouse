@@ -11,9 +11,11 @@
 // on Show in 3D when it closes. While the view is open, choosing another
 // plate in the strip shows that plate in 3D. A plate whose 3D view cannot
 // be shown (no mesh the server can read, the file unavailable, no WebGL)
-// goes back to its picture, says why in an alert under it, and puts focus
-// back on Show in 3D; the reason goes when the view is opened again or
-// another plate is chosen. A plate with no thumbnail still has Show in 3D.
+// goes back to its picture, says why under it, and puts focus back on Show
+// in 3D; the reason goes when the view is opened again or another plate is
+// chosen. The reason is put in a status region that is on the page in every
+// mode, empty until then, so a screen reader announces it after the focus
+// move. A plate with no thumbnail still has Show in 3D.
 import { useEffect, useRef, useState } from "react";
 import { type MessageKey, useI18n } from "../i18n/I18n";
 import type { ModelFile } from "./ModelPage";
@@ -103,12 +105,17 @@ export function PlateViewer({ file, selected, onSelect, loadThree }: PlateViewer
       </button>
     </div>
   );
-  const reason =
-    failed === null || failed.plateId !== shown.id ? null : (
-      <div role="alert" className="studio-alert studio-alert-alert">
-        <p>{i18n.t(FAILURE_WORDS[failed.failure], { label })}</p>
-      </div>
-    );
+  const words =
+    failed === null || failed.plateId !== shown.id
+      ? null
+      : i18n.t(FAILURE_WORDS[failed.failure], { label });
+  // Always in the page, empty until a failure, so a screen reader hears what
+  // is put in it after the focus move.
+  const reason = (
+    <div role="status" data-plate-view-status>
+      {words === null ? null : <p className="studio-alert studio-alert-alert">{words}</p>}
+    </div>
+  );
 
   return (
     <>
@@ -132,7 +139,6 @@ export function PlateViewer({ file, selected, onSelect, loadThree }: PlateViewer
             <p className="studio-placeholder">{i18n.t("model.plate.noThumbnail", { label })}</p>
           </div>
           {toggle}
-          {reason}
         </>
       ) : (
         <PlateImage
@@ -141,14 +147,10 @@ export function PlateViewer({ file, selected, onSelect, loadThree }: PlateViewer
           alt={i18n.t("model.plate.alt", { index: shown.index, label })}
           onOpen={open}
           openLabel={i18n.t("model.plate3d.openLabel", { label })}
-          actions={
-            <>
-              {toggle}
-              {reason}
-            </>
-          }
+          actions={toggle}
         />
       )}
+      {reason}
       <PlateStrip plates={plates} selected={shown.index} onSelect={select} />
     </>
   );

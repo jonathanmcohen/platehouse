@@ -1428,7 +1428,7 @@ describe("upload dialog shows progress per file and honours combine", () => {
 
   function progressOf(name: string): HTMLProgressElement {
     const bar = container.querySelector<HTMLProgressElement>(
-      `progress[aria-label="Upload progress for ${name}"]`,
+      `[data-upload="${name}"] progress[aria-label="Upload progress"]`,
     );
     if (bar === null) throw new Error(`no progress bar for ${name}`);
     return bar;

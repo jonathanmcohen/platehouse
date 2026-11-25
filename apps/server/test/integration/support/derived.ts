@@ -6,11 +6,16 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { PgBoss } from "pg-boss";
 import type { ModelFile } from "../../../src/db/types.js";
-import { createDerived, type Derived, derivedJobHandlers } from "../../../src/derived/derived.js";
+import {
+  createDerived,
+  type Derived,
+  type DerivedJob,
+  derivedJobHandlers,
+} from "../../../src/derived/derived.js";
 import { stlFromGlb } from "../../../src/derived/mesh.js";
 import { createIngest, type Ingest } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
-import { startQueues } from "../../../src/jobs/queues.js";
+import { QUEUE, startQueues } from "../../../src/jobs/queues.js";
 import { renderedBytes, type SlicerStub, startSlicerStub } from "../../support/slicer-stub.js";
 import { type IngestEnv, startIngestEnv } from "./ingest.js";
 
@@ -129,6 +134,22 @@ export async function settledFile(
   );
   if (!file) throw new Error("file vanished");
   return file;
+}
+
+/**
+ * A file's slicer jobs once none is still created, retrying or active, with
+ * at least one found. pg-boss writes a job's state and output only after its
+ * handler returns, and the handler has already written the file row by then,
+ * so a read straight after settledFile can see a job still active with a null
+ * output (issue #490).
+ */
+export async function settledJobs(env: DerivedEnv, fileId: string, ms?: number) {
+  const live = new Set(["created", "retry", "active"]);
+  return until(
+    () => env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } }),
+    (jobs) => jobs.length > 0 && jobs.every((j) => !live.has(j.state)),
+    ms,
+  );
 }
 
 /**

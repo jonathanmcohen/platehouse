@@ -1538,6 +1538,22 @@ describe("My printers", () => {
           [P1S, A1].every((printer) => r.some((e) => e.plateId === id && e.printerId === printer)),
         ),
     );
+    // A finished estimate can still have a job waiting, and that is no
+    // slice. The background pass may queue a plate (an estimate and a
+    // library-priority job) in the moment between ingest storing it and the
+    // upload queueing it; the upload then sends an urgent copy of the job
+    // (enqueue). The urgent copy runs first and finishes the estimate, and
+    // the library copy, behind other work in the one-slot slicer queue, runs
+    // later and ends at once on the finished estimate (runSliceJob). So the
+    // jobs are not waited out here: the test takes the ids of the jobs there
+    // are, after the maintenance poll that queued the library has returned
+    // (a job it sends for an estimate it made lands after that estimate),
+    // and asks that the reads below add none.
+    const live = ["created", "retry", "active"];
+    await until(
+      () => boss.findJobs(QUEUE.maintenance, {}),
+      (maintenance) => maintenance.every((j) => !live.includes(j.state)),
+    );
     const rows = await mine();
     const jobsOfMine = async () => {
       const ids = new Set(rows.map((r) => r.id));
@@ -1545,7 +1561,8 @@ describe("My printers", () => {
         ids.has(j.data.estimateId),
       );
     };
-    const jobs = (await jobsOfMine()).length;
+    const jobIds = async () => (await jobsOfMine()).map((j) => j.id).sort();
+    const jobsBefore = await jobIds();
 
     for (const plate of plates) {
       await estimates.plateNumbers(plate.id, A1);
@@ -1562,11 +1579,10 @@ describe("My printers", () => {
     expect(await env.repos.settings.get()).toMatchObject({ printerId: A1, myPrinters: [A1, P1S] });
 
     await sleep(1_000);
-    // No new job for these plates' estimates, none waiting, no new estimate.
-    expect(await jobsOfMine()).toHaveLength(jobs);
-    expect(
-      (await jobsOfMine()).filter((j) => ["created", "retry", "active"].includes(j.state)),
-    ).toEqual([]);
+    // No new job for these plates' estimates and no new estimate. A job
+    // already waiting at the start may run meanwhile and end at once, so
+    // waiting is not asked, only that none was added.
+    expect(await jobIds()).toEqual(jobsBefore);
     expect(await mine()).toEqual(rows);
     // The default printer is now the A1, so the default numbers are the A1's.
     expect((await estimates.plateNumbers(plateId(plates, 1))).platehouse).toMatchObject({

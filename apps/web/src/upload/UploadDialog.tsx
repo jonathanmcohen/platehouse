@@ -462,10 +462,13 @@ export function UploadDialog({
           <ul className="ph-upload-list" aria-label={t("model.tab.files")}>
             {items.map((item) => (
               <li key={item.key} className="ph-upload-row" data-upload={item.file.name}>
-                <span className="ph-upload-name">{item.file.name}</span>
+                {/* aria-hidden: the status below reads "name: status", so the name is not read twice. */}
+                <span className="ph-upload-name" aria-hidden="true">
+                  {item.file.name}
+                </span>
                 {item.status === "unsupported" ? null : (
                   <progress
-                    aria-label={t("upload.progress", { name: item.file.name })}
+                    aria-label={t("upload.progress")}
                     value={item.sent}
                     max={item.total > 0 ? item.total : 1}
                   />
