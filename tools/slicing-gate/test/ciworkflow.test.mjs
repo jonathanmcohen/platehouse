@@ -3019,6 +3019,32 @@ const runRcStep = (job, stepName, opts) => runWorkflowStep(RC_TAG, job, stepName
 const RC_APP = "ghcr.io/jonathanmcohen/platehouse";
 const RC_SLICER = "ghcr.io/jonathanmcohen/platehouse-slicer";
 
+// rc-tag.yml and release-notes.yml run after release and slicer-image, and
+// GitHub matches those by name, so a fork pull request's workflow named
+// release would start them too. Each job that holds a write permission goes on
+// only for a run by hand, or for a run of the real release.yml or
+// slicer-image.yml in this repository, started by a push, by hand or by the
+// schedule. A re-run keeps its event, so it passes as well.
+const FORK_GATE =
+  "github.event_name == 'workflow_dispatch' || (github.event.workflow_run.head_repository.full_name == github.repository && contains(fromJSON('[\"push\",\"workflow_dispatch\",\"schedule\"]'), github.event.workflow_run.event) && contains(fromJSON('[\".github/workflows/release.yml\",\".github/workflows/slicer-image.yml\"]'), github.event.workflow_run.path))";
+// The ids of a workflow's jobs.
+const jobIds = (t) => [...t.slice(t.indexOf("\njobs:\n")).matchAll(/\n {2}([\w-]+):\n/g)].map((m) => m[1]);
+
+for (const [name, file] of [
+  ["rc-tag", join(ROOT, ".github", "workflows", "rc-tag.yml")],
+  ["release-notes", join(ROOT, ".github", "workflows", "release-notes.yml")],
+]) {
+  test(`${name}: every job with a write permission runs only for a run by hand or a run of this repository's own release workflows`, () => {
+    const t = readFileSync(file, "utf8");
+    const writers = jobIds(t).filter((id) => /\n {4}permissions:\n(?: {6}\S.*\n)*? {6}[\w-]+: write\n/.test(jobBlock(t, id)));
+    assert.ok(writers.length > 0, "a job holds a write permission");
+    for (const id of writers) {
+      const job = jobBlock(t, id);
+      assert.ok(job.includes(`\n    if: ${FORK_GATE}\n`), `${id} carries the gate\n${job}`);
+    }
+  });
+}
+
 test("rc-tag: runs after every release or slicer-image run and by hand, one run at a time, never cancelled", () => {
   const t = rcText();
   const on = onBlock(t);
@@ -3037,8 +3063,9 @@ test("rc-tag: runs after every release or slicer-image run and by hand, one run 
   assert.match(job, /\n {4}timeout-minutes: 15\n/);
   assert.match(job, /\n {4}permissions:\n {6}contents: read\n {6}packages: write\n(?! {6}\S)/);
   for (const s of t.matchAll(/secrets\.(\w+)/g)) assert.equal(s[1], "GITHUB_TOKEN", "no secret but the job token");
-  // Never the triggering run's facts: no event payload, no head commit.
-  assert.doesNotMatch(t, /github\.event\b|workflow_run\.|head_sha|github\.sha/);
+  // Never the triggering run's facts: no event payload, no head commit. Only
+  // the fork gate reads where the run came from, to decide whether to run.
+  assert.doesNotMatch(t.replace(`\n    if: ${FORK_GATE}\n`, "\n"), /github\.event\b|workflow_run\.|head_sha|github\.sha/);
   assert.doesNotMatch(stepBlock(job, "Check out"), /\n {10}ref:/, "checks out main, never another commit");
   assert.doesNotMatch(t, /[^\x00-\x7F]/, "ASCII only");
 });
