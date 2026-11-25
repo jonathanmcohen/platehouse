@@ -134,6 +134,26 @@ test("imageFacts: throws on JSON it cannot read, or with no platform", () => {
   assert.throws(() => imageFacts(JSON.stringify({ "unknown/unknown": { os: "unknown", architecture: "unknown" } })));
 });
 
+// The platform strings and ORCA_VERSION come from the registry and land in the
+// Images table: a | or a line break would split its rows and add headings.
+test("imageFacts: refuses a platform whose os or architecture is not a plain name", () => {
+  const config = (architecture) => ({ os: "linux", architecture, config: { Env: [] } });
+  assert.throws(
+    () => imageFacts(JSON.stringify({ "linux/amd64|x\n## injected": config("amd64") })),
+    /"linux\/amd64\|x\\n## injected"/,
+  );
+  assert.throws(() => imageFacts(JSON.stringify({ "Linux/amd64": config("amd64") })), /"Linux\/amd64"/);
+  assert.throws(() => imageFacts(JSON.stringify({ os: "linux", architecture: "amd 64", config: {} })), /"linux\/amd 64"/);
+});
+
+test("imagesTable: refuses an Orca version that is not a plain version, naming ORCA_VERSION", () => {
+  assert.throws(
+    () => imagesTable({ ...V011, slicer: { ...V011.slicer, orcaVersion: "2.5.2 | x\n## hi" } }),
+    (err) => err.message.includes("ORCA_VERSION") && err.message.includes('"2.5.2 | x\\n## hi"'),
+  );
+  assert.ok(imagesTable({ ...V011, slicer: { ...V011.slicer, orcaVersion: "2.6.0-beta+1" } }).includes("OrcaSlicer 2.6.0-beta+1"));
+});
+
 test("imagesTable: 0.1.1's table, as the Images section shows it", () => {
   assert.equal(
     imagesTable(V011),
@@ -200,6 +220,28 @@ test("releaseValues gives exactly the template's keys", () => {
     "todo",
     "version",
   ]);
+});
+
+test("releaseValues: refuses a previous release that is not a vX.Y.Z tag", () => {
+  assert.throws(
+    () => releaseValues({ ...V011, tag: "v0.1.1", previous: "v0.1.0-rc.1", changelog: CHANGELOG }),
+    /v0\.1\.0-rc\.1/,
+  );
+});
+
+test("releaseValues: refuses a tag that is not a vX.Y.Z release tag", () => {
+  for (const tag of ["v0.1.1-rc.1", "v0.0.0-test", "0.1.1", "v0.1.1$(touch pwned)"]) {
+    assert.throws(() => releaseValues({ ...V011, tag, changelog: CHANGELOG }), /not a vX\.Y\.Z release tag/, tag);
+  }
+});
+
+// A refused value is quoted as JSON, so a line break in it cannot start a
+// line of its own in the run's log.
+test("releaseValues: a refused value is quoted, its line breaks escaped", () => {
+  assert.throws(
+    () => releaseValues({ ...V011, tag: "v0.1.1\n::error::x", changelog: CHANGELOG }),
+    (err) => err.message.includes('"v0.1.1\\n::error::x"') && !err.message.includes("\n"),
+  );
 });
 
 test("a version with no CHANGELOG section still renders", () => {
@@ -275,6 +317,62 @@ test("the command line", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// A body run with 0.1.1's images, in a scratch directory; over replaces env
+// values, and changelog the CHANGELOG text.
+function bodyRun(over = {}, changelog = CHANGELOG) {
+  const dir = mkdtempSync(join(tmpdir(), "release-notes-"));
+  try {
+    const config = (architecture, env) => ({ os: "linux", architecture, config: { Env: env } });
+    const appJson = join(dir, "app.json");
+    const slicerJson = join(dir, "slicer.json");
+    const changelogFile = join(dir, "CHANGELOG.md");
+    writeFileSync(appJson, JSON.stringify({ "linux/amd64": config("amd64", []), "linux/arm64": config("arm64", []) }));
+    writeFileSync(slicerJson, JSON.stringify(config("amd64", ["ORCA_VERSION=2.5.2"])));
+    writeFileSync(changelogFile, changelog);
+    return cli(["body", TEMPLATE_FILE, changelogFile, appJson, slicerJson], {
+      env: { TAG: "v0.1.1", PREVIOUS: "v0.1.0", REPO_URL, APP_DIGEST, SLICER_DIGEST, APP_LATEST: "true", ...over },
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("the command line: APP_LATEST other than true or false is refused", () => {
+  const r = bodyRun({ APP_LATEST: "yes" });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /APP_LATEST/);
+  assert.equal(r.stdout, "");
+});
+
+test("the command line: APP_LATEST false lists only the version tag on the app row", () => {
+  const r = bodyRun({ APP_LATEST: "false" });
+  assert.equal(r.status, 0, r.stderr);
+  const appRow = r.stdout.split("\n").find((l) => l.startsWith("| `ghcr.io/jonathanmcohen/platehouse` |"));
+  assert.equal(appRow.split(" | ")[1], "`0.1.1`");
+  assert.doesNotMatch(r.stdout, /`latest` \|/);
+});
+
+// The workflow-command format: %, CR and LF in the message are encoded, so a
+// heading cannot end the warning and start a command of its own.
+test("the command line: a warning's text is encoded for the workflow command", () => {
+  const r = bodyRun({ TAG: "v0.1.2", PREVIOUS: "v0.1.1" }, "## [0.1.2] - unreleased 100%\r::error::x\n\n### Fixed\n\n- a fix\n");
+  assert.equal(r.status, 0, r.stderr);
+  const lines = r.stderr.split("\n").filter(Boolean);
+  assert.equal(lines.length, 1, r.stderr);
+  assert.match(lines[0], /^::warning::/);
+  assert.ok(lines[0].includes("unreleased 100%25%0D::error::x"), lines[0]);
+  assert.doesNotMatch(lines[0], /\r/);
+});
+
+test("the command line: a refusal is one ::error:: line, its value quoted", () => {
+  const r = bodyRun({ TAG: "v0.1.1\n::error::x" });
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(r.stdout, "");
+  const lines = r.stderr.split("\n").filter(Boolean);
+  assert.equal(lines.length, 1, r.stderr);
+  assert.match(lines[0], /^::error::.*"v0\.1\.1\\n::error::x"/);
 });
 
 test("the command line: is-release-tag and previous", () => {

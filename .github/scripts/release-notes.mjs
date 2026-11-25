@@ -19,6 +19,9 @@
 //                                                 body, and each warning to stderr as
 //                                                 ::warning::. Refuses a slicer image with
 //                                                 no ORCA_VERSION in its env.
+// A refusal is one ::error:: line on stderr. Workflow-command text is encoded
+// (% CR LF), and a refused value is quoted as JSON, so neither can start a
+// line, or a command, of its own in the run's log.
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -29,6 +32,13 @@ export const TODO_COMMENT = "<!-- TODO: write this section, or delete it, before
 const APP_IMAGE = "ghcr.io/jonathanmcohen/platehouse";
 const SLICER_IMAGE = "ghcr.io/jonathanmcohen/platehouse-slicer";
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
+// What the registry may name in the Images table: a platform's os and
+// architecture, and the OrcaSlicer version. Nothing that could split a row.
+const PLATFORM_PART = /^[a-z0-9_.-]+$/;
+const ORCA_VERSION = /^[0-9A-Za-z.+-]+$/;
+
+/** A message as workflow-command text: %, CR and LF encoded. @param {string} s @returns {string} */
+const commandText = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 
 /** @param {unknown} tag @returns {boolean} true only for a plain vX.Y.Z, never an rc */
 export function isReleaseTag(tag) {
@@ -42,7 +52,7 @@ export function isReleaseTag(tag) {
  * @param {string} tag @param {string[]} tags @returns {string | null}
  */
 export function previousRelease(tag, tags) {
-  if (!isReleaseTag(tag)) throw new Error(`not a vX.Y.Z release tag: ${tag}`);
+  if (!isReleaseTag(tag)) throw new Error(`not a vX.Y.Z release tag: ${JSON.stringify(tag)}`);
   let best = null;
   for (const t of tags) {
     if (!isReleaseTag(t) || compareTags(t, tag) >= 0) continue;
@@ -131,6 +141,11 @@ export function imageFacts(imageJson) {
   for (const [key, config] of entries) {
     const [os, arch] = key.split("/");
     if (!os || !arch || os === "unknown" || arch === "unknown") continue;
+    if (!PLATFORM_PART.test(os) || !PLATFORM_PART.test(arch)) {
+      throw new Error(
+        `the image JSON names a platform that is not a plain os/architecture: ${JSON.stringify(key)}`,
+      );
+    }
     const platform = `${os}/${arch}`;
     if (!configs.has(platform)) configs.set(platform, config);
   }
@@ -150,11 +165,18 @@ export function imagesTable({ version, app, slicer }) {
     ["slicer", slicer.digest],
   ]) {
     if (typeof digest !== "string" || !DIGEST.test(digest)) {
-      throw new Error(`the ${name} image's digest is not sha256: and 64 hex characters: ${digest}`);
+      throw new Error(
+        `the ${name} image's digest is not sha256: and 64 hex characters: ${JSON.stringify(digest)}`,
+      );
     }
   }
   if (typeof slicer.orcaVersion !== "string" || slicer.orcaVersion.trim() === "") {
     throw new Error("the slicer image has no OrcaSlicer version (ORCA_VERSION)");
+  }
+  if (!ORCA_VERSION.test(slicer.orcaVersion)) {
+    throw new Error(
+      `the slicer image's OrcaSlicer version (ORCA_VERSION) is not a plain version: ${JSON.stringify(slicer.orcaVersion)}`,
+    );
   }
   const appTags = app.latest === true ? `\`${version}\`, \`latest\`` : `\`${version}\``;
   return [
@@ -171,9 +193,9 @@ export function imagesTable({ version, app, slicer }) {
  * @returns {{ values: Record<string, string>; warnings: string[] }}
  */
 export function releaseValues({ tag, previous, repoUrl, changelog, app, slicer }) {
-  if (!isReleaseTag(tag)) throw new Error(`not a vX.Y.Z release tag: ${tag}`);
+  if (!isReleaseTag(tag)) throw new Error(`not a vX.Y.Z release tag: ${JSON.stringify(tag)}`);
   if (previous !== null && !isReleaseTag(previous))
-    throw new Error(`the previous release is not a vX.Y.Z tag: ${previous}`);
+    throw new Error(`the previous release is not a vX.Y.Z tag: ${JSON.stringify(previous)}`);
   const version = tag.slice(1);
   const warnings = [];
   const blob = `${repoUrl}/blob/${tag}/CHANGELOG.md`;
@@ -247,7 +269,7 @@ function body([templatePath, changelogPath, appPath, slicerPath]) {
   const tag = requiredEnv("TAG");
   const latest = requiredEnv("APP_LATEST");
   if (latest !== "true" && latest !== "false")
-    throw new Error(`APP_LATEST is not true or false: ${latest}`);
+    throw new Error(`APP_LATEST is not true or false: ${JSON.stringify(latest)}`);
   const app = imageFacts(readFileSync(appPath, "utf8"));
   const slicer = imageFacts(readFileSync(slicerPath, "utf8"));
   const orcaVersion = slicer.env.ORCA_VERSION;
@@ -261,7 +283,7 @@ function body([templatePath, changelogPath, appPath, slicerPath]) {
     slicer: { digest: requiredEnv("SLICER_DIGEST"), platforms: slicer.platforms, orcaVersion },
   });
   const out = render(readFileSync(templatePath, "utf8"), values);
-  for (const w of warnings) process.stderr.write(`::warning::${w}\n`);
+  for (const w of warnings) process.stderr.write(`::warning::${commandText(w)}\n`);
   process.stdout.write(out);
 }
 
@@ -293,7 +315,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   try {
     process.exitCode = main(process.argv.slice(2));
   } catch (err) {
-    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(
+      `::error::${commandText(err instanceof Error ? err.message : String(err))}\n`,
+    );
     process.exitCode = 1;
   }
 }
