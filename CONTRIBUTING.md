@@ -98,6 +98,6 @@ switched on there (Source: GitHub Actions). See [apps/docs/README.md](apps/docs/
 ## Changelog
 
 A `CHANGELOG.md` entry says what changed for someone running Platehouse and what they must do
-about it, in one or two sentences, and links the pull request or issue for the detail. Leave out how
+about it, in a sentence or two (longer only when it carries numbers or steps), and links the pull request or issue for the detail. Leave out how
 it works inside: the files, columns or workflow steps. When an upgrade needs an action from the
 person running it, add it to the "Before you upgrade" list at the top of that version's section.
