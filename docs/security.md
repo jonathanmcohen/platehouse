@@ -281,7 +281,11 @@ container, the slicer, which is locked down.
 - **No internet.** The slicer sits on an internal Docker network shared only with the app, so it
   cannot open connections to the internet. You can confirm it: from the slicer,
   `docker exec platehouse-slicer getent hosts example.com` should fail, and so should a connection
-  to an outside address. Depending on your Docker and firewall setup, an internal network may still
+  to an outside address. The name lookup should fail on Docker Engine 26.0.0 or newer (also
+  25.0.5 and 23.0.11 and later); see which one you run with
+  `docker version --format '{{.Server.Version}}'`. On an older engine the lookup can still answer
+  when the host uses a local resolver such as systemd-resolved, while connections still fail. That
+  lets a crafted file send data out through DNS. The fix is to upgrade Docker. Depending on your Docker and firewall setup, an internal network may still
   reach ports the host itself listens on through the network's gateway address, so check that too
   and do not leave services on the host that trust any caller. To close that path, do one of these:
   - add a firewall rule on the host that drops traffic from the slicer network's subnet to the
@@ -320,7 +324,9 @@ container, the slicer, which is locked down.
   it, out of OrcaSlicer's reach.
 - **The sandbox is checked first.** At start-up the slicer checks that the sandbox really blocks a
   read outside the job folder, and runs no render, slice or STEP conversion until that check
-  passes. It needs Linux 6.12 or newer (Landlock ABI 6). On an older kernel, or while the check
+  passes. It needs Linux 6.12 or newer (Landlock ABI 6). The sandbox can also be off on a newer kernel; see
+  [The sandbox is off on a new kernel](./troubleshooting.md#the-sandbox-is-off-on-a-new-kernel).
+  On an older kernel, or while the check
   fails, renders and STL pictures are off. Slices and STEP conversions are off too, unless
   `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer: then they run without the sandbox, with only
   the limits above and the container's own isolation. Without the sandbox, a slice or STEP

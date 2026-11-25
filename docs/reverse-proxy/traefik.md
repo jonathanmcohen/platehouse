@@ -105,7 +105,8 @@ set. Keep it that way unless another proxy sits in front of Traefik; if one does
 
 <AllowlistWarning />
 
-With the file provider, use `http://127.0.0.1:3000`; the Docker labels need no change.
+With host networking and the file provider, use `http://127.0.0.1:3000`; the Docker labels need no
+change.
 
 :::
 

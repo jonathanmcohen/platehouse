@@ -141,7 +141,7 @@ inbox waits and tries again, and the log says an outage started and ended.
   tried again while the sandbox stays off. Upgrade the host's kernel to Linux 6.12 or newer, or, if
   you accept slicing without the sandbox, set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer. Once
   the slicer reports its sandbox on (or allowed without it), the plates it refused are estimated
-  again automatically, at most 50 on each Orca version check; no need to press **Retry**.
+  again automatically, at most 50 on each Orca version check; no need to press **Retry**. On Linux 6.12 or newer, see [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel).
 
 OrcaSlicer refusals, shown on the plate with OrcaSlicer's own message behind **Details**:
 
@@ -164,11 +164,13 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
 ## Renders and STEP files
 
 - **"Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12."**:
-  the slicer's sandbox is off because the host kernel has no Landlock ABI 6, so the slicer refuses
+  the slicer's sandbox is off because the slicer found no Landlock ABI 6 or newer, on an old kernel
+  or for one of the reasons in
+  [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel), so the slicer refuses
   STL pictures, STEP files' preview pictures and OpenSCAD renders, and the files keep their icon.
   Upgrade the host to Linux 6.12 or newer and restart the slicer. The files are picked up again by
   themselves once the slicer reports its sandbox on. `SLICER_ALLOW_UNSANDBOXED` does not cover
-  these.
+  these. On Linux 6.12 or newer, see the same section.
 - **"Pictures and OpenSCAD renders are off on this server: its sandbox check failed."**: the
   kernel is new enough, but the slicer's check of its sandbox failed, for example because the
   slicer's container settings were changed from the example. The slicer's log says what failed,
@@ -179,7 +181,7 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
   Upgrade the host's kernel to Linux 6.12 or newer, or, if you accept converting STEP files
   without the sandbox, set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer (see
   [Security](./security.md#the-slicer-sandbox) for what that gives up). The files are picked up
-  again once conversions can run.
+  again once conversions can run. On Linux 6.12 or newer, see [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel).
 - **"STEP previews are off on this server: its sandbox check failed."**: the same as the sandbox
   check above, for a STEP file. First check you kept the example's hardening settings for the
   slicer, and restore them. Only if you accept converting STEP files without the sandbox, set
@@ -202,6 +204,49 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
   refused the request (wrong key permissions, missing bucket). Check the storage settings.
 - **A render error with OpenSCAD's own message**: the `.scad` file itself has a problem; the message
   is OpenSCAD's.
+
+## The sandbox is off on a new kernel
+
+The slicer turns its sandbox off when the Landlock ABI it finds is below 6. On a kernel of Linux
+6.12 or newer that has three causes, each below with how to recognise it and the fix.
+
+### Landlock is turned off in the kernel
+
+The kernel's list of security modules lacks `landlock`. Check on the host:
+
+```sh
+cat /sys/kernel/security/lsm
+```
+
+If `landlock` is not in the list, add `lsm=landlock,...` to the kernel command line, keeping the
+modules already listed, and reboot. Or use a kernel that turns it on. When it works, `dmesg` shows
+"landlock: Up and running".
+
+### Docker blocks Landlock
+
+Docker Engine older than 20.10.18 has a default seccomp profile that blocks the three Landlock
+calls, and so does a custom seccomp profile that leaves them out. Upgrade Docker, or fix the
+profile. The example Compose file sets no seccomp option, so remove one you added.
+
+### A kernel without the 2025 Landlock fix
+
+The sandbox needs a Landlock fix from 2025. It is in Linux 6.12.24, 6.13.12, 6.14.3 and 6.15 or
+newer. The slicer finds ABI 5 on 6.12 before 6.12.24, 6.13 before 6.13.12 and 6.14 before 6.14.3.
+Update the kernel. A distribution kernel, such as Ubuntu's, keeps a base version like `6.14.0-...`
+and carries fixes in its own updates, so `uname -r` cannot tell you; the slicer's log can.
+
+### Which case it is
+
+Read the slicer's self-test line:
+
+```sh
+docker logs platehouse-slicer 2>&1 | grep 'sandbox self-test'
+```
+
+It names the Landlock ABI. ABI 0 is one of the first two cases: run `cat /sys/kernel/security/lsm`
+on the host, and if it lacks `landlock` the kernel has it turned off, otherwise Docker is blocking
+it. ABI 5 is the third case. `dmesg | grep landlock` on the host shows whether the kernel started
+Landlock. After the fix, restart the slicer; the files it refused are picked up again by themselves.
 
 ## Downloads and slicer links
 
