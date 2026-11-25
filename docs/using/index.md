@@ -18,11 +18,13 @@ The pages in this section:
   numbers come from.
 - [Opening in a slicer](./open-in-slicer.md): the Open in Bambu Studio and Open in OrcaSlicer
   buttons and the links behind them.
-- [Organising](./organising.md): search, tags, collections, creators and renaming.
+- [Organising](./organising.md): search, tags, collections, creators and renaming, and deleting
+  tags and collections.
 - [The trash](./trash.md): deleting, restoring and purging.
 - [Activity](./activity.md): library numbers, job progress and recent events.
-- [Settings](./settings.md): the accent colour, language, My printers, API tokens, model names and
-  trash.
+- [Settings](./settings.md): the accent colour, language, My printers, API tokens, Sign out
+  everywhere, model names and trash.
+- [New in 0.1.1](./new-in-0-1-1.md): what changed in 0.1.1, and what to check before you upgrade.
 - [New in 0.1.0](./new-in-0-1-0.md): the features added late in 0.1.0, the first release.
 
 ## The library

@@ -35,6 +35,7 @@ const sidebars = {
         "using/trash",
         "using/activity",
         "using/settings",
+        "using/new-in-0-1-1",
         "using/new-in-0-1-0",
       ],
     },
