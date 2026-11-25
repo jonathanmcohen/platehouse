@@ -1152,7 +1152,11 @@ describe("My printers", () => {
     );
   }
 
-  /** A slice job left over from earlier work: sent to the slicer queue for an estimate that may already be finished. */
+  /**
+   * Sends a slice job left over from earlier work. It names an estimate that is
+   * gone (or, in the #490 test, already finished), so it takes no place in the
+   * queue figure, and after the release it runs and ends at once.
+   */
   async function leftoverJob(
     estimateId: string,
     printerId: string,
@@ -1257,7 +1261,7 @@ describe("My printers", () => {
         () => stub.calls.length,
         (n) => n > before,
       );
-      // A job left over from earlier work names an estimate that is gone, and takes no place in the figure; after the release it runs and ends at once.
+      // A stray from earlier work: it takes no place in the figure (see leftoverJob).
       await leftoverJob(randomUUID(), A1, SLICE_PRIORITY.library);
       expect((await estimates.queueByPrinter()).get(A1)).toEqual({
         waiting: expected,
@@ -1337,7 +1341,7 @@ describe("My printers", () => {
           ).length,
         (n) => n === 1,
       );
-      // A job left over from earlier work names an estimate that is gone, and takes no place in the figure; after the release it runs and ends at once.
+      // A stray from earlier work: it takes no place in the figure (see leftoverJob).
       await leftoverJob(randomUUID(), A1, SLICE_PRIORITY.library);
       const queue = await estimates.queueByPrinter();
       expect(queue.get(A1)).toEqual({ waiting: forA1, through: forA1 });
@@ -1391,11 +1395,11 @@ describe("My printers", () => {
           id,
         ).toBe(true);
       }
+      // A stray from earlier work: it takes no place in the figure (see leftoverJob).
+      await leftoverJob(randomUUID(), A1, SLICE_PRIORITY.library);
       // Each estimate counts once in the queue's figures: the slice running
       // now, the upload's urgent A1 slice, then the raced file's four urgent
       // copies (its library copies are not counted again).
-      // A job left over from earlier work names an estimate that is gone, and takes no place in the figure; after the release it runs and ends at once.
-      await leftoverJob(randomUUID(), A1, SLICE_PRIORITY.library);
       expect((await estimates.queueByPrinter()).get(A1)?.through).toBe(2 + ids.length);
     } finally {
       held.release();
@@ -1525,7 +1529,7 @@ describe("My printers", () => {
       // A .scad file arrives meanwhile: its render is sent as derived.ts
       // sends one, with no priority.
       expect(await boss.send(QUEUE.slicer, { kind: RENDER_KIND })).not.toBeNull();
-      // A job left over from earlier work names an estimate that is gone, and takes no place in the figure; after the release it runs and ends at once.
+      // A stray from earlier work: it takes no place in the figure (see leftoverJob).
       await leftoverJob(randomUUID(), A1, SLICE_PRIORITY.library);
       // The A1's wait counts the render, which now runs ahead of its plates.
       expect((await estimates.queueByPrinter()).get(A1)).toEqual({
@@ -1629,7 +1633,8 @@ describe("My printers", () => {
       if (doneA1 === undefined) throw new Error("the finished plate has no A1 estimate");
       const leftoverId = await leftoverJob(doneA1.id, A1, SLICE_PRIORITY.library);
       expect(await boss.getJobById(QUEUE.slicer, leftoverId)).toMatchObject({ state: "created" });
-      // Only this test's own estimates, counted by distinct id (see above).
+      // Only this test's own estimates, counted by distinct id: a finished
+      // estimate's leftover job can queue behind the held slice (#490).
       await until(
         async () =>
           (
