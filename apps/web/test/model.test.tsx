@@ -1297,9 +1297,9 @@ describe("failed plate shows the plain reason and a retry button", () => {
     ]);
   }
 
-  /** The page's one status region, where a refused Retry is said. */
+  /** The page's one status region, where a refused Retry is said (the 3D view's own is apart). */
   function pageStatus(): Element {
-    const regions = container.querySelectorAll('[role="status"]');
+    const regions = container.querySelectorAll('[role="status"]:not([data-plate-view-status])');
     expect(regions).toHaveLength(1);
     return regions[0] as Element;
   }
@@ -1415,6 +1415,32 @@ describe("failed plate shows the plain reason and a retry button", () => {
     expect(text(pageStatus())).toBe("");
   });
 
+  test.each([
+    ["has numbers", () => estimate("current")],
+    ["has failed again", null],
+  ])(
+    "the queued message goes when the first answer after Retry already shows the plate settled (%s), never estimating",
+    async (_label, numbers) => {
+      models.set(MODEL_ID, failedModel());
+      await render(pageAt(MODEL_ID));
+      models.set(
+        MODEL_ID,
+        numbers === null
+          ? failedModel()
+          : model([
+              threeMf([
+                plate(1, "Base", { file: fileNumbers(1) }),
+                plate(2, "Huge", { platehouse: numbers() }),
+                plate(3, "Lid", { file: fileNumbers(3) }),
+              ]),
+            ]),
+      );
+      await click(button(/retry/i, plateItems()[1] as HTMLElement));
+      await settle();
+      expect(text(pageStatus())).toBe("");
+    },
+  );
+
   test("the queued message stays while that plate is still estimating", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     models.set(MODEL_ID, failedModel());
@@ -1449,7 +1475,16 @@ describe("failed plate shows the plain reason and a retry button", () => {
       ]),
     );
     await render(pageAt(MODEL_ID));
-    models.set(MODEL_ID, estimatingAfterRetry());
+    models.set(
+      MODEL_ID,
+      model([
+        threeMf([plate(1, "Huge", { platehouse: estimate("estimating") })]),
+        threeMf([plate(1, "Other", { file: fileNumbers(1) })], {
+          id: "0198f0c4-0000-7000-8000-0000000000f2",
+          name: "Second.3mf",
+        }),
+      ]),
+    );
     await click(button(/retry/i));
     expect(text(pageStatus())).toMatch(/^Estimate queued for plate 1 \(Huge\) in Cube set\.3mf$/);
   });
@@ -2294,7 +2329,7 @@ describe("a .3mf plate's 3D view (issue #358)", () => {
   }
 
   function alertText(): string {
-    return text(container.querySelector('[role="status"]'));
+    return text(container.querySelector(".studio-viewer [data-plate-view-status]"));
   }
 
   const meshRequests = () => requests.filter((r) => r.includes("/mesh"));
@@ -2440,19 +2475,25 @@ describe("a .3mf plate's 3D view (issue #358)", () => {
     },
   );
 
-  test("the reason is said in the page's one status region, present before the failure, not in an alert", async () => {
+  test("the reason goes in a status region beside the viewer that is on the page before the failure, not in an alert", async () => {
     meshAnswer = () => json({ error: "no_mesh", code: "too_large", message: "x" }, 422);
     await render(pageAt(MODEL_ID));
-    const region = container.querySelector('[role="status"]');
-    expect(region).not.toBeNull();
+    const region = container.querySelector(".studio-viewer [data-plate-view-status]");
+    expect(region?.getAttribute("role")).toBe("status");
     expect(text(region)).toBe("");
     await click(toggle());
-    expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
-    expect(container.querySelector('[role="status"]')).toBe(region);
+    expect(container.querySelector(".studio-viewer [data-plate-view-status]")).toBe(region);
     expect(text(region)).toBe(
       "Base has no 3D view: its objects are too large to show in the browser.",
     );
     expect(container.querySelector('.studio-viewer [role="alert"]')).toBeNull();
+  });
+
+  test("the status region is already there while the 3D view is open", async () => {
+    await render(pageAt(MODEL_ID));
+    await click(toggle());
+    expect(container.querySelector("[data-viewer3d]")).not.toBeNull();
+    expect(container.querySelector(".studio-viewer [data-plate-view-status]")).not.toBeNull();
   });
 
   test("a file that cannot be read right now keeps the picture and says to try again later", async () => {

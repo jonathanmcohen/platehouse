@@ -468,7 +468,7 @@ export function UploadDialog({
                 </span>
                 {item.status === "unsupported" ? null : (
                   <progress
-                    aria-label={t("upload.progress", { name: item.file.name })}
+                    aria-label={t("upload.progress")}
                     value={item.sent}
                     max={item.total > 0 ? item.total : 1}
                   />

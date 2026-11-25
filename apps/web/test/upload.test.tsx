@@ -1288,6 +1288,28 @@ describe("many files, slow imports and failures", () => {
     expect(dialogRegion().textContent).toMatch(/^qa\.txt: Not a supported file type/);
   });
 
+  test("a row with a progress bar reads its file name once in linear browsing, the bar naming no file", async () => {
+    const { start, fetchResult } = stubUploads(added);
+    const part = new File([new Uint8Array(5)], "part.stl");
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[part]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    const row = rowOf("part.stl");
+    const bar = row.querySelector("progress");
+    expect(bar?.getAttribute("aria-label")).toBe("Upload progress");
+    const read = readText(row) + (bar?.getAttribute("aria-label") ?? "");
+    expect(read.split("part.stl")).toHaveLength(2);
+    expect(readText(row)).toMatch(/^part\.stl: /);
+  });
+
   test("a row added while the dialog is closed is not announced", async () => {
     const { start, fetchResult } = stubUploads(added);
     const notes = new File([new Uint8Array(5)], "notes.txt");

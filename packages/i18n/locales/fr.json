@@ -628,7 +628,7 @@
   "upload.intro.model": "Les fichiers sont ajout\u00e9s \u00e0 ce mod\u00e8le.",
   "upload.intro.new": "Chaque fichier devient son propre mod\u00e8le, sauf si vous les combinez.",
   "upload.notConfirmed": "Impossible de confirmer l'envoi ; v\u00e9rifiez la biblioth\u00e8que avant de l'envoyer de nouveau.",
-  "upload.progress": "Progression de l'envoi de {name}",
+  "upload.progress": "Progression de l'envoi",
   "upload.refusedReason": "L'envoi a \u00e9t\u00e9 refus\u00e9 : {reason}",
   "upload.refusedStatus": "Le serveur a refus\u00e9 l'envoi (HTTP {status}).",
   "upload.refusedType": "L'envoi a \u00e9t\u00e9 refus\u00e9 : ce n'est pas un fichier .3mf, .stl, .step, .stp ou .scad pris en charge.",

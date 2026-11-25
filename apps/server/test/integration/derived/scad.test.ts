@@ -2020,7 +2020,7 @@ describe("after a rejected replacement, a later failure keeps the previous-versi
     });
 
     await expect(failing.renderScad(fileId)).rejects.toThrow("the queue refused the job");
-    expect((await jobsFor(fileId)).every((j) => j.state === "completed")).toBe(true);
+    expect((await settledJobs(env, fileId)).every((j) => j.state === "completed")).toBe(true);
     await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.queueFailed);
   });
 

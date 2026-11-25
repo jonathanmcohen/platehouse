@@ -77,7 +77,7 @@ import { AboutTab, MakerWorldLink, makerWorldHref } from "./AboutTab";
 import { derivedMessageIn, FilesTab, formatSize, previewStatusWords, viewable } from "./FilesTab";
 import type { Platform } from "./OpenInSlicer";
 import { PlatesTab } from "./PlatesTab";
-import { PageStatusSlot, PlateViewer } from "./PlateViewer";
+import { PlateViewer } from "./PlateViewer";
 import { type ThreeLoader, Viewer3d } from "./Viewer3d";
 
 export type FileKind = "3mf" | "stl" | "step" | "scad";
@@ -255,7 +255,7 @@ export function needsPolling(model: ModelView): boolean {
 
 type Load =
   | { id: string; status: "loading" }
-  | { id: string; status: "ready"; model: ModelView }
+  | { id: string; status: "ready"; model: ModelView; seq: number }
   | { id: string; status: "missing" }
   | { id: string; status: "failed" }
   | { id: string; status: "signed-out" };
@@ -295,16 +295,18 @@ interface Refused {
 
 /**
  * What a successful Retry says, for the model with this id. It is for one
- * plate (its file's name and index); it goes once that plate's estimate has
- * settled, which is told by the plate having been seen estimating and not
- * any more (busy), or no longer being on the page.
+ * plate (its file's name and index); it goes once an answer to a request
+ * started after the Retry (afterSeq on) shows that plate no longer
+ * estimating, or no longer on the page. An answer to an earlier request,
+ * such as a poll still in flight, still shows the failed estimate and is
+ * not taken as the result.
  */
 interface Queued {
   id: string;
   words: string;
   fileName: string;
   plateIndex: number;
-  busy: boolean;
+  afterSeq: number;
 }
 
 /** A plate in words for a message: "plate 2" or "plate 2 Huge". */
@@ -345,8 +347,8 @@ export function ModelPage({
   const [refused, setRefused] = useState<Refused | null>(null);
   /** What a successful Retry says, for that model's id; the latest of this and the refusal wins. */
   const [queued, setQueued] = useState<Queued | null>(null);
-  /** The page's status region, where a plate's 3D view says why it has none. */
-  const [statusRegion, setStatusRegion] = useState<HTMLElement | null>(null);
+  /** The number of the last model request started, so an answer is known to be from before or after a Retry. */
+  const requestSeq = useRef(0);
   /** Whether the last answer made the page forget its printer choice, so the next request only asks for it again. */
   const forgetting = useRef(false);
   if (refused !== null && refused.id !== id) setRefused(null);
@@ -392,6 +394,8 @@ export function ModelPage({
       timer = undefined;
       if (inFlight) return;
       inFlight = true;
+      requestSeq.current += 1;
+      const seq = requestSeq.current;
       try {
         const res = await fetch(
           `/app/api/models/${encodeURIComponent(id)}${printerQuery(choice)}`,
@@ -424,7 +428,7 @@ export function ModelPage({
         polling.current = needsPolling(model);
         answeredAt.current = Date.now();
         setNotice(null);
-        setLoad({ id, status: "ready", model });
+        setLoad({ id, status: "ready", model, seq });
         settlePrinter(model.printer);
         if (polling.current) askLater();
       } catch {
@@ -481,7 +485,7 @@ export function ModelPage({
       id,
       fileName: target.fileName,
       plateIndex: target.plate.index,
-      busy: false,
+      afterSeq: requestSeq.current + 1,
       words: target.inFile
         ? t("model.numbers.queuedIn", { plate, file: target.fileName })
         : t("model.numbers.queued", { plate }),
@@ -550,8 +554,7 @@ export function ModelPage({
       .find((f) => f.name === queued.fileName)
       ?.plates.find((p) => p.index === queued.plateIndex);
     const estimating = queuedPlate !== undefined && isEstimating(queuedPlate);
-    if (estimating && !queued.busy) setQueued({ ...queued, busy: true });
-    else if (!estimating && (queued.busy || queuedPlate === undefined)) setQueued(null);
+    if (!estimating && current.seq >= queued.afterSeq) setQueued(null);
   }
   return (
     <DropZone onFiles={(files) => onFiles?.(files, model.id)}>
@@ -568,7 +571,7 @@ export function ModelPage({
         </div>
       )}
       {/* Always in the page, so a screen reader hears what is put in it. */}
-      <div role="status" ref={setStatusRegion}>
+      <div role="status">
         {refused === null ? null : (
           <p className="studio-alert studio-alert-alert">
             {t("model.numbers.notRetryable", {
@@ -579,20 +582,18 @@ export function ModelPage({
         )}
         {queued === null ? null : <p className="studio-muted">{queued.words}</p>}
       </div>
-      <PageStatusSlot.Provider value={statusRegion}>
-        <ModelDetail
-          key={model.id}
-          model={model}
-          onRetry={retry}
-          onChoosePrinter={choosePrinter}
-          chosenPrinter={choice}
-          onRename={rename}
-          loadThree={loadThree}
-          navigateTo={navigateTo}
-          platform={platform}
-          {...(onFiles === undefined ? {} : { onAddFiles: () => onFiles([], model.id) })}
-        />
-      </PageStatusSlot.Provider>
+      <ModelDetail
+        key={model.id}
+        model={model}
+        onRetry={retry}
+        onChoosePrinter={choosePrinter}
+        chosenPrinter={choice}
+        onRename={rename}
+        loadThree={loadThree}
+        navigateTo={navigateTo}
+        platform={platform}
+        {...(onFiles === undefined ? {} : { onAddFiles: () => onFiles([], model.id) })}
+      />
     </DropZone>
   );
 }

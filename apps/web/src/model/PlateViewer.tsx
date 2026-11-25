@@ -11,11 +11,12 @@
 // on Show in 3D when it closes. While the view is open, choosing another
 // plate in the strip shows that plate in 3D. A plate whose 3D view cannot
 // be shown (no mesh the server can read, the file unavailable, no WebGL)
-// goes back to its picture, says why in the page's status region (so it is
-// announced, as focus has moved), and puts focus back on Show in 3D; the
-// reason goes when the view is opened again or another plate is chosen. A plate with no thumbnail still has Show in 3D.
-import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+// goes back to its picture, says why under it, and puts focus back on Show
+// in 3D; the reason goes when the view is opened again or another plate is
+// chosen. The reason is put in a status region that is on the page in every
+// mode, empty until then, so a screen reader announces it after the focus
+// move. A plate with no thumbnail still has Show in 3D.
+import { useEffect, useRef, useState } from "react";
 import { type MessageKey, useI18n } from "../i18n/I18n";
 import type { ModelFile } from "./ModelPage";
 import { Plate3d, type Plate3dFailure } from "./Plate3d";
@@ -37,14 +38,6 @@ const FAILURE_WORDS: Readonly<Record<Plate3dFailure, MessageKey>> = {
   error: "model.plate3d.failed.error",
 };
 
-/**
- * The page's always-present status region, which a plate's reason is put in
- * so a screen reader announces it (focus has moved to Show in 3D by then).
- * Null where there is no such region, and the reason then stays beside the
- * picture, as an alert.
- */
-export const PageStatusSlot = createContext<HTMLElement | null>(null);
-
 export interface PlateViewerProps {
   file: ModelFile;
   /** The index of the plate shown large. */
@@ -56,7 +49,6 @@ export interface PlateViewerProps {
 
 export function PlateViewer({ file, selected, onSelect, loadThree }: PlateViewerProps) {
   const i18n = useI18n();
-  const statusSlot = useContext(PageStatusSlot);
   const plates = [...file.plates].sort((a, b) => a.index - b.index);
   const shown = plates.find((p) => p.index === selected) ?? plates[0];
   const [inThreeD, setInThreeD] = useState(false);
@@ -117,14 +109,13 @@ export function PlateViewer({ file, selected, onSelect, loadThree }: PlateViewer
     failed === null || failed.plateId !== shown.id
       ? null
       : i18n.t(FAILURE_WORDS[failed.failure], { label });
-  const reason =
-    words === null ? null : statusSlot !== null ? (
-      createPortal(<p className="studio-alert studio-alert-alert">{words}</p>, statusSlot)
-    ) : (
-      <div role="alert" className="studio-alert studio-alert-alert">
-        <p>{words}</p>
-      </div>
-    );
+  // Always in the page, empty until a failure, so a screen reader hears what
+  // is put in it after the focus move.
+  const reason = (
+    <div role="status" data-plate-view-status>
+      {words === null ? null : <p className="studio-alert studio-alert-alert">{words}</p>}
+    </div>
+  );
 
   return (
     <>
@@ -148,7 +139,6 @@ export function PlateViewer({ file, selected, onSelect, loadThree }: PlateViewer
             <p className="studio-placeholder">{i18n.t("model.plate.noThumbnail", { label })}</p>
           </div>
           {toggle}
-          {reason}
         </>
       ) : (
         <PlateImage
@@ -157,14 +147,10 @@ export function PlateViewer({ file, selected, onSelect, loadThree }: PlateViewer
           alt={i18n.t("model.plate.alt", { index: shown.index, label })}
           onOpen={open}
           openLabel={i18n.t("model.plate3d.openLabel", { label })}
-          actions={
-            <>
-              {toggle}
-              {reason}
-            </>
-          }
+          actions={toggle}
         />
       )}
+      {reason}
       <PlateStrip plates={plates} selected={shown.index} onSelect={select} />
     </>
   );

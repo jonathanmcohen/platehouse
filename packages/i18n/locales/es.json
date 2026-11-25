@@ -628,7 +628,7 @@
   "upload.intro.model": "Los archivos se a\u00f1aden a este modelo.",
   "upload.intro.new": "Cada archivo se convierte en su propio modelo, salvo que los combines.",
   "upload.notConfirmed": "No se pudo confirmar la subida; revisa la biblioteca antes de enviarlo de nuevo.",
-  "upload.progress": "Progreso de subida de {name}",
+  "upload.progress": "Progreso de la subida",
   "upload.refusedReason": "Se rechaz\u00f3 la subida: {reason}",
   "upload.refusedStatus": "El servidor rechaz\u00f3 la subida (HTTP {status}).",
   "upload.refusedType": "Se rechaz\u00f3 la subida: no es un archivo .3mf, .stl, .step, .stp o .scad admitido.",

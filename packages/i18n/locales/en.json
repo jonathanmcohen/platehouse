@@ -621,7 +621,7 @@
   "upload.intro.model": "The files are added to this model.",
   "upload.intro.new": "Each file becomes its own model unless you combine them.",
   "upload.notConfirmed": "The upload could not be confirmed; check the library before sending it again.",
-  "upload.progress": "Upload progress for {name}",
+  "upload.progress": "Upload progress",
   "upload.refusedReason": "The upload was refused: {reason}",
   "upload.refusedStatus": "The server refused the upload (HTTP {status}).",
   "upload.refusedType": "The upload was refused: this is not a supported .3mf, .stl, .step, .stp or .scad file.",
