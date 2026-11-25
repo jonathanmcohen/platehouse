@@ -20,6 +20,7 @@ import {
   type Estimates,
   type PrinterQueue,
   type QueuedWork,
+  queuePositionsQuery,
   SLICE_JOB_KIND,
   slicesThrough,
 } from "../../../src/estimates/service.js";
@@ -344,6 +345,43 @@ describe("queueByPrinter", () => {
       expect(actual).toEqual(Object.fromEntries(await expectedQueue()));
     } finally {
       await clearQueue();
+    }
+  });
+
+  test("a long pending queue is counted in one pass, not with a lookup per job", async () => {
+    // work_mem is cut to its minimum, so the pending ids do not fit in it. A
+    // lookup per job (a SubPlan) would then scan the estimates once for every
+    // queued slice; the join stays one pass.
+    const LARGE = 3_000;
+    const A = PRINTERS[0] as string;
+    await clearQueue();
+    await db.deleteFrom("estimates").execute();
+    await sql`
+      insert into estimates (id, plate_id, source, printer_id, slicer_version, status)
+      select gen_random_uuid(), ${plateIds[0] as string}, 'platehouse', ${A}, 'large-' || g, 'pending'
+        from generate_series(1, ${LARGE}) g
+    `.execute(db);
+    const pending = await db.selectFrom("estimates").select("id").execute();
+    await boss.insert(
+      QUEUE.slicer,
+      pending.map(({ id }) => ({
+        data: { kind: SLICE_JOB_KIND, printerId: A, estimateId: id },
+        startAfter: 3600,
+      })),
+    );
+    try {
+      await db.transaction().execute(async (trx) => {
+        await sql`set local work_mem = '64kB'`.execute(trx);
+        const plan = await sql<{ "QUERY PLAN": string }>`explain ${queuePositionsQuery()}`.execute(
+          trx,
+        );
+        expect(plan.rows.map((row) => row["QUERY PLAN"]).join("\n")).not.toMatch(/SubPlan/);
+        const { rows } = await queuePositionsQuery().execute(trx);
+        expect(rows).toEqual([{ printerId: A, through: LARGE }]);
+      });
+    } finally {
+      await clearQueue();
+      await db.deleteFrom("estimates").execute();
     }
   });
 });
