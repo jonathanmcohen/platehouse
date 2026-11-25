@@ -1420,15 +1420,15 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   async function queuePositions(): Promise<Map<string, number>> {
     const { rows } = await sql<{ printerId: string; through: number }>`
       with q as (
-        select id, priority, created_on,
-               coalesce(data->>'kind' = ${SLICE_JOB_KIND}, false) as is_slice,
-               data->>'printerId' as printer_id,
-               data->>'estimateId' as estimate_id
-          from ${BOSS_JOB}
-         where name = ${QUEUE.slicer} and state < 'active'
-           and (not coalesce(data->>'kind' = ${SLICE_JOB_KIND}, false)
+        select j.id, j.priority, j.created_on,
+               coalesce(j.data->>'kind' = ${SLICE_JOB_KIND}, false) as is_slice,
+               j.data->>'printerId' as printer_id,
+               j.data->>'estimateId' as estimate_id
+          from ${BOSS_JOB} j
+         where j.name = ${QUEUE.slicer} and j.state < 'active'
+           and (not coalesce(j.data->>'kind' = ${SLICE_JOB_KIND}, false)
                 or exists (select 1 from estimates e
-                            where e.id::text = data->>'estimateId' and e.status = 'pending'))
+                            where e.id::text = j.data->>'estimateId' and e.status = 'pending'))
       ), firsts as (
         select *, row_number() over (
                  partition by case when is_slice then estimate_id end
