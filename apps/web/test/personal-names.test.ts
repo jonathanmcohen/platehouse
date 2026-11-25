@@ -572,12 +572,23 @@ describe("no private name anywhere in the tracked tree", () => {
       "a plain line",
     ].join("\n");
     const seen = new Set<string>();
-    expect(scanFile(m, file, text, seen, true)).toEqual(treeLines(m, file, text));
+    const hits = scanFile(m, file, text, seen, true);
+    // A fixed answer, as treeLines shares lineHit with scanFile.
+    expect(hits).toEqual([
+      "deploy/quokka/x.yml:0: (the path)",
+      "deploy/quokka/x.yml:1: ssh quokka uptime",
+      "deploy/quokka/x.yml:2: /198\\.51\\.100\\.\\d+/",
+    ]);
+    expect(hits).toEqual(treeLines(m, file, text));
     const expected = new Set<string>();
     allowedSeen(m, `${file}\n${text}`, expected);
     expect(seen).toEqual(expected);
     expect(seen.size).toBe(1);
-    expect(scanFile(m, file, text, new Set(), false)).toEqual(treeLines(m, file, ""));
+    // An ALLOWED_FILES file: only its path is matched, but the allowed tokens
+    // in its text still count as seen.
+    const seenInAllowedFile = new Set<string>();
+    expect(scanFile(m, file, text, seenInAllowedFile, false)).toEqual(treeLines(m, file, ""));
+    expect(seenInAllowedFile).toEqual(new Set(Object.keys(NEUTRAL_ALLOWED)));
   });
 
   test("the list is well formed", () => {
