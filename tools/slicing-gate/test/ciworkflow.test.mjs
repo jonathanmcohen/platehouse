@@ -3417,13 +3417,22 @@ test("release-notes: every action is pinned to the exact tag rc-tag.yml uses", (
   assert.deepEqual(stepInputs(stepBlock(job, "Log in to GHCR")), stepInputs(stepBlock(jobBlock(rcText(), "rc"), "Log in to GHCR")));
 });
 
-test("release-notes: no run block expands an expression", () => {
-  const steps = jobSteps(jobBlock(notesText(), "draft")).filter((s) => s.includes("\n        run: |\n"));
+test("release-notes: no run block or one-line run expands an expression", () => {
+  const steps = jobSteps(jobBlock(notesText(), "draft")).filter((s) => /\n {8}run: /.test(s));
   assert.equal(steps.length, 4, "four steps run a script");
   for (const step of steps) {
-    const script = step.slice(step.indexOf("\n        run: |\n"));
+    const script = step.slice(step.search(/\n {8}run: /));
     assert.doesNotMatch(script, /\$\{\{/, step.split("\n")[0]);
   }
+});
+
+// The draft is written only when the tag step said go, and only when both
+// images are out.
+test("release-notes: the images step runs only for a release tag, and the draft only when both images are out", () => {
+  const job = jobBlock(notesText(), "draft");
+  assert.ok(stepBlock(job, "Are both images out").includes("\n        if: ${{ steps.tag.outputs.go == 'true' }}\n"));
+  assert.ok(stepBlock(job, "Write the draft").includes("\n        if: ${{ steps.images.outputs.go == 'true' }}\n"));
+  for (const name of ["Run only from main", "Which tag"]) assert.doesNotMatch(stepBlock(job, name), /\n {8}if:/, name);
 });
 
 test("release-notes: the main-only check runs first and refuses any other ref", () => {
@@ -3438,6 +3447,12 @@ test("release-notes: the main-only check runs first and refuses any other ref", 
   assert.deepEqual(stepIds(jobBlock(notesText(), "draft")), ["tag", "images", "draft"]);
 });
 
+test("release-notes: the main-only refusal encodes the ref it names", () => {
+  const r = runNotesStep("draft", "Run only from main", { env: { REF: "refs/heads/x%0A::warning::y" } });
+  assert.equal(r.status, 1, r.log);
+  assert.ok(r.log.includes("::error::refs/heads/x%250A::warning::y is not main"), r.log);
+});
+
 // gh answers by its arguments: the tag refs from REFS, the Releases' tags
 // from RELEASES (drafts included, as the job token sees them), the CHANGELOG
 // at TAG from CHANGELOG_FILE, and a release create copies its notes file to
@@ -3449,7 +3464,7 @@ const NOTES_GH_STUB = [
   '  case "$*" in',
   '    "api --paginate repos/${REPO}/git/matching-refs/tags/v --jq .[].ref") printf "%s\\n" $REFS ;;',
   '    "api --paginate repos/${REPO}/releases?per_page=100 --jq .[].tag_name") printf "%s\\n" $RELEASES ;;',
-  '    "api -H Accept: application/vnd.github.raw repos/${REPO}/contents/CHANGELOG.md?ref=${TAG}") cat "$CHANGELOG_FILE" ;;',
+  '    "api -H Accept: application/vnd.github.raw repos/${REPO}/contents/CHANGELOG.md?ref=refs/tags/${TAG}") cat "$CHANGELOG_FILE" ;;',
   '    "release create "*)',
   '      local prev="" a',
   '      for a in "$@"; do',
@@ -3461,18 +3476,25 @@ const NOTES_GH_STUB = [
   "}",
 ];
 // docker answers an inspect from DIGESTS, a list of ref=digest: the digest,
-// or the image JSON from APP_JSON or SLICER_JSON. A ref not listed gets GHCR's
-// "not found"; BROKEN's ref gets another error.
+// or the image JSON from APP_JSON or SLICER_JSON. A ref by digest,
+// image@sha256:..., is found when DIGESTS lists that digest for the image. A
+// ref not listed gets GHCR's "not found"; BROKEN's ref gets another error,
+// BROKEN_TEXT or "ERROR: denied".
 const NOTES_DOCKER_STUB = [
   "docker() {",
   '  echo "docker $*" >> "$CALLS"',
-  '  local ref="$4" format="$6" kv digest=""',
-  '  if [ -n "$BROKEN" ] && [ "$ref" = "$BROKEN" ]; then echo "ERROR: denied" >&2; return 1; fi',
-  '  for kv in $DIGESTS; do if [ "${kv%%=*}" = "$ref" ]; then digest="${kv#*=}"; fi; done',
+  '  local ref="$4" format="$6" kv digest="" image',
+  '  image="${ref%@*}"',
+  '  image="${image%:*}"',
+  '  if [ -n "$BROKEN" ] && [ "$ref" = "$BROKEN" ]; then printf "%s\\n" "${BROKEN_TEXT:-ERROR: denied}" >&2; return 1; fi',
+  '  for kv in $DIGESTS; do',
+  '    if [ "${kv%%=*}" = "$ref" ]; then digest="${kv#*=}"; fi',
+  '    if [ "${kv%%:*}@${kv#*=}" = "$ref" ]; then digest="${kv#*=}"; fi',
+  "  done",
   '  if [ -z "$digest" ]; then echo "ERROR: ${ref}: not found" >&2; return 1; fi',
   '  case "$format" in',
   '    "{{.Manifest.Digest}}") echo "$digest" ;;',
-  '    "{{json .Image}}") if [ "${ref%:*}" = "$SLICER_IMAGE" ]; then cat "$SLICER_JSON"; else cat "$APP_JSON"; fi ;;',
+  '    "{{json .Image}}") if [ "$image" = "$SLICER_IMAGE" ]; then cat "$SLICER_JSON"; else cat "$APP_JSON"; fi ;;',
   '    *) echo "docker: unexpected format $format" >&2; return 99 ;;',
   "  esac",
   "}",
@@ -3536,6 +3558,23 @@ test("release-notes which tag: a failed gh call fails the step", () => {
   assert.notEqual(r.outputs.go, "true");
 });
 
+// A crash in the tag check must not read as "not a release tag", which would
+// end the run green with no draft.
+test("release-notes which tag: a crash in the tag check fails the step, never reads as not a release tag", () => {
+  const r = runNotesStep("draft", "Which tag", {
+    stubs: NOTES_GH_STUB,
+    setup: (work) => {
+      withNotesFiles(work);
+      writeFileSync(join(work, ".github", "scripts", "release-notes.mjs"), "process.exit(3);\n");
+    },
+    env: { EVENT: "workflow_run", RUN_BRANCH: "v0.1.2", INPUT_TAG: "", GH_TOKEN: "x", REPO: NOTES_REPO, REFS: refs("v0.1.2"), RELEASES: "" },
+  });
+  assert.notEqual(r.status, 0, r.log);
+  assert.equal(r.outputs.go, undefined);
+  assert.doesNotMatch(r.log, /::notice::/);
+  assert.equal(r.calls, "", "nothing after the check ran");
+});
+
 const imagesOut = (env) =>
   runNotesStep("draft", "Are both images out", {
     stubs: NOTES_DOCKER_STUB,
@@ -3570,6 +3609,31 @@ test("release-notes images: a registry error other than not found fails", () => 
   assert.equal(r.status, 1, r.log);
   assert.match(r.log, /::error::could not tell whether ghcr\.io\/jonathanmcohen\/platehouse-slicer:0\.1\.2 exists/);
   assert.notEqual(r.outputs.go, "true");
+});
+
+// The registry's text goes to the log with workflow commands stopped, so a
+// line in it that looks like a command is printed, never run.
+const assertStopped = (log, line) => {
+  const lines = log.split("\n");
+  const at = lines.indexOf(line);
+  assert.ok(at > 0, log);
+  const token = lines[at - 1].match(/^::stop-commands::([0-9a-f]{32})$/)?.[1];
+  assert.ok(token, `commands are stopped before the registry's text\n${log}`);
+  assert.ok(lines.slice(at + 1).includes(`::${token}::`), `and started again after it\n${log}`);
+};
+
+test("release-notes images: the registry's text is printed with workflow commands stopped", () => {
+  const r = imagesOut({ BROKEN: `${NOTES_SLICER}:0.1.2`, BROKEN_TEXT: "::error::injected" });
+  assert.equal(r.status, 1, r.log);
+  assertStopped(r.log, "::error::injected");
+});
+
+test("release-notes images: each stop uses a new token", () => {
+  const token = (log) => log.match(/::stop-commands::([0-9a-f]{32})/)?.[1];
+  const a = imagesOut({ BROKEN: `${NOTES_SLICER}:0.1.2` });
+  const b = imagesOut({ BROKEN: `${NOTES_SLICER}:0.1.2` });
+  assert.ok(token(a.log) && token(b.log), a.log);
+  assert.notEqual(token(a.log), token(b.log));
 });
 
 const NOTES_CHANGELOG = [
@@ -3673,6 +3737,70 @@ test("release-notes draft: a registry error reading latest fails before any Rele
   assert.notEqual(r.status, 0, r.log);
   assert.match(r.log, /::error::/);
   assert.deepEqual(releaseCreates(r.calls), []);
+});
+
+test("release-notes draft: the registry's text reading latest is printed with workflow commands stopped", () => {
+  const r = writeDraft({ BROKEN: `${NOTES_APP}:latest`, BROKEN_TEXT: "::error::injected" });
+  assert.notEqual(r.status, 0, r.log);
+  assertStopped(r.log, "::error::injected");
+});
+
+// The platforms and the Orca version come from the very builds whose digests
+// the table lists, not from the version tags, which a later run can move.
+test("release-notes draft: the image facts are read by digest, never by tag", () => {
+  const r = writeDraft({});
+  assert.equal(r.status, 0, r.log);
+  const reads = r.calls.split("\n").filter((c) => c.includes("{{json .Image}}"));
+  assert.deepEqual(reads, [
+    `docker buildx imagetools inspect ${NOTES_APP}@${NOTES_APP_DIGEST} --format {{json .Image}}`,
+    `docker buildx imagetools inspect ${NOTES_SLICER}@${NOTES_SLICER_DIGEST} --format {{json .Image}}`,
+  ]);
+});
+
+// The CHANGELOG is read at the tag, named as a tag, so a branch of the same
+// name cannot stand in for it.
+test("release-notes draft: the CHANGELOG is read at refs/tags/<tag>", () => {
+  const r = writeDraft({});
+  assert.equal(r.status, 0, r.log);
+  assert.ok(
+    r.calls.includes("gh api -H Accept: application/vnd.github.raw repos/jonathanmcohen/platehouse/contents/CHANGELOG.md?ref=refs/tags/v0.1.2"),
+    r.calls,
+  );
+});
+
+// Whether to publish as latest is worked out before the draft is made, so a
+// failure there never leaves a draft without its summary.
+test("release-notes draft: a failure working out latest fails before any Release is made", () => {
+  const r = runNotesStep("draft", "Write the draft", {
+    stubs: [...NOTES_GH_STUB, ...NOTES_DOCKER_STUB],
+    setup: (work) => {
+      withNotesFiles(work);
+      writeFileSync(join(work, ".github", "scripts", "release-gate.mjs"), "process.exit(2);\n");
+      writeFileSync(join(work, "app.json"), notesImage(["linux/amd64", "linux/arm64"], ["PATH=/usr/bin"]));
+      writeFileSync(join(work, "slicer.json"), notesImage(["linux/amd64"], ["PATH=/usr/bin", "ORCA_VERSION=2.5.2"]));
+      writeFileSync(join(work, "changelog.md"), NOTES_CHANGELOG);
+    },
+    env: {
+      TAG: "v0.1.2",
+      VERSION: "0.1.2",
+      APP_DIGEST: NOTES_APP_DIGEST,
+      SLICER_DIGEST: NOTES_SLICER_DIGEST,
+      GH_TOKEN: "x",
+      REPO: NOTES_REPO,
+      GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_REPOSITORY: NOTES_REPO,
+      REFS: refs("v0.1.0", "v0.1.1", "v0.1.2"),
+      RELEASES: "",
+      BROKEN: "",
+      APP_JSON: "app.json",
+      SLICER_JSON: "slicer.json",
+      CHANGELOG_FILE: "changelog.md",
+      DIGESTS: `${NOTES_APP}:0.1.2=${NOTES_APP_DIGEST} ${NOTES_SLICER}:0.1.2=${NOTES_SLICER_DIGEST} ${NOTES_APP}:latest=${NOTES_APP_DIGEST}`,
+    },
+  });
+  assert.notEqual(r.status, 0, r.log);
+  assert.deepEqual(releaseCreates(r.calls), []);
+  assert.equal(r.summary, "");
 });
 
 test("RELEASING.md describes the draft Release", () => {
