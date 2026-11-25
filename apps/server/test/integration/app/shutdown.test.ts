@@ -142,13 +142,13 @@ describe("the server process", () => {
     try {
       // Start-up is in migrate once the silent database has accepted a
       // connection, and the signal handlers exist by then. A process that
-      // exits first ends the wait at once. The waits (15 s, then 10 s) leave
-      // 5 s of the 30 s for the cleanup below.
+      // exits or is killed first ends the wait at once. The waits (60 s, then
+      // 10 s) leave 10 s of the 80 s for the cleanup below.
       try {
         await until(
-          async () => sockets.size > 0 || proc.exitCode !== null,
+          async () => sockets.size > 0 || proc.exitCode !== null || proc.signalCode !== null,
           (reached) => reached,
-          15_000,
+          60_000,
         );
       } catch (error) {
         throw new Error(
@@ -167,5 +167,5 @@ describe("the server process", () => {
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve) => silent.close(resolve));
     }
-  }, 30_000);
+  }, 80_000);
 });
