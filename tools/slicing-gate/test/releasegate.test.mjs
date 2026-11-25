@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ciVerdict, isLatest, MAX_FETCH_ERRORS, NO_RUNS_MINUTES, WAIT_MINUTES, waitForCi } from "../../../.github/scripts/release-gate.mjs";
+import { ciVerdict, highestRelease, isLatest, MAX_FETCH_ERRORS, NO_RUNS_MINUTES, WAIT_MINUTES, waitForCi } from "../../../.github/scripts/release-gate.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const SHA = "a".repeat(40);
@@ -89,6 +89,17 @@ test("isLatest: the current highest is latest, with rcs and odd tags around it",
 test("isLatest: a tag that is not vX.Y.Z is not latest", () => {
   assert.equal(isLatest("v0.0.0-test", []), false);
   assert.equal(isLatest("nonsense", []), false);
+});
+
+// The docs site (docs-pages.yml) names the highest release when it refuses
+// to publish main.
+test("highestRelease: the highest plain vX.Y.Z, past rcs and throwaway tags", () => {
+  assert.equal(highestRelease(["v0.1.0", "v0.2.0-rc.1", "v0.1.1", "v0.0.0-test"]), "v0.1.1");
+});
+
+test("highestRelease: no plain release is null", () => {
+  assert.equal(highestRelease(["v0.2.0-rc.1"]), null);
+  assert.equal(highestRelease([]), null);
 });
 
 test("waitForCi: waits while the run is going, then passes", async () => {
@@ -217,6 +228,13 @@ test("release-gate.mjs latest prints true or false from the tag list on stdin", 
 test("release-gate.mjs latest says false when the tag list does not hold the tag", () => {
   assert.equal(cli(["latest", "v0.1.1"], "").stdout, "false\n");
   assert.equal(cli(["latest", "v0.1.1"], "v0.1.0\n").stdout, "false\n");
+});
+
+test("release-gate.mjs highest prints the highest release from the tag list on stdin, or nothing", () => {
+  assert.equal(cli(["highest"], "v0.1.0\nv0.2.0-rc.1\nv0.1.1\nv0.0.0-test\n").stdout, "v0.1.1\n");
+  const none = cli(["highest"], "");
+  assert.equal(none.status, 0);
+  assert.equal(none.stdout, "");
 });
 
 test("release-gate.mjs fails on a bad mode, and ci without a sha", () => {

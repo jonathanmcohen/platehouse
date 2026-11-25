@@ -91,9 +91,11 @@ The built site loads nothing from another site: no analytics, no external fonts 
 search is a local index made at build time. CI builds it when `docs/`, `apps/docs`,
 `apps/web/public` (the icons the site serves) or the workspace files change.
 
-The docs are published to GitHub Pages by `.github/workflows/docs-pages.yml` each time a docs
-change lands on `main`; the site's address is shown under Settings, Pages. Pages must first be
-switched on there (Source: GitHub Actions). See [apps/docs/README.md](apps/docs/README.md).
+The docs are published to GitHub Pages by `.github/workflows/docs-pages.yml` when the highest
+release is tagged; the site's address is shown under Settings, Pages. A docs fix between releases
+is published by hand from main, which works only while main's version is the highest release.
+Pull requests and merges publish nothing. See [apps/docs/README.md](apps/docs/README.md) and
+[RELEASING.md](RELEASING.md).
 
 ## Changelog
 

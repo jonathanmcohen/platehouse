@@ -2,7 +2,8 @@
 //
 // ciVerdict decides from the ci workflow's runs for a commit whether the
 // release may go ahead; isLatest decides whether a tag may carry `latest`
-// (only the highest stable vX.Y.Z; a backport or an rc never does).
+// (only the highest stable vX.Y.Z; a backport or an rc never does), and
+// highestRelease names that release (docs-pages.yml, #499).
 //
 // Command line, used by the workflow:
 //   node release-gate.mjs ci <sha>      polls the push and dispatch ci runs for <sha> every 30 s,
@@ -11,6 +12,9 @@
 //                                       Needs GH_TOKEN and GITHUB_REPOSITORY.
 //   node release-gate.mjs latest <tag>  tag names on stdin, one per line;
 //                                       prints true or false
+//   node release-gate.mjs highest       tag names on stdin, one per line;
+//                                       prints the highest stable vX.Y.Z, or
+//                                       nothing when there is none
 
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -57,6 +61,12 @@ export function isLatest(tag, allTags) {
   });
 }
 
+// The highest stable vX.Y.Z in tags, or null: the tag isLatest says true for.
+export function highestRelease(tags) {
+  const releases = tags.filter((t) => parseTag(t)?.rc === null);
+  return releases.find((t) => isLatest(t, releases)) ?? null;
+}
+
 // Polls fetchRuns until the verdict is not "wait", or WAIT_MINUTES pass.
 // Returns "pass" or "fail"; a timeout is a fail. No run at all is a wait for
 // the first NO_RUNS_MINUTES. A fetch that throws is a wait too, but the
@@ -96,6 +106,11 @@ async function main(argv) {
     process.stdout.write(`${tags.includes(arg) && isLatest(arg, tags)}\n`);
     return 0;
   }
+  if (mode === "highest") {
+    const tag = highestRelease(readFileSync(0, "utf8").split("\n").filter(Boolean));
+    if (tag !== null) process.stdout.write(`${tag}\n`);
+    return 0;
+  }
   if (mode === "ci") {
     if (!/^[0-9a-f]{40}$/.test(arg ?? ""))
       throw new Error("usage: release-gate.mjs ci <40-hex sha>");
@@ -128,7 +143,7 @@ async function main(argv) {
     );
     return 1;
   }
-  throw new Error("usage: release-gate.mjs ci <sha> | latest <tag>");
+  throw new Error("usage: release-gate.mjs ci <sha> | latest <tag> | highest");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

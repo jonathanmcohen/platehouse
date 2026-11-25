@@ -10,6 +10,10 @@ All notable changes to Platehouse are recorded here. The format follows
 
 - Each release now gets a GitHub Release page. Once both images of a release are published, a workflow opens a draft with the images, their digests and the changelog links filled in, and the maintainer completes and publishes it ([#496](https://github.com/jonathanmcohen/platehouse/issues/496)).
 
+### Changed
+
+- The docs site now publishes when a release is tagged, so it describes the latest release and not unreleased work. A docs fix between releases is published by hand ([#499](https://github.com/jonathanmcohen/platehouse/issues/499)).
+
 ### Fixed
 
 - The wait shown for each printer on My printers, and after saving the list, no longer counts slicer work that will never run: a second job for the plate being sliced now, or a job left over for a plate that was already estimated. It could read one or more plates too high ([#490](https://github.com/jonathanmcohen/platehouse/issues/490)).

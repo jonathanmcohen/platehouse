@@ -46,6 +46,43 @@ main or a `release/**` branch. `.github/scripts/release-gate.mjs`, called from `
 waits for a ci run that is still going and fails when none succeeded. `latest` only moves to the
 highest stable release, never to a release candidate or a backport.
 
+## The docs site
+
+`docs-pages.yml` publishes the docs site to GitHub Pages when the highest release is tagged, so
+the site describes the latest release and not unreleased work. A push of an rc tag, a throwaway
+tag or a backport publishes nothing; its run ends green with a notice. Pull requests and merges
+publish nothing either. A run by hand publishes from the highest release tag, or from main while
+main's `package.json` version is the highest release. From any other ref it fails.
+
+One-time setup, before the first release tag that should publish:
+
+1. Open Settings, then Environments, then **github-pages**.
+2. Under **Deployment branches and tags**, choose **Add deployment branch or tag rule**.
+3. Set **Ref type** to **Tag** and **Name pattern** to `v*.*.*`, then **Add rule**.
+4. Keep the existing `main` branch rule, because runs by hand from main still deploy.
+
+The same rule from the command line:
+
+```sh
+gh api -X POST repos/jonathanmcohen/platehouse/environments/github-pages/deployment-branch-policies -f name='v*.*.*' -f type=tag
+```
+
+Pages' Source stays **GitHub Actions**; nothing else in the Pages settings changes. The pattern
+also matches rc and throwaway tags; the workflow's first step is what keeps those from
+publishing. Without the rule, a tag's deploy job fails with an environment protection error and
+the site stays as it was: add the rule, then run docs-pages by hand from the tag.
+
+A tag push runs docs-pages beside the image builds, so the docs can go live some minutes before
+both images are out.
+
+### Publishing a docs fix
+
+Merge the fix to main, then run the workflow by hand from main
+(Actions, docs-pages, Run workflow, branch `main`). It runs from main, not from the tag, because
+the fix is not in the tag and a release tag never moves. This works only while main's version is
+the highest release: once main says a version that has no tag yet, the run refuses, and the fix
+goes out with that release.
+
 ## Slicer image
 
 ### Tags

@@ -1547,7 +1547,8 @@ function runWorkflowStep(workflow, job, stepName, { env = {}, stubs = [], cwd, s
       encoding: "utf8",
       env: {
         PATH: process.env.PATH,
-        ...workflowEnv(t),
+        // docs-pages.yml has no top-level env: block.
+        ...(t.includes("\nenv:\n") ? workflowEnv(t) : {}),
         RUNNER_TEMP: dir,
         GITHUB_OUTPUT: out,
         GITHUB_STEP_SUMMARY: summary,
@@ -3653,6 +3654,154 @@ test("RELEASING.md describes the draft Release", () => {
     `latest="$(gh api --paginate repos/jonathanmcohen/platehouse/git/matching-refs/tags/v --jq '.[].ref' | sed -n 's#^refs/tags/##p' | node .github/scripts/release-gate.mjs latest vX.Y.Z)"`,
     'gh release edit vX.Y.Z --draft=false --latest="$latest"',
     "Actions, release-notes, Run workflow",
+  ]) {
+    assert.ok(readme.includes(line), line);
+  }
+});
+
+// docs-pages.yml (#499): the docs site publishes only from the highest plain
+// vX.Y.Z release tag, on its push or by hand, or by hand from main while
+// main's version is that release. Its decision step runs in bash like the
+// steps above.
+const DOCS_PAGES = join(ROOT, ".github", "workflows", "docs-pages.yml");
+const docsText = () => readFileSync(DOCS_PAGES, "utf8");
+const DOCS_IF = "if: ${{ steps.ref.outputs.publish == 'true' }}";
+// gh answers the tag refs from REFS; GH_STATUS makes every call fail.
+const DOCS_GH_STUB = [
+  "gh() {",
+  '  echo "gh $*" >> "$CALLS"',
+  '  if [ "${GH_STATUS:-0}" != 0 ]; then echo "gh: Server Error (HTTP 500)" >&2; return "$GH_STATUS"; fi',
+  '  case "$*" in',
+  '    "api --paginate repos/${REPO}/git/matching-refs/tags/v --jq .[].ref") printf "%s\\n" $REFS ;;',
+  '    *) echo "gh: unexpected call: $*" >&2; return 99 ;;',
+  "  esac",
+  "}",
+];
+// The step reads the root package.json's version, from VERSION.
+const runDocsStep = (env) =>
+  runWorkflowStep(DOCS_PAGES, "build", "Which ref to publish", {
+    stubs: DOCS_GH_STUB,
+    setup: (work) => {
+      withGateScripts(work);
+      writeFileSync(join(work, "package.json"), JSON.stringify({ name: "platehouse", version: env.VERSION ?? "0.1.1" }));
+    },
+    env: {
+      GH_TOKEN: "x",
+      REPO: "jonathanmcohen/platehouse",
+      REFS: refs("v0.1.0", "v0.1.1", "v0.1.2-rc.1", "v0.0.0-test"),
+      ...env,
+    },
+  });
+
+test("docs-pages: publishes on a release tag push and by hand, never on a branch push", () => {
+  const on = onBlock(docsText());
+  assert.match(on, /^on:\n {2}push:\n {4}tags:\n {6}- "v\*\.\*\.\*"\n {2}workflow_dispatch:\n$/, on);
+  assert.doesNotMatch(on, /branches:/);
+  assert.doesNotMatch(on, /paths:/);
+  assert.doesNotMatch(on, /pull_request/);
+});
+
+test("docs-pages: the deploy job runs only when the build decided to publish", () => {
+  const t = docsText();
+  const build = jobBlock(t, "build");
+  assert.doesNotMatch(build, /\n {4}if:/, "the build job always runs, so its first steps can decide");
+  assert.ok(build.includes("\n    outputs:\n      publish: ${{ steps.ref.outputs.publish }}\n"), build);
+  const deploy = jobBlock(t, "deploy");
+  assert.ok(deploy.includes("\n    needs: build\n    if: ${{ needs.build.outputs.publish == 'true' }}\n"), deploy);
+  const names = jobSteps(build).map((s) => s.match(/^ {6}- name: (.+)\n/)[1]);
+  const at = names.indexOf("Which ref to publish");
+  assert.ok(at > names.indexOf("Set up Node") && names.indexOf("Set up Node") !== -1, names.join(", "));
+  assert.deepEqual(names.slice(at + 1), ["Configure Pages", "Install", "Build the docs site", "Upload the site"]);
+  for (const name of names.slice(at + 1)) assert.ok(stepBlock(build, name).includes(`\n        ${DOCS_IF}\n`), name);
+  for (const name of names.slice(0, at + 1)) assert.ok(!stepBlock(build, name).includes(DOCS_IF), name);
+  assert.match(stepBlock(build, "Which ref to publish"), /\n {8}id: ref\n/);
+});
+
+// A run that publishes nothing skips Install, so the pnpm store is never on
+// disk, and setup-node's post step fails the job on a cache miss.
+test("docs-pages: Set up Node keeps no cache, so a run that publishes nothing stays green", () => {
+  const step = stepBlock(jobBlock(docsText(), "build"), "Set up Node");
+  assert.equal(stepInputs(step).inputs["node-version-file"], ".node-version");
+  assert.doesNotMatch(step, /\n {10}cache:/, step);
+});
+
+test("docs-pages: no run block expands an expression", () => {
+  const steps = jobSteps(jobBlock(docsText(), "build")).filter((s) => /\n {8}run: /.test(s));
+  assert.equal(steps.length, 3, "the decision, the install and the build run a script");
+  for (const step of steps) {
+    const script = step.slice(step.search(/\n {8}run: /));
+    assert.doesNotMatch(script, /\$\{\{/, step.split("\n")[0]);
+  }
+});
+
+for (const [name, env] of [
+  ["a push of the highest release tag", { EVENT: "push", REF: "refs/tags/v0.1.1" }],
+  ["a run by hand from main at the highest release", { EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: "0.1.1" }],
+  ["a run by hand from the highest release tag", { EVENT: "workflow_dispatch", REF: "refs/tags/v0.1.1" }],
+]) {
+  test(`docs-pages which ref: ${name} publishes`, () => {
+    const r = runDocsStep(env);
+    assert.equal(r.status, 0, r.log);
+    assert.equal(r.outputs.publish, "true");
+    assert.ok(r.outputs.ref, "says what it publishes");
+    assert.notEqual(r.summary.trim(), "");
+  });
+}
+
+for (const [name, tag] of [
+  ["an rc tag", "v0.1.2-rc.1"],
+  ["a throwaway tag", "v0.0.0-test"],
+  ["a backport below the highest release", "v0.1.0"],
+]) {
+  test(`docs-pages which ref: a push of ${name} publishes nothing, with a notice, and the run stays green`, () => {
+    const r = runDocsStep({ EVENT: "push", REF: `refs/tags/${tag}` });
+    assert.equal(r.status, 0, r.log);
+    assert.equal(r.outputs.publish, "false");
+    assert.match(r.log, /::notice::/);
+    assert.ok(r.log.includes(tag), r.log);
+  });
+}
+
+test("docs-pages which ref: a run by hand from main ahead of the highest release refuses, naming both", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: "0.1.2" });
+  assert.equal(r.status, 1, r.log);
+  assert.match(r.log, /::error::.*0\.1\.2.*v0\.1\.1/);
+  assert.notEqual(r.outputs.publish, "true");
+});
+
+test("docs-pages which ref: a run by hand from main with a version that is not X.Y.Z refuses", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: "0.1" });
+  assert.equal(r.status, 1, r.log);
+  assert.match(r.log, /::error::/);
+  assert.notEqual(r.outputs.publish, "true");
+});
+
+test("docs-pages which ref: a run by hand from a tag that is not the highest release refuses", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/tags/v0.1.2-rc.1" });
+  assert.equal(r.status, 1, r.log);
+  assert.match(r.log, /::error::/);
+  assert.notEqual(r.outputs.publish, "true");
+});
+
+test("docs-pages which ref: a run by hand from another branch refuses", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/release/v0.1.2" });
+  assert.equal(r.status, 1, r.log);
+  assert.match(r.log, /::error::.*refs\/heads\/release\/v0\.1\.2 is neither/);
+  assert.notEqual(r.outputs.publish, "true");
+});
+
+test("docs-pages which ref: a failed tags call fails the step", () => {
+  const r = runDocsStep({ EVENT: "push", REF: "refs/tags/v0.1.1", GH_STATUS: "1" });
+  assert.equal(r.status, 1, r.log);
+  assert.equal(r.outputs.publish, undefined);
+});
+
+test("RELEASING.md says how the docs site is published", () => {
+  const readme = readFileSync(join(ROOT, "RELEASING.md"), "utf8");
+  for (const line of [
+    "gh api -X POST repos/jonathanmcohen/platehouse/environments/github-pages/deployment-branch-policies -f name='v*.*.*' -f type=tag",
+    "### Publishing a docs fix",
+    "Actions, docs-pages, Run workflow",
   ]) {
     assert.ok(readme.includes(line), line);
   }
