@@ -57,7 +57,7 @@ and never logs a secret, token or slicer link.
   still to receive, so a 507 can come while the disk still shows room. Nothing was saved.
   The server logs each refusal with the session or token it was for:
   - For `UPLOAD_TEMP_MAX_BYTES`, the line also names the three users holding the most bytes.
-    Free space on that disk or raise `UPLOAD_TEMP_MAX_BYTES`, or wait for their uploads to finish
+    Free space on that disk or raise `UPLOAD_TEMP_MAX_BYTES` in `.env`, or wait for their uploads to finish
     or be removed.
   - For the 10,000 uploads, it names the three users holding the most uploads. Finished uploads
     are kept for a day after their import, so this clears as they age out.

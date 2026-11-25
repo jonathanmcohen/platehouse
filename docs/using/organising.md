@@ -33,7 +33,7 @@ A collection is a named group of models. A model can be in more than one collect
 collections are flat: a collection cannot contain another. The **Collections** page lists each one
 with its models, including an empty one, shown with 0 models; a collection that only models in the
 trash are in is not listed. **Show in the library** opens the library filtered to that collection;
-**Clear** removes the filter.
+**Clear collection filter** in the library removes the filter.
 
 A collection is never removed on its own: it stays, empty, when its last model leaves it. To delete
 one, press **Delete** beside it on the **Collections** page, or **Delete collection** on the
@@ -45,7 +45,7 @@ about them.
 
 A model's creator usually comes from MakerWorld details in the `.3mf`, or from the API. The
 **Creators** page lists every creator with their models, and **Show in the library** filters the
-library to one creator.
+library to one creator; **Clear creator filter** in the library removes the filter.
 
 ## Renaming
 

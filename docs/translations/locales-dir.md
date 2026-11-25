@@ -6,20 +6,25 @@ rebuilding anything: put translation files in a folder and set `LOCALES_DIR`.
 ## Set it up
 
 1. Make a folder on the host for the files, for example `/opt/platehouse/locales`.
-2. Mount it into the app container, read-only, and set `LOCALES_DIR` to where it is inside the
-   container. In `docker-compose.yml`, on the `platehouse` service:
+2. Mount it into the app container, read-only. In `docker-compose.yml`, add it to the
+   `platehouse` service's `volumes:`:
 
    ```yaml
    services:
      platehouse:
        volumes:
          - /opt/platehouse/locales:/data/locales:ro
-       environment:
-         LOCALES_DIR: /data/locales
    ```
 
-   `LOCALES_DIR` must be an absolute path. Left unset, Platehouse offers its built-in languages
-   only.
+   Then set `LOCALES_DIR` to where it is inside the container. The example Compose file passes it
+   on from `.env`, so add this line to `.env`:
+
+   ```ini
+   LOCALES_DIR=/data/locales
+   ```
+
+   `LOCALES_DIR` must be an absolute path. Left unset or empty, Platehouse offers its built-in
+   languages only.
 3. Put a file in the folder for each language, named for its code: `de.json`, `it.json`,
    `pt-BR.json`. See [How a translation file looks](./index.md#how-a-translation-file-looks).
 

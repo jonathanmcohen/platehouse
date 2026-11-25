@@ -50,7 +50,8 @@ and images in them show as links, so a description can never load anything from 
 ## The 3D viewer
 
 STL files, STEP files and OpenSCAD files show in a 3D viewer you can rotate and zoom with the
-pointer, or with the **Rotate**, **Zoom** and **Reset** buttons.
+pointer, or with the **Rotate left**, **Rotate right**, **Zoom in**, **Zoom out** and **Reset view**
+buttons.
 
 - An STL file over 50 MiB does not start the 3D view by itself. The model page opens on its
   preview picture, or a placeholder when it has none, with a **Show in 3D** button that loads the

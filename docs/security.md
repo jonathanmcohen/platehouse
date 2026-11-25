@@ -27,8 +27,8 @@ public address, and the device must get `403`. Any address of your own (router, 
 
 - **Let the proxy see real addresses.** If the proxy runs in Docker and you use an allowlist, prefer
   `network_mode: host` (Docker Engine on Linux), or run it on the host. With host networking, point
-  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback, as in
-  the example Compose file), and make sure nothing else the proxy listens on, such as Traefik's
+  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback only by
+  uncommenting the `ports:` lines in the example Compose file), and make sure nothing else the proxy listens on, such as Traefik's
   dashboard on 8080, is exposed. If every visitor, LAN and outside, shows the same address (Docker's
   bridge pools, Swarm's overlay pools in `10.0.0.0/8`, and Docker Desktop's `192.168.65.0/24`), do
   not add that address to the allowlist; the allowlist cannot work on this setup. That is the case
@@ -325,8 +325,8 @@ container, the slicer, which is locked down.
 - **No credentials.** It holds no database password, bucket key, token or other secret. The app
   sends it a file and gets numbers or a render back.
 - **Little it can change.** It runs as its own unprivileged user with every Linux capability
-  dropped, a read-only system, and only an in-memory `/work` folder that it cannot run programs
-  from. Each job's folder is deleted afterwards.
+  dropped, a read-only system, and only an in-memory `/work` folder, mounted `noexec`, so it
+  cannot run programs from it directly. Each job's folder is deleted afterwards.
 - **Limits.** It has a CPU and memory limit, a process limit, and runs one job at a time. Each plate
   has a time cap, and the slicer kills a job that runs over. After each job it also cleans up
   processes the job left behind, and it stops a job's programs at once when its client goes away.
@@ -351,7 +351,7 @@ container, the slicer, which is locked down.
   read outside the job folder, and runs no render, slice or STEP conversion until that check
   passes. It needs Linux 6.12 or newer (Landlock ABI 6). On an older kernel, or while the check
   fails, renders and STL pictures are off. Slices and STEP conversions are off too, unless
-  `SLICER_ALLOW_UNSANDBOXED` is set on the slicer: then they run without the sandbox, with only
+  `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer: then they run without the sandbox, with only
   the limits above and the container's own isolation. Without the sandbox, a slice or STEP
   conversion can also read and change other files the slicer's user can reach, including
   leftovers of earlier jobs, reach the app over the internal network and send signals to the

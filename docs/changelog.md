@@ -9,4 +9,4 @@ Platehouse follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Read it before you upgrade: each version lists what was added, changed and fixed, and anything you
 need to do. See [Backups and upgrades](./backups-and-upgrades.md#upgrading).
 
-0.1.0 was the first release. The changelog lists every version after it.
+0.1.0 was the first release. The changelog lists every version from 0.1.0 on, newest first.

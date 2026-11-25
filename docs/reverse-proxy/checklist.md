@@ -159,8 +159,8 @@ Work through these when the proxy runs in Docker:
 
 - **Let the proxy see real addresses.** If the proxy runs in Docker and you use an allowlist, prefer
   `network_mode: host` (Docker Engine on Linux), or run it on the host. With host networking, point
-  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback, as in
-  the example Compose file), and make sure nothing else the proxy listens on, such as Traefik's
+  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback only by
+  uncommenting the `ports:` lines in the example Compose file), and make sure nothing else the proxy listens on, such as Traefik's
   dashboard on 8080, is exposed. If every visitor, LAN and outside, shows the same address (Docker's
   bridge pools, Swarm's overlay pools in `10.0.0.0/8`, and Docker Desktop's `192.168.65.0/24`), do
   not add that address to the allowlist; the allowlist cannot work on this setup. That is the case

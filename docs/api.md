@@ -147,10 +147,17 @@ is not an error: it answers `204` like any other success.
 | An unfinished upload                          | removed 24 hours after it was created, whatever has arrived, or after an hour if it has received no byte; its address then answers `404` |
 | A finished upload's address                   | removed 24 hours after its import; it then answers `404`                                                                                 |
 | An upload's result                            | kept for 24 hours                                                                                                                        |
+| Unfinished uploads                            | 20 per token at once; the next is refused with `429`                                                                                     |
+| Uploads on the server                         | 2,000 per token in any state, a finished one counting for a day after its import; the next is refused with `429`                         |
+| Uploads on the server, all senders together   | 10,000; the next is refused with `507`, as is one the temporary space or the disk has no room for                                        |
 
-There is no rate limit. Platehouse slices estimates and renders previews in the background one at
-a time, so uploading many files at once is fine; their estimates arrive as the queue works
-through them.
+Uploads have quotas, but nothing else limits how often a token calls the API. When a token hits
+one of its two upload quotas, the next upload is refused with `429` and nothing is saved: let some
+uploads finish, or wait for finished ones to age out after a day. When the server is out of room
+for uploads, it answers `507`, whoever sends; see
+[What each answer means](#what-each-answer-means). Platehouse slices estimates and renders
+previews in the background one at a time, so uploading many files at once is fine within these
+quotas; their estimates arrive as the queue works through them.
 
 ## Paging
 
