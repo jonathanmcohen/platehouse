@@ -4,6 +4,12 @@ All notable changes to Platehouse are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - unreleased
+
+### Fixed
+
+- The wait shown for each printer on My printers, and after saving the list, no longer counts slicer work that will never run: a second job for the plate being sliced now, or a job left over for a plate that was already estimated. It could read one or more plates too high ([#490](https://github.com/jonathanmcohen/platehouse/issues/490)).
+
 ## [0.1.1] - 2026-11-24
 
 **Before you upgrade**

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { SandboxState } from "@platehouse/slicer-contract";
 import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { PreviewFailureReason } from "../../../src/db/types.js";
 import { PREVIOUS_RENDERS_SENTENCE, TempFileError } from "../../../src/derived/client.js";
 import {
@@ -51,6 +51,33 @@ afterAll(async () => {
 
 beforeEach(() => {
   env.stub.renders.reset();
+});
+
+// A test that fails on an assertion skips its own clean-up, and the jobs it
+// queued then run into the next tests. Cancel what a backfill left queued:
+// its picture jobs and its maintenance jobs. Render jobs without `backfill`
+// are left alone, as cancelling them would leave files pending.
+afterEach(async () => {
+  // When beforeAll failed there is no env and nothing queued; its error is the one to show.
+  if (env === undefined) return;
+  const pictures = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, {
+    data: { backfill: true },
+    queued: true,
+  });
+  if (pictures.length > 0) {
+    await env.boss.cancel(
+      QUEUE.slicer,
+      pictures.map((j) => j.id),
+    );
+  }
+  const live = new Set(["created", "retry", "active"]);
+  const maintenance = (await backfillMaintenanceJobs()).filter((j) => live.has(j.state));
+  if (maintenance.length > 0) {
+    await env.boss.cancel(
+      QUEUE.maintenance,
+      maintenance.map((j) => j.id),
+    );
+  }
 });
 
 /** A time past the render check's grace period for every file written so far. */
@@ -243,16 +270,20 @@ describe("the preview backfill (issue #316)", () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(settled).toBe(false);
       for (const id of ours) expect(await previewJobs(id)).toHaveLength(0);
-    } finally {
+
       release();
       await holder;
-    }
-
-    const result = await run;
-    expect(result.queued.filter((id) => ours.includes(id)).sort()).toEqual([...ours].sort());
-    for (const f of files) {
-      for (const job of await previewJobs(f.fileId)) {
-        await env.boss.cancel(QUEUE.slicer, job.id);
+      const result = await run;
+      expect(result.queued.filter((id) => ours.includes(id)).sort()).toEqual([...ours].sort());
+    } finally {
+      // Harmless a second time. Neither promise may reject unobserved, or
+      // after the env has stopped.
+      release();
+      await Promise.allSettled([holder, run]);
+      for (const f of files) {
+        for (const job of await previewJobs(f.fileId)) {
+          await env.boss.cancel(QUEUE.slicer, job.id);
+        }
       }
     }
   });
@@ -307,23 +338,27 @@ describe("the preview backfill (issue #316)", () => {
     const second = await legacyStl("Catch-up two");
     const before = await backfillMaintenanceJobs();
 
-    const run = await batched.backfillPreviews(later());
-    expect(run.queued).toContain(first.fileId);
-    await settledFile(env, first.fileId);
+    try {
+      const run = await batched.backfillPreviews(later());
+      expect(run.queued).toContain(first.fileId);
+      await settledFile(env, first.fileId);
 
-    // The maintenance worker of this env may already have taken the job, so
-    // any state counts.
-    const sent = await until(backfillMaintenanceJobs, (jobs) => jobs.length > before.length);
-
-    // Out of the later tests' way: nothing here queues the second file, and
-    // the job sent would keep retrying (this env has no backfill handler).
-    await env.db
-      .updateTable("models")
-      .set({ trashedAt: new Date() })
-      .where("id", "=", second.modelId)
-      .execute();
-    for (const j of sent) {
-      if (!before.some((o) => o.id === j.id)) await env.boss.cancel(QUEUE.maintenance, j.id);
+      // The maintenance worker of this env may already have taken the job, so
+      // any state counts.
+      await until(backfillMaintenanceJobs, (jobs) => jobs.length > before.length);
+    } finally {
+      // Out of the later tests' way: nothing here queues the second file, and
+      // the job sent would keep retrying (this env has no backfill handler).
+      // The jobs are read again: the wait above may have thrown before it
+      // returned any.
+      await env.db
+        .updateTable("models")
+        .set({ trashedAt: new Date() })
+        .where("id", "=", second.modelId)
+        .execute();
+      for (const j of await backfillMaintenanceJobs()) {
+        if (!before.some((o) => o.id === j.id)) await env.boss.cancel(QUEUE.maintenance, j.id);
+      }
     }
   });
 

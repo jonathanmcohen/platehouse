@@ -180,10 +180,12 @@ export const SLICE_PRIORITY = Object.freeze({ waiting: 1, library: -1 });
  * A job waiting in the slicer queue, as slicesThrough takes it. slicesThrough
  * and this shape are kept as the reference that the live SQL queue figures
  * (queuePositions) are tested against; the app does not call them. A slice
- * carries its printer and estimate, a render or mesh job (derived.ts) neither.
+ * (slice: true) carries its printer and estimate, a render or mesh job
+ * (derived.ts) neither.
  */
 export interface QueuedWork {
   id: string;
+  slice: boolean;
   printerId?: string;
   estimateId?: string;
   priority: number;
@@ -200,16 +202,23 @@ export interface QueuedWork {
  * then the queued slices in the order pg-boss starts them, highest priority
  * first, then oldest. There is one slicer queue and it runs one slice at a
  * time for every printer, so this, not a printer's own count, is what its
- * waiting plates take. A render or mesh job on the same queue (no printerId)
- * takes its place like a slice but gives no printer a figure. Jobs waiting
- * out a retry delay are counted where they sit; a page's figure is "about".
- * An estimate with more than one job (an urgent copy of a library job, see
- * enqueue) is sliced once, by the first of them to run, so it counts once,
- * there.
+ * waiting plates take. A render or mesh job on the same queue (slice: false)
+ * always takes its place but gives no printer a figure. Jobs waiting out a
+ * retry delay are counted where they sit; a page's figure is "about".
+ *
+ * A slice takes a place only while its estimate is in pending, the set of
+ * estimates still waiting to be sliced. So these take no place: the queued
+ * copy of an estimate running now (it is already counted among the running),
+ * and a slice that ends at once when it runs, without slicing: the job left
+ * over for an estimate already finished or deleted, and a slice with no
+ * estimate or a malformed one. An estimate with more than one job (an urgent
+ * copy of a library job, see enqueue) is sliced once, by the first of them to
+ * run, so it counts once, there.
  */
 export function slicesThrough(
   jobs: ReadonlyArray<QueuedWork>,
   running: number,
+  pending: ReadonlySet<string>,
 ): Map<string, number> {
   const order = [...jobs].sort(
     (a, b) =>
@@ -221,7 +230,8 @@ export function slicesThrough(
   const seen = new Set<string>();
   let position = running;
   for (const job of order) {
-    if (job.estimateId !== undefined) {
+    if (job.slice) {
+      if (job.estimateId === undefined || !pending.has(job.estimateId)) continue;
       if (seen.has(job.estimateId)) continue;
       seen.add(job.estimateId);
     }
@@ -237,8 +247,8 @@ export interface PrinterQueue {
   waiting: number;
   /**
    * Slicer jobs that run up to and including its last waiting slice, across
-   * every printer, renders and meshes included (queuePositions); at least
-   * waiting.
+   * every printer, renders and meshes included, and a slice only while its
+   * estimate is pending (queuePositions); at least waiting.
    */
   through: number;
 }
@@ -573,6 +583,38 @@ export function recentSliceRateQuery(db: Kysely<DB>) {
     .where("finishedAt", "is not", null)
     .orderBy("finishedAt", "desc")
     .limit(RATE_SAMPLE);
+}
+
+/** The SQL behind queuePositions, kept at module level so a test can read its plan. */
+export function queuePositionsQuery() {
+  return sql<{ printerId: string; through: number }>`
+    with q as (
+      select j.id, j.priority, j.created_on,
+             coalesce(j.data->>'kind' = ${SLICE_JOB_KIND}, false) as is_slice,
+             j.data->>'printerId' as printer_id,
+             j.data->>'estimateId' as estimate_id,
+             e.id is not null as estimate_pending
+        from ${BOSS_JOB} j
+        left join estimates e
+          on e.id::text = j.data->>'estimateId' and e.status = 'pending'
+       where j.name = ${QUEUE.slicer} and j.state < 'active'
+    ), firsts as (
+      select *, row_number() over (
+               partition by case when is_slice then estimate_id end
+               order by priority desc, created_on, id) as nth
+        from q
+       where not is_slice or estimate_pending
+    ), counted as (
+      select printer_id, is_slice,
+             row_number() over (order by priority desc, created_on, id) as pos
+        from firsts
+       where not is_slice or nth = 1
+    )
+    select printer_id as "printerId", max(pos)::int as through
+      from counted
+     where is_slice and printer_id is not null
+     group by printer_id
+  `;
 }
 
 export function createEstimates(deps: EstimatesDeps): Estimates {
@@ -1395,36 +1437,22 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
 
   /**
    * For each printer with a slice queued, the place of its last one among the
-   * queued slicer jobs, counted from 1 (slicesThrough, worked out in SQL so
-   * no job is read into memory): highest priority first, then oldest, then by
-   * id; a job that is not a slice, or a slice with no estimate, always counts,
-   * and an estimate with several jobs counts once, at its first.
+   * queued slicer jobs, counted from 1 (slicesThrough, worked out in SQL so no
+   * job is read into memory): highest priority first, then oldest, then by id.
+   * A job that is not a slice always counts. A slice counts only while its
+   * estimate is pending, and an estimate with several jobs counts once, at its
+   * first. A slice for an estimate running now takes no place, because that
+   * estimate is already counted among the running. One for an estimate
+   * finished or deleted, or with no estimate or a malformed one, ends at once
+   * when it runs, so it takes no place either. The estimate is matched as text
+   * (estimates.id::text), so a job's value that is not a uuid, a number or a
+   * missing key matches no row instead of failing the query. The jobs are
+   * joined to the pending estimates (a left join on the primary key, so no job
+   * is repeated), which keeps the plan one pass however large the queue gets,
+   * not a scan of the estimates for each job.
    */
   async function queuePositions(): Promise<Map<string, number>> {
-    const { rows } = await sql<{ printerId: string; through: number }>`
-      with q as (
-        select id, priority, created_on,
-               coalesce(data->>'kind' = ${SLICE_JOB_KIND}, false) as is_slice,
-               data->>'printerId' as printer_id,
-               data->>'estimateId' as estimate_id
-          from ${BOSS_JOB}
-         where name = ${QUEUE.slicer} and state < 'active'
-      ), firsts as (
-        select *, row_number() over (
-                 partition by case when is_slice then estimate_id end
-                 order by priority desc, created_on, id) as nth
-          from q
-      ), counted as (
-        select printer_id, is_slice,
-               row_number() over (order by priority desc, created_on, id) as pos
-          from firsts
-         where not is_slice or estimate_id is null or nth = 1
-      )
-      select printer_id as "printerId", max(pos)::int as through
-        from counted
-       where is_slice and printer_id is not null
-       group by printer_id
-    `.execute(db);
+    const { rows } = await queuePositionsQuery().execute(db);
     return new Map(rows.map((row) => [row.printerId, row.through]));
   }
 

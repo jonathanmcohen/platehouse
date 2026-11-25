@@ -303,29 +303,39 @@ function wordHit(m: Matcher, t: string): boolean {
   return false;
 }
 
+type Tokens = ReturnType<typeof tokens>;
+
+/** True when one tokenised line has a forbidden token. */
+function hitIn(m: Matcher, t: Tokens): boolean {
+  const { words, camel, runs, pairs, dotted } = t;
+  for (const w of words) if (wordHit(m, w)) return true;
+  // The camelCase words of a run, unless the whole run is an allowed token.
+  for (const { whole, parts } of camel) {
+    if (m.allowed.has(hashOf(whole))) continue;
+    for (const w of parts) if (wordHit(m, w)) return true;
+  }
+  for (const w of pairs) if (m.words.has(hashOf(w))) return true;
+  // Pairs of neighbouring words with each run cut into its camelCase words
+  // (an allowed run stays whole), so a two-word name written as an
+  // identifier ("blueHeron", "myBlueHeronHost") is still a pair.
+  const fine = runs.flatMap(({ whole, parts }) =>
+    parts.length > 1 && !m.allowed.has(hashOf(whole)) ? parts : [whole],
+  );
+  for (let i = 1; i < fine.length; i++) {
+    if (m.words.has(hashOf(`${fine[i - 1]} ${fine[i]}`))) return true;
+  }
+  for (const w of dotted) if (m.addresses.has(hashOf(w))) return true;
+  return false;
+}
+
+/** True when a tokenised line, or the line with its backslashes removed, has a forbidden token. */
+function lineHit(m: Matcher, line: string, t: Tokens): boolean {
+  return hitIn(m, t) || (line.includes("\\") && hitIn(m, tokens(line.replaceAll("\\", ""))));
+}
+
 /** True when a line, or the line with its backslashes removed, has a forbidden token. */
 function names(m: Matcher, line: string): boolean {
-  for (const text of line.includes("\\") ? [line, line.replaceAll("\\", "")] : [line]) {
-    const { words, camel, runs, pairs, dotted } = tokens(text);
-    for (const t of words) if (wordHit(m, t)) return true;
-    // The camelCase words of a run, unless the whole run is an allowed token.
-    for (const { whole, parts } of camel) {
-      if (m.allowed.has(hashOf(whole))) continue;
-      for (const t of parts) if (wordHit(m, t)) return true;
-    }
-    for (const t of pairs) if (m.words.has(hashOf(t))) return true;
-    // Pairs of neighbouring words with each run cut into its camelCase words
-    // (an allowed run stays whole), so a two-word name written as an
-    // identifier ("blueHeron", "myBlueHeronHost") is still a pair.
-    const fine = runs.flatMap(({ whole, parts }) =>
-      parts.length > 1 && !m.allowed.has(hashOf(whole)) ? parts : [whole],
-    );
-    for (let i = 1; i < fine.length; i++) {
-      if (m.words.has(hashOf(`${fine[i - 1]} ${fine[i]}`))) return true;
-    }
-    for (const t of dotted) if (m.addresses.has(hashOf(t))) return true;
-  }
-  return false;
+  return lineHit(m, line, tokens(line));
 }
 
 /** Every allowed token's hash that a text holds, so ALLOWED cannot go stale. */
@@ -457,6 +467,39 @@ function treeLines(m: Matcher, file: string, source: string): string[] {
   return hits;
 }
 
+/**
+ * One pass over a file: tokenises its path and each line of its text once,
+ * adds the allowed tokens they hold to `seen`, and returns the lines that name
+ * one in treeLines' format. The text is matched only when `checkText` is true;
+ * the path always is.
+ */
+function scanFile(
+  m: Matcher,
+  file: string,
+  text: string,
+  seen: Set<string>,
+  checkText: boolean,
+): string[] {
+  const hits: string[] = [];
+  const visit = (line: string, hit: (t: Tokens) => void) => {
+    const t = tokens(line);
+    for (const w of [...t.words, ...t.camel.flatMap((c) => c.parts)]) {
+      const h = hashOf(w);
+      if (m.allowed.has(h)) seen.add(h);
+    }
+    hit(t);
+  };
+  visit(file, (t) => {
+    if (lineHit(m, file, t)) hits.push(`${file}:0: (the path)`);
+  });
+  text.split("\n").forEach((line, i) => {
+    visit(line, (t) => {
+      if (checkText && lineHit(m, line, t)) hits.push(`${file}:${i + 1}: ${line.trim()}`);
+    });
+  });
+  return hits;
+}
+
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 
 /** Every tracked file that is still on disk, as a path relative to the repository root. */
@@ -515,6 +558,39 @@ describe("no private name anywhere in the tracked tree", () => {
     expect(treeLines(m, "deploy/zebrafish/x.yml", "")).toEqual([]);
   });
 
+  test("one pass over a file finds the same lines and allowed tokens as the two checks it replaces", () => {
+    const m = compile(
+      NEUTRAL.filter((f) => f.scope === "tree"),
+      NEUTRAL_ALLOWED,
+    );
+    const file = "deploy/quokka/x.yml";
+    const text = [
+      "ssh quokka uptime",
+      "/198\\.51\\.100\\.\\d+/",
+      "a zebrafish here",
+      "theZebrafishTank",
+      "a plain line",
+    ].join("\n");
+    const seen = new Set<string>();
+    const hits = scanFile(m, file, text, seen, true);
+    // A fixed answer, as treeLines shares lineHit with scanFile.
+    expect(hits).toEqual([
+      "deploy/quokka/x.yml:0: (the path)",
+      "deploy/quokka/x.yml:1: ssh quokka uptime",
+      "deploy/quokka/x.yml:2: /198\\.51\\.100\\.\\d+/",
+    ]);
+    expect(hits).toEqual(treeLines(m, file, text));
+    const expected = new Set<string>();
+    allowedSeen(m, `${file}\n${text}`, expected);
+    expect(seen).toEqual(expected);
+    expect(seen.size).toBe(1);
+    // An ALLOWED_FILES file: only its path is matched, but the allowed tokens
+    // in its text still count as seen.
+    const seenInAllowedFile = new Set<string>();
+    expect(scanFile(m, file, text, seenInAllowedFile, false)).toEqual(treeLines(m, file, ""));
+    expect(seenInAllowedFile).toEqual(new Set(Object.keys(NEUTRAL_ALLOWED)));
+  });
+
   test("the list is well formed", () => {
     const seen = new Set<string>();
     for (const f of FORBIDDEN) {
@@ -543,8 +619,7 @@ describe("no private name anywhere in the tracked tree", () => {
       const bytes = readFileSync(join(ROOT, file));
       // A binary file (an image, a font) has a NUL byte; only its path is checked.
       const text = bytes.includes(0) ? "" : bytes.toString("utf8");
-      allowedSeen(TREE, `${file}\n${text}`, seen);
-      return file in ALLOWED_FILES ? treeLines(TREE, file, "") : treeLines(TREE, file, text);
+      return scanFile(TREE, file, text, seen, !(file in ALLOWED_FILES));
     });
     expect(found).toEqual([]);
     // Every ALLOWED_FILES entry is still needed.
@@ -556,7 +631,9 @@ describe("no private name anywhere in the tracked tree", () => {
     }
     // Every ALLOWED entry is still needed, so the list cannot go stale.
     expect(Object.keys(ALLOWED).filter((h) => !seen.has(h))).toEqual([]);
-  });
+    // Pure CPU work over every tracked file: it grows with the repository and
+    // waits on nothing. CI took 2.9 to 4.6 s against the 5 s default (#504).
+  }, 20_000);
 
   // The proof that the list finds the real names. The names live outside the
   // repository: give them in PLATEHOUSE_GUARD_NAMES, one per line, each as

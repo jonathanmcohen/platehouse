@@ -24,7 +24,7 @@ const MAIN = fileURLToPath(new URL("../../../src/main.ts", import.meta.url));
 const HOOKS = pathToFileURL(fileURLToPath(new URL("../../support/ts-hooks.ts", import.meta.url)));
 
 let env: ServerEnv;
-let child: ChildProcess | undefined;
+const children = new Set<ChildProcess>();
 let output = "";
 
 beforeAll(async () => {
@@ -32,7 +32,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  for (const child of children) {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
   await env?.stop();
 });
 
@@ -56,7 +58,7 @@ describe("the server process", () => {
       env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env.env },
       stdio: ["ignore", "pipe", "pipe"],
     });
-    child = proc;
+    children.add(proc);
     proc.stdout?.on("data", (chunk: Buffer) => {
       output += chunk.toString("utf8");
     });
@@ -128,6 +130,7 @@ describe("the server process", () => {
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    children.add(proc);
     for (const stream of [proc.stdout, proc.stderr]) {
       stream?.on("data", (chunk: Buffer) => {
         log += chunk.toString("utf8");
@@ -138,12 +141,20 @@ describe("the server process", () => {
     );
     try {
       // Start-up is in migrate once the silent database has accepted a
-      // connection, and the signal handlers exist by then.
-      await until(
-        async () => sockets.size,
-        (n) => n > 0,
-        60_000,
-      );
+      // connection, and the signal handlers exist by then. A process that
+      // exits or is killed first ends the wait at once. The waits (60 s, then
+      // 10 s) leave 10 s of the 80 s for the cleanup below.
+      try {
+        await until(
+          async () => sockets.size > 0 || proc.exitCode !== null || proc.signalCode !== null,
+          (reached) => reached,
+          60_000,
+        );
+      } catch (error) {
+        throw new Error(
+          `the server did not reach the database: ${String(error)}\n${log.slice(-4000)}`,
+        );
+      }
       expect(proc.exitCode, log.slice(-4000)).toBeNull();
       proc.kill("SIGTERM");
       const result = await Promise.race([
@@ -156,5 +167,5 @@ describe("the server process", () => {
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve) => silent.close(resolve));
     }
-  }, 30_000);
+  }, 80_000);
 });

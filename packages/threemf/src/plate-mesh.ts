@@ -38,9 +38,11 @@
 //   limit accepts to be read twice;
 // - walk: every step of the component walk, of building the plate's
 //   requests and of assembling the result is charged to Budget.walk,
-//   against limits.walkSteps, apart from the characters: a walk step costs
-//   about 27 ns, so the walk ends within a few seconds while a mesh of
-//   5,000,000 triangles still has the characters it needs;
+//   against limits.walkSteps, apart from the characters. A walk step costs
+//   about 27 ns on an Apple M4, so the full budget is about 5 s there, and
+//   65 to 140 ns on CI runners: on slower CPUs (CI runners, NAS boxes) the
+//   full budget is 13 to 30 s. A mesh of 5,000,000 triangles still has the
+//   characters it needs;
 // - placing: each mesh placed on the plate charges its triangles (counted
 //   while its part was first read, before the mesh itself is read) against
 //   limits.triangles, and each component followed counts against
