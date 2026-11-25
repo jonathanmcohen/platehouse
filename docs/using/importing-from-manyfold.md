@@ -1,3 +1,7 @@
+---
+description: How to copy a Manyfold library into Platehouse once, with the importer.
+---
+
 # Importing from Manyfold
 
 If your library lives in [Manyfold](https://manyfold.app), the Platehouse importer copies it across

@@ -1,3 +1,7 @@
+---
+description: How to set up sign-in through your own OpenID Connect provider, and how to cut someone off.
+---
+
 # Sign-in
 
 Platehouse has no passwords of its own. Every page and file needs a sign-in through an OpenID

@@ -1,3 +1,7 @@
+---
+description: What protects Platehouse, from sign-in and API tokens to the slicer sandbox, and where the limits are.
+---
+
 # Security
 
 Platehouse is built for your own network, for one person or a household. This page explains what

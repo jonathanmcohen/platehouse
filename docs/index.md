@@ -1,3 +1,7 @@
+---
+description: Platehouse is a self-hosted library for 3D print files that you run on your own server with Docker.
+---
+
 # Platehouse
 
 Platehouse is a self-hosted library for 3D print files. You run it on your own server with

@@ -1,3 +1,7 @@
+---
+description: Checks to run after you set up or change the reverse proxy in front of Platehouse.
+---
+
 # Proxy checklist
 
 Run these checks after setting up any proxy, and again after changing its configuration. Replace

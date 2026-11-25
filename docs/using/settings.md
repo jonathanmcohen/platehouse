@@ -1,3 +1,7 @@
+---
+description: What each section of the Settings page does.
+---
+
 # Settings
 
 **Settings**, at the bottom of the sidebar, holds these sections, top to bottom.

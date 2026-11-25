@@ -1,3 +1,7 @@
+---
+description: How to search, tag, collect and rename models, and how to delete tags and collections.
+---
+
 # Organising
 
 ## Search

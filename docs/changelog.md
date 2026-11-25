@@ -1,3 +1,7 @@
+---
+description: Where the Platehouse changelog is, and why to read it before you upgrade.
+---
+
 # Changelog
 
 Every change to Platehouse is recorded in

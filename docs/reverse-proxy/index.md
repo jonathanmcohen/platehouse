@@ -1,3 +1,7 @@
+---
+description: What Platehouse needs from the reverse proxy in front of it, whichever proxy you use.
+---
+
 # Reverse proxy
 
 Platehouse expects a reverse proxy in front of it. The proxy terminates TLS, adds the HSTS header,

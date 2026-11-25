@@ -1,3 +1,7 @@
+---
+description: What to back up, how to restore the database, and how to upgrade Platehouse and its slicer.
+---
+
 # Backups and upgrades
 
 ## What to back up

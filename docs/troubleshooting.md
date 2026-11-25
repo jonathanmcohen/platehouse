@@ -1,3 +1,7 @@
+---
+description: What Platehouse's error messages mean and what to do about each.
+---
+
 # Troubleshooting
 
 Start with the app's log: `docker compose logs platehouse`. Platehouse logs what went wrong in plain words,

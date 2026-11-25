@@ -1,3 +1,7 @@
+---
+description: "How to use the Platehouse HTTP API: tokens, errors, limits, paging, uploads, downloads and examples."
+---
+
 # The Platehouse API
 
 Platehouse has an HTTP API for scripts and tools. With it you can:

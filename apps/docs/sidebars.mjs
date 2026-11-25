@@ -21,6 +21,8 @@ const sidebars = {
         "reverse-proxy/checklist",
       ],
     },
+    "security",
+    "backups-and-upgrades",
     {
       type: "category",
       label: "Using Platehouse",
@@ -39,16 +41,15 @@ const sidebars = {
         "using/new-in-0-1-0",
       ],
     },
+    "api",
+    "troubleshooting",
+    // Mostly for contributors, so near the end.
     {
       type: "category",
       label: "Translations",
       link: { type: "doc", id: "translations/index" },
       items: ["translations/contributing", "translations/locales-dir"],
     },
-    "security",
-    "backups-and-upgrades",
-    "api",
-    "troubleshooting",
     "changelog",
   ],
 };

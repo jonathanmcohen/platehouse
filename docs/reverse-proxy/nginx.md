@@ -1,3 +1,7 @@
+---
+description: An example nginx configuration for Platehouse, and why each setting is there.
+---
+
 # nginx
 
 Written against nginx 1.30, the stable line. It has not been run against a real Platehouse

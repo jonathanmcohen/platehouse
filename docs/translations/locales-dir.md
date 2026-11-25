@@ -1,3 +1,7 @@
+---
+description: How to add a language to your own server, or fix words in a built-in one, with LOCALES_DIR.
+---
+
 # Adding a language to your server
 
 You can give your own Platehouse server more languages, or fix words in a built-in one, without

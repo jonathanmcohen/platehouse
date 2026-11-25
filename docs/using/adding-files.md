@@ -1,3 +1,7 @@
+---
+description: How files get into Platehouse through the browser, the inbox folder and the API, and what happens to duplicates.
+---
+
 # Adding files
 
 Platehouse takes `.3mf`, `.stl`, `.step`, `.stp` and `.scad` files, up to 512 MiB each. A file is

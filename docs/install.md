@@ -1,3 +1,7 @@
+---
+description: How to install Platehouse with Docker Compose from the example files.
+---
+
 # Install
 
 Platehouse runs as three containers under Docker Compose: the app, the slicer and Postgres.

@@ -1,3 +1,7 @@
+---
+description: An example Traefik setup for Platehouse, and why each setting is there.
+---
+
 # Traefik
 
 Written against Traefik 3.7. This is the one proxy setup that has run against a real Platehouse

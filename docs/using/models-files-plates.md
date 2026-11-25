@@ -1,3 +1,7 @@
+---
+description: What models, files and plates are, and what a model's page shows.
+---
+
 # Models, files and plates
 
 - A **model** is one thing in your library, such as a print project you downloaded. It has a

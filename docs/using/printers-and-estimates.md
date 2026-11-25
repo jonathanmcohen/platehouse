@@ -1,3 +1,7 @@
+---
+description: Where the print time, weight and filament numbers come from, and how My printers works.
+---
+
 # Printers and estimates
 
 Every plate of every `.3mf` gets a print time, a weight and grams per filament for each printer in

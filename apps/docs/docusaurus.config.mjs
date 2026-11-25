@@ -4,13 +4,20 @@
 // Privacy: nothing on a built page loads from another site. No analytics, no
 // Algolia, no external fonts (the classic theme uses the system font stack)
 // and no external scripts or stylesheets. Search is a local index built at
-// build time by @easyops-cn/docusaurus-search-local. Edit links are off,
-// because the repository's address will change. The social card and the
+// build time by @easyops-cn/docusaurus-search-local. The social card and the
 // icons below are files of this site, so they load from the same place.
+//
+// Edit links were off while the repository's address could still change.
+// It is settled now (https://github.com/jonathanmcohen/platehouse), so each
+// page has an "Edit this page" link to its file under docs/ on main, and
+// the navbar and footer link to the repository, its releases and its
+// issues. These are plain links: nothing loads from GitHub until a reader
+// follows one.
 //
 // Where the site is published: .github/workflows/docs-pages.yml builds it
 // for GitHub Pages and passes the address actions/configure-pages reports in
-// two environment variables, so nothing here names the repository:
+// two environment variables, so the site's own address is never written
+// here:
 //
 //   DOCS_SITE_URL   the site's origin, such as https://owner.github.io
 //   DOCS_BASE_PATH  the path the site lives under, such as /repo, or empty
@@ -25,6 +32,9 @@
 import { themes } from "prism-react-renderer";
 
 const PLACEHOLDER_URL = "https://platehouse.example.com";
+
+/** The source repository, for the edit links and the GitHub links. */
+const REPO_URL = "https://github.com/jonathanmcohen/platehouse";
 
 /** The site's origin, from DOCS_SITE_URL when it is set. */
 function siteUrl(value) {
@@ -114,6 +124,11 @@ const config = {
           path: "../../docs",
           routeBasePath: "/",
           sidebarPath: "./sidebars.mjs",
+          // docPath is the page's path inside docs/, so the link opens that
+          // file on main. A string here would be joined with the docs
+          // folder's path from this site, ../../docs, which is not a path in
+          // the repository.
+          editUrl: ({ docPath }) => `${REPO_URL}/edit/main/docs/${docPath}`,
           showLastUpdateAuthor: false,
           showLastUpdateTime: false,
         },
@@ -158,10 +173,23 @@ const config = {
       navbar: {
         title: "Platehouse",
         logo: { alt: "Platehouse logo", src: "logo.svg" },
-        items: [{ type: "docSidebar", sidebarId: "docs", position: "left", label: "Docs" }],
+        items: [
+          { type: "docSidebar", sidebarId: "docs", position: "left", label: "Docs" },
+          { href: REPO_URL, label: "GitHub", position: "right" },
+        ],
       },
       footer: {
         style: "dark",
+        links: [
+          {
+            title: "Platehouse",
+            items: [
+              { label: "Source on GitHub", href: REPO_URL },
+              { label: "Releases", href: `${REPO_URL}/releases` },
+              { label: "Issues", href: `${REPO_URL}/issues` },
+            ],
+          },
+        ],
         copyright: "Platehouse documentation.",
       },
       prism: {

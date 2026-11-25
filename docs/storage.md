@@ -1,3 +1,7 @@
+---
+description: How to set up the S3-compatible bucket that holds Platehouse's files.
+---
+
 # Storage
 
 Platehouse keeps file bytes in an S3-compatible bucket and everything else in Postgres. Any store

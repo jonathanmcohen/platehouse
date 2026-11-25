@@ -1,3 +1,7 @@
+---
+description: What the Activity page shows about the library, the background jobs, the slicer and recent events.
+---
+
 # Activity
 
 The **Activity** page, in the sidebar between Trash and Settings, shows what Platehouse is doing and

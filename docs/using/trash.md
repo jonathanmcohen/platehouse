@@ -1,3 +1,7 @@
+---
+description: "How the trash works: moving models to it, restoring them and purging them."
+---
+
 # The trash
 
 **Move to trash** takes a model out of the library, search and every API answer. The model page

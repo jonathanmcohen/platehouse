@@ -1,3 +1,7 @@
+---
+description: An example Apache httpd site for Platehouse, and why each setting is there.
+---
+
 # Apache httpd
 
 Written against Apache httpd 2.4. It has not been run against a real Platehouse deployment, so

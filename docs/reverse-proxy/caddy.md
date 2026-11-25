@@ -1,3 +1,7 @@
+---
+description: An example Caddy site block for Platehouse, and why each setting is there.
+---
+
 # Caddy
 
 Written against Caddy 2.11. It has not been run against a real Platehouse deployment, so treat

@@ -1,3 +1,7 @@
+---
+description: Every setting the Platehouse app and slicer read from the environment, with its default, and the fixed limits.
+---
+
 # Configuration
 
 Platehouse reads its configuration from environment variables only. With the example Compose

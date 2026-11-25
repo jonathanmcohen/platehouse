@@ -1,3 +1,7 @@
+---
+description: How the Open in Bambu Studio and Open in OrcaSlicer buttons and their short-lived links work.
+---
+
 # Opening in a slicer
 
 Every `.3mf` on a model page has two buttons: **Open in Bambu Studio** and **Open in OrcaSlicer**.

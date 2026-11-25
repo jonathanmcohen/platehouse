@@ -1,3 +1,7 @@
+---
+description: The library page, with its search, pages, sorting and Select mode, and a guide to the other Using pages.
+---
+
 # Using Platehouse
 
 Platehouse has a left sidebar, with the Platehouse logo at the top, and a top bar.

@@ -1,3 +1,7 @@
+---
+description: How to add a language to Platehouse itself, or review an existing translation.
+---
+
 # Adding a language to Platehouse
 
 A language added to the source repository ships with Platehouse, for everyone. This page is for
