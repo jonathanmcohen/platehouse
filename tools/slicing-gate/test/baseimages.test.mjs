@@ -904,8 +904,8 @@ test("base-images: dispatch-ci starts ci.yml on the bot branch, only after a ref
 test("base-images: ci.yml's gate-tests list names this workflow, its script and pnpm-workspace.yaml", () => {
   const ci = readFileSync(CI, "utf8");
   const list = ci.match(/grep -Eq '\^\((tools\/slicing-gate\/[^']*)\)' <<<"\$changed"/)[1];
-  assert.match(list, /\(ci\|release\|slicer-image\|rc-tag\|apt-snapshot\|base-images\|docs-pages\)\\\.yml\$/);
-  assert.match(list, /\\\.github\/scripts\/\(rc-target\|apt-snapshot\|base-images\|release-gate\)\\\.mjs\$/);
+  assert.match(list, /\(ci\|release\|slicer-image\|rc-tag\|apt-snapshot\|base-images\|docs-pages\|release-notes\)\\\.yml\$/);
+  assert.match(list, /\\\.github\/scripts\/\(rc-target\|apt-snapshot\|base-images\|release-gate\|release-notes\)\\\.mjs\$/);
   assert.match(list, /\|pnpm-workspace\\\.yaml\$/);
 });
 
