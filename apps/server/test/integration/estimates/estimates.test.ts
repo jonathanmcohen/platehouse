@@ -36,6 +36,7 @@ import {
 import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { MAINTENANCE_TASKS, QUEUE, startQueues } from "../../../src/jobs/queues.js";
+import { BOSS_JOB } from "../../../src/repos/activity.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import {
   type SlicerStub,
@@ -108,11 +109,41 @@ async function inFlight(): Promise<number> {
   return rows[0]?.n ?? -1;
 }
 
-/** Waits until the slicer queue has drained: no estimate is pending or running. */
+/**
+ * Jobs still to run on the slicer and maintenance queues (created, retry or
+ * active), by queue, state and kind, so a timed-out drain names what it waited on.
+ */
+async function liveQueueJobs(): Promise<
+  Array<{ name: string; state: string; kind: string | null; n: number }>
+> {
+  const { rows } = await sql<{ name: string; state: string; kind: string | null; n: number }>`
+    select name, state::text as state, coalesce(data->>'kind', data->>'task') as kind,
+           count(*)::int as n
+    from ${BOSS_JOB}
+    where name in (${QUEUE.slicer}, ${QUEUE.maintenance})
+      and state in ('created', 'retry', 'active')
+    group by name, state, coalesce(data->>'kind', data->>'task')
+    order by name, state, kind
+  `.execute(env.db);
+  return rows;
+}
+
+/** No estimate is pending or running, and no job is left on either queue. */
+async function settled() {
+  return { estimates: await inFlight(), jobs: await liveQueueJobs() };
+}
+
+/**
+ * Waits until the slicer queue has drained: no estimate is pending or running,
+ * and no job is left on the slicer or maintenance queue. It waits out leftover
+ * no-op slice jobs, and the maintenance poll savePrinters sends, so neither
+ * crosses into the next test's counted window (#490).
+ */
 async function drain(): Promise<void> {
-  await until(inFlight, (n) => n === 0);
+  const done = (v: Awaited<ReturnType<typeof settled>>) => v.estimates === 0 && v.jobs.length === 0;
+  await until(settled, done);
   await sleep(300);
-  await until(inFlight, (n) => n === 0);
+  await until(settled, done);
 }
 
 /** Uploads a synthetic .3mf through the ingest queue and returns its plates. */
@@ -1219,6 +1250,8 @@ describe("My printers", () => {
         () => stub.calls.length,
         (n) => n > before,
       );
+      // A job left over from earlier work names an estimate that is gone, and takes no place in the figure; after the release it runs and ends at once.
+      await leftoverJob(randomUUID(), A1, SLICE_PRIORITY.library);
       expect((await estimates.queueByPrinter()).get(A1)).toEqual({
         waiting: expected,
         through: expected,
@@ -1297,6 +1330,8 @@ describe("My printers", () => {
           ).length,
         (n) => n === 1,
       );
+      // A job left over from earlier work names an estimate that is gone, and takes no place in the figure; after the release it runs and ends at once.
+      await leftoverJob(randomUUID(), A1, SLICE_PRIORITY.library);
       const queue = await estimates.queueByPrinter();
       expect(queue.get(A1)).toEqual({ waiting: forA1, through: forA1 });
       expect(queue.get(X1C)).toEqual({ waiting: forX1C, through: forA1 + forX1C });
@@ -1352,6 +1387,8 @@ describe("My printers", () => {
       // Each estimate counts once in the queue's figures: the slice running
       // now, the upload's urgent A1 slice, then the raced file's four urgent
       // copies (its library copies are not counted again).
+      // A job left over from earlier work names an estimate that is gone, and takes no place in the figure; after the release it runs and ends at once.
+      await leftoverJob(randomUUID(), A1, SLICE_PRIORITY.library);
       expect((await estimates.queueByPrinter()).get(A1)?.through).toBe(2 + ids.length);
     } finally {
       held.release();
@@ -1481,6 +1518,8 @@ describe("My printers", () => {
       // A .scad file arrives meanwhile: its render is sent as derived.ts
       // sends one, with no priority.
       expect(await boss.send(QUEUE.slicer, { kind: RENDER_KIND })).not.toBeNull();
+      // A job left over from earlier work names an estimate that is gone, and takes no place in the figure; after the release it runs and ends at once.
+      await leftoverJob(randomUUID(), A1, SLICE_PRIORITY.library);
       // The A1's wait counts the render, which now runs ahead of its plates.
       expect((await estimates.queueByPrinter()).get(A1)).toEqual({
         waiting: queued,
@@ -1580,10 +1619,10 @@ describe("My printers", () => {
         (n) => n > before,
       );
       // The slice is held and the queue is singleton, so this job stays queued.
-      await leftoverJob(doneA1?.id ?? "", A1, SLICE_PRIORITY.library);
-      // Only this test's own estimates: a finished estimate's leftover job can
-      // be queued behind the held slice (#490), and the poll's library copy and
-      // an urgent copy can both be queued for one estimate, so count distinct ids.
+      if (doneA1 === undefined) throw new Error("the finished plate has no A1 estimate");
+      const leftoverId = await leftoverJob(doneA1.id, A1, SLICE_PRIORITY.library);
+      expect(await boss.getJobById(QUEUE.slicer, leftoverId)).toMatchObject({ state: "created" });
+      // Only this test's own estimates, counted by distinct id (see above).
       await until(
         async () =>
           (
