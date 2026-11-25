@@ -326,9 +326,10 @@ describe("the OpenAPI document", () => {
   });
 
   // Issue #380 (the maintainer, 2026-11-22): derivedStatus keeps its 0.1.0
-  // meaning, word for word, and a file's preview picture is reported as
-  // previewStatus and previewMessage beside it, always sent.
-  test("a file keeps derivedStatus as in 0.1.0 and documents previewStatus and previewMessage", () => {
+  // meaning, and a file's preview picture is reported as previewStatus and
+  // previewMessage beside it, always sent. Issue #501 corrected the words of
+  // the derivedStatus description in 0.1.2; the meaning did not change.
+  test("a file keeps derivedStatus with its 0.1.0 meaning and documents previewStatus and previewMessage", () => {
     const example = doc.paths["/files/{id}"]?.get?.responses?.["200"]?.content?.[
       "application/json"
     ] as { schema: Record<string, unknown>; example: Record<string, unknown> } | undefined;
@@ -337,7 +338,7 @@ describe("the OpenAPI document", () => {
       required: string[];
     };
     expect(schema.properties.derivedStatus?.description).toBe(
-      "For .scad and STEP files, the preview render: pending, ok or failed. Null for other kinds.",
+      "For .scad files, the OpenSCAD render; for STEP files, the conversion to a mesh: pending, ok or failed. Null for STL and 3MF files. The preview picture is previewStatus.",
     );
     expect(schema.properties.previewStatus?.description).toMatch(/STL and STEP/);
     expect(schema.properties.previewStatus?.description).toMatch(/pending, ok or failed/);
