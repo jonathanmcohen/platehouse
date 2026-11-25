@@ -207,13 +207,13 @@ export interface QueuedWork {
  * retry delay are counted where they sit; a page's figure is "about".
  *
  * A slice takes a place only while its estimate is in pending, the set of
- * estimates still waiting to be sliced: a job for any other estimate ends at
- * once when it runs, without slicing. So these take no place: the queued
- * copy of an estimate running now, the job left over for an estimate already
- * finished or deleted, and a slice with no estimate or a malformed one. An
- * estimate with more than one job (an urgent copy of a library job, see
- * enqueue) is sliced once, by the first of them to run, so it counts once,
- * there.
+ * estimates still waiting to be sliced. So these take no place: the queued
+ * copy of an estimate running now (it is already counted among the running),
+ * and a slice that ends at once when it runs, without slicing: the job left
+ * over for an estimate already finished or deleted, and a slice with no
+ * estimate or a malformed one. An estimate with more than one job (an urgent
+ * copy of a library job, see enqueue) is sliced once, by the first of them to
+ * run, so it counts once, there.
  */
 export function slicesThrough(
   jobs: ReadonlyArray<QueuedWork>,
@@ -1409,9 +1409,10 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
    * no job is read into memory): highest priority first, then oldest, then by
    * id. A job that is not a slice always counts. A slice counts only while
    * its estimate is pending, and an estimate with several jobs counts once,
-   * at its first; a slice for an estimate running now, finished or deleted,
-   * or with no estimate or a malformed one, ends at once when it runs, so it
-   * takes no place. The estimate is matched as text (estimates.id::text), so
+   * at its first; a slice for an estimate running now takes no place because
+   * that estimate is already counted among the running, and one for an
+   * estimate finished or deleted, or with no estimate or a malformed one,
+   * ends at once when it runs, so it takes no place either. The estimate is matched as text (estimates.id::text), so
    * a job's value that is not a uuid, a number or a missing key matches no
    * row instead of failing the query. Postgres plans the exists as a hash
    * semi-join over the pending estimates (a hashed subplan, as it sits under
