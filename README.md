@@ -11,8 +11,8 @@ Documentation: <https://jonathanmcohen.github.io/platehouse/>. Start with [Insta
 ## What it does
 
 - Lists every plate of a `.3mf` up front, with its thumbnail, filaments, print time and weight.
-- Estimates each plate for every printer in **My printers**, next to the numbers Bambu saved in
-  the file.
+- Gives each plate's print time and filament for every printer in **My printers**: Bambu's own
+  numbers when the file has them for that printer, and an OrcaSlicer estimate otherwise.
 - Opens a `.3mf` in Bambu Studio or OrcaSlicer with one click.
 - Keeps model files, thumbnails and renders in an S3-compatible bucket.
 - Takes files by drag and drop, from an inbox folder it watches, or through the token API.
@@ -35,12 +35,14 @@ Documentation: <https://jonathanmcohen.github.io/platehouse/>. Start with [Insta
 ## What you need
 
 - A Linux amd64 host with Docker Compose v2.
-- Linux 6.12 or newer (Landlock ABI 6) for the slicer's sandbox.
+- Linux 6.12 or newer (Landlock ABI 6) for the slicer's sandbox. On an older kernel, preview
+  pictures and OpenSCAD renders stay off.
 - CPU and memory: the example gives the slicer 4 CPUs and 4 GiB, and the app 2 CPUs and 2 GiB,
   plus what Postgres needs.
 - An S3-compatible bucket.
 - An OpenID Connect provider, with a group for the people who may sign in.
-- A reverse proxy with TLS. See the [reverse proxy guides](https://jonathanmcohen.github.io/platehouse/reverse-proxy/).
+- A reverse proxy with TLS. See the
+  [reverse proxy guides](https://jonathanmcohen.github.io/platehouse/reverse-proxy).
 
 ## Quick start
 
@@ -50,8 +52,9 @@ Documentation: <https://jonathanmcohen.github.io/platehouse/>. Start with [Insta
 3. Create the three Docker networks the example uses, then run `docker compose up -d`.
 4. Put the app behind your reverse proxy and sign in.
 
-The [Install page](https://jonathanmcohen.github.io/platehouse/install) walks through each step. A deployment pins the version tag, as
-the example file does: `ghcr.io/jonathanmcohen/platehouse:0.1.1`, with the slicer image
+The [Install page](https://jonathanmcohen.github.io/platehouse/install) walks through each
+step. A deployment pins the version tag, as the example file does:
+`ghcr.io/jonathanmcohen/platehouse:0.1.1`, with the slicer image
 `ghcr.io/jonathanmcohen/platehouse-slicer:0.1.1` at the same version. See also
 [Backups and upgrades](https://jonathanmcohen.github.io/platehouse/backups-and-upgrades).
 
@@ -60,9 +63,9 @@ the example file does: `ghcr.io/jonathanmcohen/platehouse:0.1.1`, with the slice
 Platehouse has an HTTP API for scripts and tools such as AI coding assistants: upload files,
 search the library, read models, plates and their estimates, download files, and add or remove
 tags and collections. It never deletes anything. Make a token in Settings, under API tokens, and
-send it as `Authorization: Bearer <token>`. The [API guide](https://jonathanmcohen.github.io/platehouse/api) covers tokens, errors, limits
-and curl examples. The OpenAPI 3.0 document is at `GET /api/v1/openapi.json` (it needs a token
-too).
+send it as `Authorization: Bearer <token>`. The
+[API guide](https://jonathanmcohen.github.io/platehouse/api) covers tokens, errors, limits and
+curl examples. The OpenAPI 3.0 document is at `GET /api/v1/openapi.json` (it needs a token too).
 
 ## Status
 
