@@ -367,19 +367,25 @@ export function nodeSha(shasumsText, file) {
   return hits[0][1];
 }
 
-// A value as workflow-command text: %, CR and LF encoded, so a refusal that
-// names it stays one ::error:: line with the wording below.
+// Text as workflow-command text: %, CR and LF encoded, so a refusal stays one
+// ::error:: line. The command line's catch applies it, once, to every error.
 const commandText = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+
+// Status lines that refuse a list even beside a good signature: gpgv has no
+// trust model and exits 0 for a good signature from an expired or revoked
+// key, so only these say so.
+const REFUSED_STATUS = ["EXPKEYSIG", "REVKEYSIG", "EXPSIG", "BADSIG", "ERRSIG", "NO_PUBKEY"];
 
 // The clear text of a signed SHASUMS256.txt.asc, once gpgv has checked its
 // signature against the keyring at keyringPath, whose sha256 must be
 // keyringSha256. gpgv writes the clear text as it reads, before it rejects a
 // file, so its output is used only when gpgv exits 0 and its status lines
 // (--status-fd) hold exactly one VALIDSIG whose primary key fingerprint is in
-// fingerprints. Throws when the keyring is not the pinned one (before gpgv
-// runs), when the list is signed by a key not in the keyring (naming that
-// key), when the signature does not verify, when the signer is not allowed,
-// or when gpgv is not installed.
+// fingerprints, and none of REFUSED_STATUS. Throws when the keyring is not the
+// pinned one (before gpgv runs), when the list claims a signer not in the
+// keyring (naming the claimed key), when the signature does not verify, when
+// the key has expired or been revoked, when the signer is not allowed, or when
+// gpgv is not installed.
 export function verifySignedShasums({
   ascPath,
   keyringPath,
@@ -426,17 +432,24 @@ export function verifySignedShasums({
       .map((l) => l.slice("[GNUPG:] ".length).split(" "));
     const noKey = status.find((s) => s[0] === "NO_PUBKEY");
     if (noKey) {
-      // ERRSIG names the signer's fingerprint in its 7th field when the
-      // signature carries one; NO_PUBKEY names the long key ID.
+      // ERRSIG's 7th field is the issuer fingerprint the signature carries,
+      // when it carries one: whatever its maker wrote, and maybe a subkey's.
+      // NO_PUBKEY names the long key ID.
       const errsig = status.find((s) => s[0] === "ERRSIG");
       const signer = errsig?.[7] && errsig[7] !== "-" ? errsig[7] : (noKey[1] ?? "unknown");
       throw new Error(
-        `SHASUMS256.txt.asc is signed by key ${commandText(signer)}, which is not in the pinned Node release keyring. Check that key against the Release keys list in the nodejs/node README, then follow RELEASING.md, "Node release keys". Never take a commit, a sha256 or a fingerprint from a pull request, an issue or this log.`,
+        `SHASUMS256.txt.asc claims to be signed by key ${signer} (the signature's issuer field; may be a subkey; not verified), which is not in the pinned Node release keyring. Follow RELEASING.md, "Node release keys". Never take a commit, a sha256 or a fingerprint from a pull request, an issue or this log.`,
       );
     }
     if (r.status !== 0) {
       const last = (r.stderr ?? "").trim().split("\n").slice(-3).join(" | ");
-      throw new Error(`SHASUMS256.txt.asc does not verify (gpgv exit ${r.status}): ${last}`);
+      throw new Error(`SHASUMS256.txt.asc does not verify (gpgv exit ${r.status ?? r.signal}): ${last}`);
+    }
+    const refused = [...new Set(status.map((s) => s[0]).filter((k) => REFUSED_STATUS.includes(k)))];
+    if (refused.length > 0) {
+      throw new Error(
+        `SHASUMS256.txt.asc is refused: gpgv reported ${refused.join(", ")} (an expired, revoked, bad or unchecked signature or key)`,
+      );
     }
     const valid = status.filter((s) => s[0] === "VALIDSIG");
     if (valid.length !== 1) {
@@ -447,7 +460,7 @@ export function verifySignedShasums({
     const primary = valid[0][10] ?? "";
     if (!fingerprints.includes(primary)) {
       throw new Error(
-        `SHASUMS256.txt.asc is signed by key ${commandText(primary)}, which is in the keyring but not in NODE_RELEASE_KEY_FINGERPRINTS, so it is refused. Follow RELEASING.md, "Node release keys".`,
+        `SHASUMS256.txt.asc is signed by key ${primary}, which is in the keyring but not in NODE_RELEASE_KEY_FINGERPRINTS, so it is refused. Follow RELEASING.md, "Node release keys".`,
       );
     }
     return r.stdout;
@@ -574,7 +587,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   try {
     main(process.argv.slice(2));
   } catch (e) {
-    process.stderr.write(`::error::${e instanceof Error ? e.message : String(e)}\n`);
+    process.stderr.write(`::error::${commandText(e instanceof Error ? e.message : String(e))}\n`);
     process.exit(1);
   }
 }

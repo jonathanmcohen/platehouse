@@ -365,6 +365,28 @@ test("nodeSha: refuses a file that is not listed, listed twice, or listed with a
 //   awk '!done && /^3/ { sub(/^3/, "5"); done = 1 } 1' "$work/a.asc" >"$out/SHASUMS256.tampered.txt.asc"
 //   gpgconf --homedir "$work/a" --kill all; gpgconf --homedir "$work/b" --kill all; rm -rf "$work"
 //
+// Two more throwaway keys, C and D, each with its own keyring, give a good
+// signature from a key gpgv still accepts but must not be trusted: C expired
+// the day after it signed (made and used with a faked clock on 2020-01-01),
+// and D's own revocation is in its keyring. SHASUMS256.unsigned.txt.asc is
+// the body alone, a list with its signature stripped. The same $work body:
+//
+//   mkdir -m 700 "$work/c" "$work/d"
+//   gpg --homedir "$work/c" --batch --passphrase '' --faked-system-time '20200101T000000!' \
+//     --quick-generate-key "$uid" rsa3072 sign 1d
+//   gpg --homedir "$work/c" --batch --passphrase '' --pinentry-mode loopback \
+//     --faked-system-time '20200101T010000!' --clearsign --digest-algo SHA256 -o "$work/c.asc" "$work/body.txt"
+//   gpg --homedir "$work/c" --export >"$out/keyring.expired-key.gpg"
+//   cp "$work/c.asc" "$out/SHASUMS256.expired-key.txt.asc"
+//   gpg --homedir "$work/d" --batch --passphrase '' --quick-generate-key "$uid" rsa3072 sign never
+//   gpg --homedir "$work/d" --batch --passphrase '' --pinentry-mode loopback \
+//     --clearsign --digest-algo SHA256 -o "$work/d.asc" "$work/body.txt"
+//   fpr="$(gpg --homedir "$work/d" --with-colons --list-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+//   sed 's/^:-----BEGIN/-----BEGIN/' "$work/d/openpgp-revocs.d/$fpr.rev" | gpg --homedir "$work/d" --batch --import
+//   gpg --homedir "$work/d" --export >"$out/keyring.revoked-key.gpg"
+//   cp "$work/d.asc" "$out/SHASUMS256.revoked-key.txt.asc"
+//   cp "$work/body.txt" "$out/SHASUMS256.unsigned.txt.asc"
+//
 // The tests that run gpgv skip, with the reason, only where gpgv is missing
 // and CI is not set; on CI they always run.
 const GPGV = spawnSync("gpgv", ["--version"]).status === 0;
@@ -377,6 +399,9 @@ const fixture = (name) => join(FIX, name);
 const FIX_FINGERPRINT = "F544558457442FAD4B028F013A9A958C556307AD";
 // Key B's, which signed the other-key list and is in no keyring here.
 const OTHER_FINGERPRINT = "A50CDA10D1308275BCE3F26A7830B79213DB0255";
+// Keys C (expired) and D (revoked), each alone in its own keyring.
+const EXPIRED_FINGERPRINT = "0295FA15418B5FF0E1285685A8BDE02B6FC0AD5F";
+const REVOKED_FINGERPRINT = "7DDD32F6C882E4F569C557997223BA07F4164FEE";
 const FINGERPRINTS_LINE = /export const NODE_RELEASE_KEY_FINGERPRINTS = \[[^\]]*\];/;
 // base-images.mjs with its keyring pin and fingerprint allowlist moved to the
 // fixture key, for the command line and the workflow step, which read both
@@ -443,27 +468,75 @@ test("verifySignedShasums: a tampered list does not verify, and gives no text", 
   assert.throws(() => verifyFixture("SHASUMS256.tampered.txt.asc"), /SHASUMS256\.txt\.asc does not verify \(gpgv exit \d+\)/);
 });
 
-test("verifySignedShasums: a list signed by a key not in the keyring names the signer and where to check it, never a commit", needGpgv, () => {
+// gpgv has no trust model: it exits 0 for a good signature from an expired or
+// revoked key, and only its status lines say so.
+for (const [name, key, fingerprint, code] of [
+  ["an expired key", "expired-key", EXPIRED_FINGERPRINT, "EXPKEYSIG"],
+  ["a revoked key", "revoked-key", REVOKED_FINGERPRINT, "REVKEYSIG"],
+]) {
+  test(`verifySignedShasums: a good signature from ${name} is refused, even with the key allowed`, needGpgv, () => {
+    const ring = fixture(`keyring.${key}.gpg`);
+    assert.throws(
+      () =>
+        verifySignedShasums({
+          ascPath: fixture(`SHASUMS256.${key}.txt.asc`),
+          keyringPath: ring,
+          keyringSha256: createHash("sha256").update(readFileSync(ring)).digest("hex"),
+          fingerprints: [fingerprint],
+        }),
+      new RegExp(`SHASUMS256\\.txt\\.asc is refused: gpgv reported ${code}`),
+    );
+  });
+}
+
+test("verifySignedShasums: a bad, expired, revoked or errored signature beside a good one is refused", () =>
+  inScratch((dir) => {
+    const body = `${hex("3")}  node-v26.2.0-linux-x64.tar.xz\n`;
+    const valid = `VALIDSIG ${FIX_FINGERPRINT} 2026-11-25 1795639258 0 4 0 1 8 01 ${FIX_FINGERPRINT}`;
+    for (const line of [
+      "EXPKEYSIG 3A9A958C556307AD Platehouse test key",
+      "REVKEYSIG 3A9A958C556307AD Platehouse test key",
+      "EXPSIG 3A9A958C556307AD Platehouse test key",
+      "BADSIG 3A9A958C556307AD Platehouse test key",
+      "ERRSIG 3A9A958C556307AD 1 8 01 1795639258 4 -",
+    ]) {
+      const gpgv = fakeGpgv(dir, { body, status: ["NEWSIG", line, valid] });
+      assert.throws(
+        () => verifyFixture("SHASUMS256.txt.asc", { gpgv }),
+        new RegExp(`is refused: gpgv reported ${line.split(" ")[0]}`),
+        line,
+      );
+    }
+  }));
+
+test("verifySignedShasums: a gpgv killed by a signal names the signal", () =>
+  inScratch((dir) => {
+    const gpgv = join(dir, "killed-gpgv");
+    writeFileSync(gpgv, "#!/bin/bash\nkill -KILL $$\n", { mode: 0o755 });
+    assert.throws(() => verifyFixture("SHASUMS256.txt.asc", { gpgv }), /does not verify \(gpgv exit SIGKILL\)/);
+  }));
+
+// The issuer named in a signature is whatever its maker wrote there, and can
+// be a subkey, so the refusal says it is a claim and sends the maintainer to
+// RELEASING.md, never to a lookup of that key.
+test("verifySignedShasums: a list signed by a key not in the keyring names the claimed issuer as unverified, never a commit", needGpgv, () => {
   assert.throws(
     () => verifyFixture("SHASUMS256.other-key.txt.asc"),
     (e) =>
-      e.message.includes(OTHER_FINGERPRINT) &&
-      /nodejs\/node README/.test(e.message) &&
+      e.message.includes(
+        `claims to be signed by key ${OTHER_FINGERPRINT} (the signature's issuer field; may be a subkey; not verified)`,
+      ) &&
       /RELEASING\.md, "Node release keys"/.test(e.message) &&
+      !/README/.test(e.message) &&
       !e.message.includes(NODE_RELEASE_KEYS_COMMIT) &&
       !/[0-9a-f]{40}/.test(e.message),
   );
 });
 
-test("verifySignedShasums: the signer named in the refusal is encoded as workflow-command text", () =>
+test("verifySignedShasums: with no issuer fingerprint, the refusal names NO_PUBKEY's key ID", () =>
   inScratch((dir) => {
-    const gpgv = fakeGpgv(dir, { status: ["NEWSIG", "ERRSIG 7830B79213DB0255 1 8 01 1795639258 9 50%\rX::warning::y", "NO_PUBKEY 7830B79213DB0255"], exit: 2 });
-    assert.throws(
-      () => verifyFixture("SHASUMS256.txt.asc", { gpgv }),
-      (e) => e.message.includes("50%25%0DX::warning::y") && !e.message.includes("\r") && !/50%[^2]/.test(e.message),
-    );
     const keyIdOnly = fakeGpgv(dir, { status: ["NEWSIG", "ERRSIG 7830B79213DB0255 1 8 01 1795639258 9 -", "NO_PUBKEY 7830B79213DB0255"], exit: 2 });
-    assert.throws(() => verifyFixture("SHASUMS256.txt.asc", { gpgv: keyIdOnly }), /signed by key 7830B79213DB0255,/);
+    assert.throws(() => verifyFixture("SHASUMS256.txt.asc", { gpgv: keyIdOnly }), /claims to be signed by key 7830B79213DB0255 /);
   }));
 
 test("verifySignedShasums: a keyring that is not the pinned one is refused before gpgv runs", () => {
@@ -592,6 +665,40 @@ test("cli node-sha-signed: prints the sha from a list that verifies, and nothing
       assert.equal(bad.status, 1, asc);
       assert.equal(bad.stdout, "", asc);
     }
+  }));
+
+// Every refusal reaches the log as one ::error:: line, its text encoded once
+// at the command line: gpgv's stderr and the signer it names come from the
+// downloaded file.
+test("cli node-sha-signed: a refusal is one ::error:: line, encoded once", () =>
+  inScratch((dir) => {
+    const script = join(realpathSync(dir), "base-images.mjs");
+    writeFileSync(script, scriptPinnedToFixture());
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const run = (status, stderr, exit) => {
+      writeFileSync(join(dir, "fake-status"), status.map((l) => `[GNUPG:] ${l}\n`).join(""));
+      writeFileSync(join(dir, "fake-stderr"), stderr);
+      writeFileSync(
+        join(bin, "gpgv"),
+        `#!/bin/bash\ncat "${dir}/fake-stderr" >&2\ncat "${dir}/fake-status" >&3\nexit ${exit}\n`,
+        { mode: 0o755 },
+      );
+      return spawnSync(process.execPath, [script, "node-sha-signed", fixture("SHASUMS256.txt.asc"), FIX_KEYRING, "node-v26.2.0-linux-x64.tar.xz"], {
+        cwd: dir,
+        encoding: "utf8",
+        env: { PATH: `${bin}:${process.env.PATH}` },
+      });
+    };
+    const armor = run([], "gpgv: invalid armor header: 50%\r::warning::x\n", 2);
+    assert.equal(armor.status, 1);
+    assert.equal(armor.stderr.trimEnd().split("\n").length, 1, armor.stderr);
+    assert.ok(armor.stderr.includes("50%25%0D::warning::x"), armor.stderr);
+    const signer = run(["NEWSIG", "ERRSIG 7830B79213DB0255 1 8 01 1795639258 9 50%\rX::warning::y", "NO_PUBKEY 7830B79213DB0255"], "", 2);
+    assert.equal(signer.status, 1);
+    assert.equal(signer.stderr.trimEnd().split("\n").length, 1, signer.stderr);
+    assert.ok(signer.stderr.includes("key 50%25%0DX::warning::y "), signer.stderr);
+    assert.doesNotMatch(signer.stderr, /%2525/, "encoded once, not twice");
   }));
 
 test("cli keyring-url: prints the pinned keyring URL; node-sha is gone", () =>
@@ -934,9 +1041,10 @@ test("base-images resolve: fails, with nothing handed on, when a lookup fails or
   assert.deepEqual(bad.outputs, {});
 });
 
-test("base-images resolve: an empty download fails, with nothing handed on", () => {
+test("base-images resolve: an empty download fails, with nothing handed on", needGpgv, () => {
   const empty = resolveRun({ ASC: "/dev/null" });
   assert.notEqual(empty.status, 0);
+  assert.match(empty.log, /::error::SHASUMS256\.txt\.asc does not verify/);
   assert.deepEqual(empty.outputs, {});
 });
 
@@ -947,8 +1055,13 @@ test("base-images resolve: a list that does not verify fails, with nothing hande
   assert.deepEqual(tampered.outputs, {});
   const otherKey = resolveRun({ ASC: fixture("SHASUMS256.other-key.txt.asc") });
   assert.notEqual(otherKey.status, 0, otherKey.log);
-  assert.match(otherKey.log, /::error::SHASUMS256\.txt\.asc is signed by key [0-9A-F]{40}, which is not in the pinned Node release keyring\. Check that key against the Release keys list in the nodejs\/node README/);
+  assert.match(otherKey.log, /::error::SHASUMS256\.txt\.asc claims to be signed by key [0-9A-F]{40} \(the signature's issuer field; may be a subkey; not verified\), which is not in the pinned Node release keyring\./);
   assert.deepEqual(otherKey.outputs, {});
+  // A plain list served as the .asc, its signature stripped.
+  const unsigned = resolveRun({ ASC: fixture("SHASUMS256.unsigned.txt.asc") });
+  assert.notEqual(unsigned.status, 0, unsigned.log);
+  assert.match(unsigned.log, /::error::SHASUMS256\.txt\.asc does not verify/);
+  assert.deepEqual(unsigned.outputs, {});
 });
 
 test("base-images rewrite: changes the files and reports changed=true, or changed=false when nothing moves", () => {

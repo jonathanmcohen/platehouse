@@ -217,7 +217,9 @@ carry exactly one good signature, by a key whose fingerprint is in `NODE_RELEASE
 in the same file. It takes a new Node release's sha256 only from a list that passes, so a list
 changed on the server or on the way never reaches the pins.
 
-When the run fails because the list is signed by a key not in the ring, the error names that key.
+When the run fails because the list is signed by a key not in the ring, the error names the key
+the signature claims, from its issuer field: it may be a subkey, and nothing has verified it.
+A good signature from an expired or revoked key is refused too, by gpgv's status lines.
 Never take a commit, a sha256 or a fingerprint from a pull request, an issue or a run's log.
 GitHub serves a commit from any fork of nodejs/release-keys under the upstream URL, so a commit in
 that URL proves nothing by itself, and the binary keyring can't be read in a diff. Rotate the ring
