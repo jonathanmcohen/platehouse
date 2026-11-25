@@ -281,13 +281,16 @@ container, the slicer, which is locked down.
 - **No internet.** The slicer sits on an internal Docker network shared only with the app, so it
   cannot open connections to the internet. You can confirm it: from the slicer,
   `docker exec platehouse-slicer getent hosts example.com` should fail, and so should a connection
-  to an outside address. The name lookup should fail on Docker Engine 26.0.0 or newer (also
-  25.0.5 and 23.0.11 and later); see which one you run with
+  to an outside address. The name lookup should fail on Docker Engine 26.0.0 or newer, or the
+  25.0.5 or 23.0.11 patch releases (24.x has no fix); see which one you run with
   `docker version --format '{{.Server.Version}}'`. On an older engine the lookup can still answer
   when the host uses a local resolver such as systemd-resolved, while connections still fail. That
-  lets a crafted file send data out through DNS. The fix is to upgrade Docker. Depending on your Docker and firewall setup, an internal network may still
-  reach ports the host itself listens on through the network's gateway address, so check that too
-  and do not leave services on the host that trust any caller. To close that path, do one of these:
+  lets a crafted file send data out through DNS. The fix is to upgrade Docker. Until you can,
+  Docker's advisory gives a workaround: set a DNS server for the slicer (`dns:` on its service in
+  Compose), so its lookups are made from the slicer's own network, where the internal network
+  stops them. Depending on your Docker and firewall setup, an internal network may still reach
+  ports the host itself listens on through the network's gateway address, so check that too and
+  do not leave services on the host that trust any caller. To close that path, do one of these:
   - add a firewall rule on the host that drops traffic from the slicer network's subnet to the
     host's own addresses, or
   - create the slicer network with the bridge option `com.docker.network.bridge.inhibit_ipv4`,
