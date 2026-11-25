@@ -102,10 +102,9 @@ its plates has numbers, so a model still marked "partial" is in that last group 
 Space on it) and a toolbar appears above the grid with the number selected.
 
 - **Select all on this page** adds the cards shown (every card, in View all); when the page shows
-  none it is greyed out. **Select all
-  matching** adds every model that matches the search and filters, up to 1000; if more match, the
-  toolbar says only the first 1000 were selected. When nothing matches it is greyed out.
-  **Clear selection** empties it.
+  none it is greyed out. **Select all matching** adds every model that matches the search and
+  filters, up to 1000; if more match, the toolbar says only the first 1000 were selected. When
+  nothing matches it is greyed out. **Clear selection** empties it.
 - The selection only ever holds models the current search and filters show, and an action never
   changes a model they hide (see below). It is kept while you change page, switch to View all or
   choose another sort, so you can gather models from several pages, even past the first 1000

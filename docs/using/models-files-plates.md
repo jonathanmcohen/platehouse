@@ -48,8 +48,9 @@ Lists the model's files, with **Open in Bambu Studio** and **Open in OrcaSlicer*
 ### About
 
 Shows the caption, creator, the **View on MakerWorld** link when there is one, licence (with its
-licence note, if any), tags, collections and the description. Descriptions are shown as formatted text. Links in them go only to web addresses,
-and images in them show as links, so a description can never load anything from another site.
+licence note, if any), tags, collections and the description. Descriptions are shown as formatted
+text. Links in them go only to web addresses, and images in them show as links, so a description
+can never load anything from another site.
 
 ## The 3D viewer
 
@@ -60,7 +61,6 @@ buttons.
 - An STL file over 50 MiB does not start the 3D view by itself. The model page opens on its
   preview picture, or a placeholder when it has none, with a **Show in 3D** button that loads the
   view when you ask for it.
-
 - A STEP file is converted to a mesh for the viewer. A STEP file over 256 MiB is not converted,
   so it has no 3D view and no preview picture.
 - An OpenSCAD file is rendered to an STL and a preview image with OpenSCAD. Both can be viewed and
