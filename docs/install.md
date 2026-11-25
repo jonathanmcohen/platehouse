@@ -11,13 +11,16 @@ This page walks through a first install with the example files in the repository
 - **CPU and memory.** The example gives the slicer 4 CPUs and 4 GiB, and the app 2 CPUs and
   2 GiB, plus whatever Postgres needs. The heaviest plate measured so far used about 2.5 GiB of
   memory while slicing.
-- **A Linux kernel with Landlock ABI 6 or newer** (Linux 6.12 or newer). Pictures of STL and
-  STEP files, OpenSCAD renders, STEP previews and estimates all run inside the slicer's sandbox,
-  which needs it. The slicer checks the sandbox when it starts and refuses that work when the kernel is too
-  old; the files then keep their icon, and say why. Setting `SLICER_ALLOW_UNSANDBOXED=true` on the
-  slicer lets estimates and STEP previews run without the sandbox on an older kernel. It never
-  covers pictures or OpenSCAD renders, which need the sandbox. When the kernel is upgraded and
-  the slicer restarts, the files it refused are picked up again by themselves.
+- **A Linux kernel with Landlock ABI 6 or newer** (Linux 6.12 or newer). Check it on the host
+  with `uname -r`: the version it prints must be 6.12 or higher. Pictures of STL and STEP files,
+  OpenSCAD renders, STEP conversions (for the 3D preview) and estimates all run inside the slicer's
+  sandbox, which needs it. The slicer checks the sandbox when it starts and refuses that work when
+  the kernel is too old; the files then keep their icon, and say why. The slicer still reports
+  itself healthy, so `docker compose ps` does not show this: check the sandbox on the Activity page
+  after the first start (see [7. Sign in](#7-sign-in)). Setting `SLICER_ALLOW_UNSANDBOXED=true` on
+  the slicer lets estimates and STEP conversions run without the sandbox on an older kernel. It
+  never covers pictures or OpenSCAD renders, which need the sandbox. When the kernel is upgraded
+  and the slicer restarts, the files it refused are picked up again by themselves.
 - **An S3-compatible bucket** with an access key that can read, write and delete in it. See
   [Storage](./storage.md).
 - **An OpenID Connect provider** with a client for Platehouse and a group for the people who
@@ -137,6 +140,12 @@ Then, in **Settings**:
 - add your printers under **My printers** and make one the default, so estimates are made for them;
 - check that there is no red banner about bucket versioning (see [Storage](./storage.md));
 - create an API token if you want to use the API.
+
+Then open **Activity** and look at the **Slicer** section. It should say **Sandbox: on**. If it
+says **Sandbox: off.**, the line says why: a kernel older than Linux 6.12, or a failed sandbox
+check. Pictures, OpenSCAD renders, STEP conversions and estimates are then off; see
+[What you need](#what-you-need) and [Troubleshooting](./troubleshooting.md#renders-and-step-files).
+**Sandbox: checking** means the slicer has not finished its check yet; look again in a minute.
 
 ## Running it without the example
 

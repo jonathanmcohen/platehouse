@@ -135,6 +135,10 @@ sudo apachectl configtest && sudo systemctl reload apache2
   a tag or collection name that holds `/`.
 - **`LimitRequestBody`** allows 600 MiB, above the 512 MiB upload limit. Apache 2.4.53 and newer
   default to 1 GiB, so this mostly documents the need.
+- **Request bodies are passed through.** `mod_proxy_http` sends a body that arrives with a
+  `Content-Length` header, as the web app's and `curl`'s uploads do, on to the app with that length.
+  Apache spools a body to disk only in cases this setup avoids, such as a large chunked body that
+  must be sent on with a `Content-Length`, or a body an input filter changes.
 - **`Timeout` and `ProxyTimeout`** give large uploads and downloads an hour. Apache's
   `mod_reqtimeout`, if loaded, also requires a request body to keep arriving at 500 bytes per
   second by default, which any real upload does.

@@ -2,7 +2,8 @@
 
 Platehouse has an HTTP API for scripts and tools. With it you can:
 
-- upload 3MF, STL, STEP and SCAD files, as new models or into a model you already have;
+- upload 3MF, STL, STEP and SCAD files, as new models or into a model you already have, and make
+  an empty model to upload into;
 - search the library and read a model's files, plates and print estimates;
 - download a file;
 - add and remove tags, and put models in collections or take them out.
@@ -44,8 +45,14 @@ can revoke one without breaking the others.
 3. Copy the token from the dialog. It starts with `ph_`, and this is the only time it is shown:
    Platehouse keeps only a hash of it. Store it somewhere safe, such as a password manager.
 
-The list shows each token's name, its first 8 characters and when it was last used. **Revoke**
-stops a token at once; anything still using it gets `401`.
+The list shows each token's name, its first 8 characters, who made it and when it was last used.
+**Revoke** stops a token at once; anything still using it gets `401`.
+
+Tokens are made and revoked in Settings only, never through the API. Making a token needs a
+sign-in from the last 5 minutes, and so does revoking a token someone else made; Settings asks you
+to sign in again first. One session may make at most 10 tokens in any 10 minutes. A token made
+with Platehouse 0.1.0 shows "Made by an unknown user". See
+[Security](./security.md#api-tokens) and [Rate limits](./security.md#rate-limits).
 
 Send the token on every request in the `Authorization` header, after the word `Bearer`:
 
@@ -96,16 +103,16 @@ sentence in `message`:
 { "error": "bad_request", "message": "querystring/limit must be <= 200" }
 ```
 
-| Status | `error`        | What it means                                                                                                                                            |
-| ------ | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 400    | `bad_request`  | A parameter or field is outside its limits, a body field is unknown, the JSON does not parse, or a cursor is not one the API made. `message` says which. |
-| 401    | `unauthorized` | No token, or not a live one.                                                                                                                             |
-| 404    | `not_found`    | No such model, file or upload, or the model is in the trash.                                                                                             |
-| 409    | `exists`       | `POST /models` with an `externalRef` another model already has. `trashed` says whether that model is in the trash.                                       |
-| 413    | `bad_request`  | A JSON body over 1 MiB.                                                                                                                                  |
-| 415    | `bad_request`  | A body that is not sent as `application/json`.                                                                                                           |
-| 500    | `internal`     | Something unexpected. The cause is in Platehouse's log, never in the answer.                                                                             |
-| 503    | `unavailable`  | The database or file store cannot be reached right now, or the token could not be checked. Nothing was changed; try again shortly.                       |
+| Status | `error`        | What it means                                                                                                                                                                                          |
+| ------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 400    | `bad_request`  | A parameter or field is outside its limits, a body field is unknown, the JSON does not parse, a cursor is not one the API made, or `externalRef` is sent with another parameter. `message` says which. |
+| 401    | `unauthorized` | No token, or not a live one.                                                                                                                                                                           |
+| 404    | `not_found`    | No such model, file or upload, or the model is in the trash.                                                                                                                                           |
+| 409    | `exists`       | `POST /models` with an `externalRef` another model already has. `trashed` says whether that model is in the trash.                                                                                     |
+| 413    | `bad_request`  | A JSON body over 1 MiB.                                                                                                                                                                                |
+| 415    | `bad_request`  | A body that is not sent as `application/json`.                                                                                                                                                         |
+| 500    | `internal`     | Something unexpected. The cause is in Platehouse's log, never in the answer.                                                                                                                           |
+| 503    | `unavailable`  | The database or file store cannot be reached right now, or the token could not be checked. Nothing was changed; try again shortly.                                                                     |
 
 The upload routes follow the tus protocol, and tus's own errors answer plain text rather than
 JSON, for example `409` with `Upload-Offset conflict`.
@@ -214,6 +221,8 @@ request: `POST /uploads` can carry the whole file as its body, with
 | `batch`      | Group several uploads: uploads that share a batch value (1 to 200 characters) arrive together.                     |
 | `combine`    | With `batch`: `1` or `true` makes the batch one model, `0` or `false` (the default) makes each file its own model. |
 | `duplicates` | `allow` (the default) or `skip`: what to do when the library already holds the same file.                          |
+
+A key not in this table is ignored, unlike an unknown field in a JSON body.
 
 `modelId` cannot be sent with `batch` or `combine`. Without `modelId` or `batch`, the file becomes
 a model of its own, named from the `.3mf`'s MakerWorld title when it has one, else from the
@@ -399,11 +408,12 @@ carries the file's name with its real extension, and `HEAD` on the same path ans
 headers with no body. File ids come from `GET /models/{id}`, which lists each model's files.
 
 ```sh
-curl -sS -OJ "$PLATEHOUSE/api/v1/files/0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70/content" \
+curl -fsS -OJ "$PLATEHOUSE/api/v1/files/0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70/content" \
   -H "Authorization: Bearer $PLATEHOUSE_TOKEN"
 ```
 
-`-OJ` saves the file under the name Platehouse gives it.
+`-OJ` saves the file under the name Platehouse gives it. `-f` makes curl stop with an error on an
+error answer, such as a `404`, instead of saving that answer as the file.
 
 The **Open in Bambu Studio** and **Open in OrcaSlicer** buttons on a model page work differently.
 A slicer opens a file from a URL and cannot send a token, so the web app makes a short-lived link
@@ -439,7 +449,42 @@ curl -sS "$PLATEHOUSE/api/v1/models/0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f" \
 
 The answer has the model's details, its files, each 3MF file's plates, and each plate's print
 time, weight and filaments for the default printer of My printers (in Settings). Each set of
-numbers names its printer in full in `printerName`, such as `Bambu Lab P1S, 0.4 mm nozzle`.
+numbers names its printer in full in `printerName`, such as `Bambu Lab P1S, 0.4 mm nozzle`. For an
+STL or STEP file, `previewStatus` is the state of its preview picture (`pending`, `ok` or `failed`,
+or `null` while it has none yet) and `previewMessage` says why the picture failed; both are `null`
+for every other kind of file.
+
+### Make a model, then add files
+
+`POST /models` makes an empty model with the details you give, ready for files. Only `name` is
+required; the other fields are `caption`, `description`, `creator`, `license`, `externalRef`,
+`tags` and `collections`, and tags and collections are made on first use:
+
+```sh
+curl -fsS -X POST "$PLATEHOUSE/api/v1/models" \
+  -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Cable clip", "creator": "Example Maker", "tags": ["desk"], "externalRef": "myscript:42"}'
+```
+
+The answer is `201` with the new model in `model`. Upload its files with the model's `id` as
+`modelId` in the upload's metadata (see [Upload a file](#upload-a-file)). The name you give is
+kept: a `.3mf` uploaded into the model later never renames it, though its MakerWorld details fill
+any of caption, creator, description and licence the model left empty.
+
+`externalRef` records where a model came from, such as an id in another library, and is unique,
+so an import that runs twice makes each model once. A taken `externalRef` is `409` with
+`{"error": "exists", "trashed": false}`, and `trashed` is `true` when the model that has it is in
+the trash. To find the live model with a reference, ask for it alone:
+
+```sh
+curl -fsS -G "$PLATEHOUSE/api/v1/models" \
+  -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
+  --data-urlencode "externalRef=myscript:42"
+```
+
+The answer lists that model in `models`, or none. `externalRef` is a lookup, not a filter: sent
+with any other parameter, such as `q` or `limit`, it is `400`.
 
 ### Upload a file
 

@@ -29,8 +29,9 @@ entryPoints:
     transport:
       respondingTimeouts:
         # The whole request, body included, must arrive within this.
-        # Traefik's default is 60s, too short for a large upload.
-        readTimeout: 1h
+        # Traefik's default is 60s, too short for a large upload. 75m is
+        # above the app's own limit for one request, about 72 minutes.
+        readTimeout: 75m
         writeTimeout: 0s # the default: no limit, so long downloads finish
         idleTimeout: 180s
     http:
@@ -153,8 +154,11 @@ set. Keep it that way unless another proxy sits in front of Traefik; if one does
   unless you add them. The streamed downloads on `/s/`, `/files/`, `/blobs/` and `/api/v1/files/`
   need it that way, and with no `buffering` middleware there is no body-size limit in Traefik, so
   512 MiB uploads go through.
-- **`readTimeout: 1h`.** Traefik v3 limits reading the whole request, body included, to 60
-  seconds by default. A large upload on an ordinary connection takes longer.
+- **`readTimeout: 75m`.** Traefik v3 limits reading the whole request, body included, to 60
+  seconds by default. A large upload on an ordinary connection takes longer. This is a cap on the
+  whole request, not on a pause, so it is set above the app's own limit: about 72 minutes, a whole
+  512 MiB upload at 1 Mbit/s. With `1h`, such a slow upload would be cut off before the app's
+  limit.
 - **`sanitizePath` and `allowEncodedSlash`** are both set explicitly in this configuration, so it
   does not depend on Traefik's own defaults (check Traefik's documentation for your version before
   leaving either out). Path cleaning stays on, and an encoded slash in an API path reaches the app.

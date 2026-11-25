@@ -57,13 +57,15 @@ buttons.
   preview picture, or a placeholder when it has none, with a **Show in 3D** button that loads the
   view when you ask for it.
 
-- A STEP file is converted to a mesh for the viewer.
+- A STEP file is converted to a mesh for the viewer. A STEP file over 256 MiB is not converted,
+  so it has no 3D view and no preview picture.
 - An OpenSCAD file is rendered to an STL and a preview image with OpenSCAD. Both can be viewed and
   downloaded. If the render fails, the page shows OpenSCAD's own message.
 - An STL or STEP file gets a preview picture, rendered with OpenSCAD from the STL, or from the
   STEP file's mesh. It is the model's picture on its library card and shows in the **Files** tab.
   If it cannot be rendered, the card keeps the file-type icon and the **Files** tab says why; a
-  STEP file's 3D view still works. Files added before Platehouse 0.1.1 get their preview in the
+  STEP file's 3D view still works. An STL over 256 MiB, the most the preview renderer takes, gets
+  no picture. Files added before Platehouse 0.1.1 get their preview in the
   background, a few at a time, after the upgrade.
 - A file cannot be replaced or removed on its own yet. To add a new version, upload it to the
   model with **Add files**; the old file stays beside it, and the new one is rendered like any

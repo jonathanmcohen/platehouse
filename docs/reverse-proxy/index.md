@@ -27,6 +27,11 @@ In the examples the app is reached at `platehouse:3000` (its container name on a
 network) or `127.0.0.1:3000` (a port published on the host), and the public address is
 `https://platehouse.example.com`.
 
+Platehouse needs a host name of its own, such as `platehouse.example.com`, and must be served at
+its root. It cannot be served under a path such as `https://example.com/platehouse/`:
+`PUBLIC_ORIGIN` takes no path, and the sign-in cookies are `__Host-` cookies, which are always set
+for the whole site (`Path=/`).
+
 ## What Platehouse needs from a proxy
 
 ### TLS
@@ -70,9 +75,12 @@ send a whole file in one request, as `curl` does. So:
 - allow request bodies of at least 512 MiB (the examples use 600 MiB);
 - pass request bodies straight through instead of buffering them to disk first, where the proxy
   can;
-- make read timeouts long enough for your slowest large upload. The app itself allows a whole
-  512 MiB upload at 1 Mbit/s, a little over an hour, and the examples use one hour. Traefik v3's
-  default read timeout is only 60 seconds.
+- make read timeouts long enough for your slowest large upload. The app itself allows one request
+  about 72 minutes, a whole 512 MiB upload at 1 Mbit/s. The nginx and Apache examples use one
+  hour, which is enough there because their timeouts are idle timeouts: each counts only a pause
+  with no data, not the whole upload. Traefik's `readTimeout`, and Caddy's `read_body` if you set
+  one, count the whole request instead, so the Traefik example uses 75 minutes, above the app's
+  limit. Traefik v3's default read timeout is only 60 seconds.
 
 ### Streamed downloads
 
@@ -131,14 +139,15 @@ block. Match on the connection's own address, not on a header a client can set. 
 
 ## Where each requirement comes from
 
-| Requirement                                                | Source                                                                                                                          |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| https only, Secure cookies                                 | The app's configuration and sign-in code                                                                                        |
-| HSTS at the proxy, and no CSP at the proxy                 | The app's responses: it sends its CSP, `Referrer-Policy` and `nosniff` itself, and not HSTS                                     |
-| 512 MiB uploads, one-request uploads, the one-hour timeout | The app's upload handler and server timeout                                                                                     |
-| Traefik's 60-second read timeout                           | Traefik's documentation                                                                                                         |
-| No buffering or compression on the streaming paths         | The app streams these paths from the bucket as it reads them                                                                    |
-| No login on `/api/v1/` and `/s/`                           | The app's route classes: both are cookieless                                                                                    |
-| Encoded slashes in API paths                               | The API's tag and collection routes, and its own importer, which encodes `/` as `%2F`                                           |
-| Path cleaning and origin-form targets                      | The app reads a slicer link's key from the path as sent, and logs paths; a full-address target would put a live link in its log |
-| Forwarded headers are for logs only                        | The app's request log; it reads no forwarded header for addresses                                                               |
+| Requirement                                               | Source                                                                                                                          |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| https only, Secure cookies                                | The app's configuration and sign-in code                                                                                        |
+| HSTS at the proxy, and no CSP at the proxy                | The app's responses: it sends its CSP, `Referrer-Policy` and `nosniff` itself, and not HSTS                                     |
+| 512 MiB uploads, one-request uploads, the upload timeouts | The app's upload handler and server timeout                                                                                     |
+| Its own host name, no subpath                             | `PUBLIC_ORIGIN` takes no path, and the sign-in cookies are `__Host-` cookies, set for `Path=/`                                  |
+| Traefik's 60-second read timeout                          | Traefik's documentation                                                                                                         |
+| No buffering or compression on the streaming paths        | The app streams these paths from the bucket as it reads them                                                                    |
+| No login on `/api/v1/` and `/s/`                          | The app's route classes: both are cookieless                                                                                    |
+| Encoded slashes in API paths                              | The API's tag and collection routes, and its own importer, which encodes `/` as `%2F`                                           |
+| Path cleaning and origin-form targets                     | The app reads a slicer link's key from the path as sent, and logs paths; a full-address target would put a live link in its log |
+| Forwarded headers are for logs only                       | The app's request log; it reads no forwarded header for addresses                                                               |

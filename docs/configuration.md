@@ -112,4 +112,6 @@ These are part of Platehouse and not configurable:
 - A slicer link lasts 10 minutes.
 - A sign-in session lasts 7 days without use and 30 days at most.
 - Trashed models are purged 30 days after they were trashed.
-- An OpenSCAD file can be at most 1 MiB and a STEP file at most 256 MiB.
+- The slicer renders an OpenSCAD file of at most 1 MiB, and takes an STL or STEP file of at most
+  256 MiB. A larger file is still stored, but a larger `.scad` is not rendered, a larger STL gets
+  no preview picture, and a larger STEP file is not converted, so it has no 3D view or picture.

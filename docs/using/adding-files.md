@@ -35,8 +35,9 @@ bar and a status for each file.
   back online.
 - A file over 512 MiB is listed as too large and is not sent.
 
-As soon as a file is stored, its plates are queued for estimates and any OpenSCAD or STEP file is
-queued for rendering. The upload does not wait for either.
+As soon as a file is stored, its plates are queued for estimates, any OpenSCAD or STEP file is
+queued for rendering, and any STL or STEP file is queued for a preview picture (a STEP file's
+picture is made from its mesh, once it is converted). The upload does not wait for any of them.
 
 ## How a new model is named
 
@@ -59,8 +60,10 @@ When a `.3mf` arrives, Platehouse reads from it:
   the design's ID, used for the **View on MakerWorld** link (see
   [Models, files and plates](./models-files-plates.md#view-on-makerworld)).
 
-MakerWorld details only fill fields that are empty, so nothing you set is overwritten. A licence
-MakerWorld uses that has no standard identifier is kept as a licence note on the model.
+MakerWorld details only fill fields that are empty, so nothing you set is overwritten. MakerWorld's
+Creative Commons licences (CC BY, BY-SA, BY-ND, BY-NC, BY-NC-SA and BY-NC-ND) and CC0 become the
+matching SPDX id, such as `CC-BY-ND-4.0`. Any other licence, such as MakerWorld's Standard Digital
+File License, is kept as a licence note on the model, in the form `License on MakerWorld: <value>`.
 
 A damaged or unusual `.3mf` is still stored, and shows "No Bambu plate data in this file". Limits
 on plate count, thumbnail size and similar keep a crafted file from tying up the app.

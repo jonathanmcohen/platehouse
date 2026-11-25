@@ -15,6 +15,9 @@ The translations live in `packages/i18n/locales/` in the repository:
 The web app and the server find every `<code>.json` in that folder by themselves, so there is no
 list of languages to edit.
 
+Right-to-left languages, such as Arabic or Hebrew, are not supported yet: the page would still lay
+out left to right.
+
 ## Add a language
 
 1. Copy `en.json` to a file named for the language code, such as `de.json` or `pt-BR.json`.

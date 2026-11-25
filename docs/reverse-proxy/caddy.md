@@ -21,7 +21,7 @@ platehouse.example.com {
 
 	# Uploads of up to 512 MiB.
 	request_body {
-		max_size 600MB
+		max_size 600MiB
 	}
 
 	# No "encode" directive here, so nothing is compressed.
@@ -108,7 +108,8 @@ platehouse.example.com {
   straight to the client.
 - **Timeouts.** Caddy sets no read or write timeout on requests by default, so large uploads and
   downloads are not cut off. If your global options set `servers { timeouts { ... } }`, make
-  `read_body` and `write` at least an hour.
+  `read_body` and `write` at least 75 minutes: each counts a whole request, and the app allows one
+  request about 72 minutes.
 - **Encoded slashes.** `reverse_proxy` passes the request path on as the client sent it, so
   `%2F` in an API path stays encoded. Check it with the [checklist](./checklist.md).
 - **Forwarded headers.** Caddy sets `X-Forwarded-For`, `X-Forwarded-Proto` and

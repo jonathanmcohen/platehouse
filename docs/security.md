@@ -106,8 +106,10 @@ Each API client, such as a script or another tool on one computer, gets its own 
   someone who made or used it is removed from the group: removing a person does not revoke their
   tokens. Revoking one leaves the others working. Each token shows when it was last used.
 - **Sign out everywhere** in **Settings** ends every session of one person and can revoke every
-  token they made in the same step. See [Sign-in](./sign-in.md#the-allowed-group) for how to cut
-  someone off completely.
+  token they made in the same step. Signing someone else out, or revoking a token someone else
+  made (or one made by an unknown user), needs a sign-in from the last 5 minutes, as making a
+  token does; signing yourself out, or revoking a token you made, needs only a live session. See
+  [Sign-in](./sign-in.md#the-allowed-group) for how to cut someone off completely.
 - A token is sent as `Authorization: Bearer <token>`. Cookies never count for the API, and tokens
   never appear in the app's log.
 - A token can read the library, upload files and change tags and collections. It cannot delete,

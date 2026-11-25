@@ -86,16 +86,18 @@ button (with file paths, network addresses and tokens taken out, as on the Activ
 the API), and a **Retry** button that slices it again from the stored file. The other plates still
 get their numbers. The reasons are:
 
-| Shown                                                                                | Typical cause                                                                                     |
-| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| This file's print settings do not fit the selected printer.                          | The file's process cannot be used on your printer.                                                |
-| This file cannot be switched to the selected printer.                                | The file is limited to printers that do not include yours.                                        |
-| The plate is too big for this printer's bed.                                         | Objects do not fit, or sit outside the printable area.                                            |
-| This plate needs a different nozzle or extruder setup than the selected printer has. | For example a dual-nozzle file on a single-nozzle printer.                                        |
-| The filaments on this plate need print temperatures too far apart to print together. | OrcaSlicer code -62.                                                                              |
-| The slicer found print paths on this plate that would collide.                       | OrcaSlicer code -101.                                                                             |
-| Slicing took too long and was stopped.                                               | The plate hit the time cap.                                                                       |
-| The slicer could not slice this plate.                                               | Anything else, such as code -18 (invalid values in the file). Details shows OrcaSlicer's message. |
+| Shown                                                                                                                          | Typical cause                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| This file's print settings do not fit the selected printer.                                                                    | The file's process cannot be used on your printer.                                                                        |
+| This file cannot be switched to the selected printer.                                                                          | The file is limited to printers that do not include yours.                                                                |
+| The plate is too big for this printer's bed.                                                                                   | Objects do not fit, or sit outside the printable area.                                                                    |
+| This plate needs a different nozzle or extruder setup than the selected printer has.                                           | For example a dual-nozzle file on a single-nozzle printer.                                                                |
+| The filaments on this plate need print temperatures too far apart to print together.                                           | OrcaSlicer code -62.                                                                                                      |
+| The slicer found print paths on this plate that would collide.                                                                 | OrcaSlicer code -101.                                                                                                     |
+| Slicing took too long and was stopped.                                                                                         | The plate hit the time cap.                                                                                               |
+| The slicer could not slice this plate.                                                                                         | Anything else, such as code -18 (invalid values in the file). Details shows OrcaSlicer's message.                         |
+| The slicer could not slice this plate. (**Details**: "Estimates are off on this server: its kernel is older than Linux 6.12.") | The slicer's sandbox is off because the host's kernel is too old. See [Troubleshooting](../troubleshooting.md#estimates). |
+| The slicer could not slice this plate. (**Details**: "Estimates are off on this server: its sandbox check failed.")            | The slicer's sandbox is off because its check failed. See [Troubleshooting](../troubleshooting.md#estimates).             |
 
 [Troubleshooting](../troubleshooting.md#estimates) has more on each.
 

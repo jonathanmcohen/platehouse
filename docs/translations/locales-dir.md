@@ -90,10 +90,21 @@ read comes back but slow, its languages are offered again and the "slow to read"
 more is logged while the folder stays that way, however many times it is read. When a read works again within the limit, the log says so once:
 `locales: LOCALES_DIR can be read again`.
 
+## The file's `$meta`
+
+`$meta` is optional in a server file. Platehouse reads two of its fields:
+
+- `"name"`: the language's name in the Language menu, in its own language, such as `"Deutsch"`.
+  Plain text of up to 40 characters; without it, or with anything else, Platehouse names the
+  language from its code.
+- `"status"`: `"machine-draft"` marks the language as a machine translation in the Language menu.
+
 ## Fixing words in a built-in language
 
 A file named for a built-in language, such as `es.json`, replaces the built-in messages it has and
-leaves the rest alone. English (`en.json`) cannot be replaced.
+leaves the rest alone. English (`en.json`) cannot be replaced. The language keeps the built-in
+one's machine translation mark unless the file's `$meta` sets a `"status"`: `"machine-draft"`
+keeps the mark, and any other status, such as `"reviewed"`, removes it.
 
 ## A partial translation
 

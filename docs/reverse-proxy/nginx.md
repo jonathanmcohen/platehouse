@@ -149,6 +149,8 @@ server {
 - **The allowlist** matches the client's own address. If something else sits in front of nginx,
   such as a load balancer, the address it sees is that device's, and you would need nginx's
   `realip` module set up to trust it.
+- **No `auth_request` or other login** (such as an OAuth2 proxy) in front of Platehouse: the API
+  and slicer links must reach the app without a cookie.
 
 nginx sends the app origin-form request targets and keeps its own path checks on, so nothing
 else is needed for those.

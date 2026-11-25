@@ -114,6 +114,10 @@ inbox waits and tries again, and the log says an outage started and ended.
   default printer or the order of My printers starts no slicing.
 - **"The slicer could not slice this plate."** after several tries: the app could not reach the
   slicer, or the slice was lost. Check the slicer, then press **Retry**.
+- **"The slicer could not slice this plate."** with **"The slicer's answer is not one slicer
+  contract 2 allows"** under **Details**: the slicer image is older than the app, for example a
+  0.1.0 slicer with a 0.1.1 app. Set both image tags in `docker-compose.yml` to the same version,
+  then pull and recreate both, as [Upgrading](./backups-and-upgrades.md#upgrading) shows.
 - **The slicer is unreachable.** Check that the app and the slicer share the `platehouse-slicer`
   network and that `SLICER_URL` names the slicer's container and port
   (`http://platehouse-slicer:8080` in the example).
@@ -157,7 +161,8 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
   and it checks again by itself, after a minute at first and then less often. Restore the example's
   settings; the files are picked up again once the check passes.
 - **"STEP previews are off on this server: its kernel is older than Linux 6.12."**: the same
-  kernel limit, for converting a STEP file. Upgrade the kernel, or set
+  kernel limit, for converting a STEP file to the mesh its 3D preview and picture are made from.
+  Upgrade the kernel, or set
   `SLICER_ALLOW_UNSANDBOXED=true` on the slicer to convert STEP files without the sandbox. The
   files are picked up again once conversions can run.
 - **"STEP previews are off on this server: its sandbox check failed."**: the same as the sandbox
