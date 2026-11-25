@@ -203,3 +203,17 @@ page doesn't list candidates):
 docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse:rc --format '{{.Manifest.Digest}}'
 docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse:0.2.0-rc.1 --format '{{.Manifest.Digest}}'
 ```
+
+## Node release keys
+
+The weekly base-images run checks Node's `SHASUMS256.txt.asc` with `gpgv` against
+nodejs/release-keys' `gpg-only-active-keys/pubring.kbx`, at the commit `NODE_RELEASE_KEYS_COMMIT`
+in `.github/scripts/base-images.mjs`, whose sha256 is `NODE_RELEASE_KEYRING_SHA256`. It takes a
+new Node release's sha256 only from a list that verifies, so a list changed on the server or on
+the way never reaches the pins.
+
+- When the run fails because the list is signed by a key not in the ring, check
+  [nodejs/release-keys](https://github.com/nodejs/release-keys) for the new releaser.
+- Then, in a reviewed pull request, set `NODE_RELEASE_KEYS_COMMIT` to that commit and
+  `NODE_RELEASE_KEYRING_SHA256` to the output of this command, run once the commit is set:
+  `curl -fsSL "$(node .github/scripts/base-images.mjs keyring-url)" | shasum -a 256`.

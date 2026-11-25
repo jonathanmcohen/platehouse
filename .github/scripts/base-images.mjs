@@ -28,7 +28,13 @@
 //   node base-images.mjs latest-node <major> <index.json> [<current>]
 //                                       the newest <major>.x release, or
 //                                       <current> when that is newer
-//   node base-images.mjs node-sha <SHASUMS256.txt> <file>
+//   node base-images.mjs keyring-url    prints NODE_KEYRING_URL, the Node
+//                                       release keyring at the pinned commit
+//   node base-images.mjs node-sha-signed <SHASUMS256.txt.asc> <keyring> <file>
+//                                       checks the signed list with gpgv
+//                                       against the keyring (which must have
+//                                       the pinned sha256), then prints the
+//                                       sha256 it lists for <file>
 //   node base-images.mjs rewrite        rewrites the pins from NEXT_APP_BASE,
 //                                       NEXT_UBUNTU_BASE, NEXT_NODE_VERSION,
 //                                       NEXT_NODE_SHA and NEXT_DATE
@@ -42,8 +48,10 @@
 // stdout only what the workflow reads; messages go to stderr.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const APP_DOCKERFILE = "docker/app.Dockerfile";
@@ -58,6 +66,16 @@ export const DIGEST_FILES = [APP_DOCKERFILE, SLICER_DOCKERFILE, GATE_DOCKERFILE,
 // Every file the weekly run reads and may rewrite: the digest files and the
 // three that name only the Node release.
 export const FILES = [...DIGEST_FILES, NODE_VERSION_FILE, E2E_COMPOSE, ROOT_README];
+
+// Node signs SHASUMS256.txt (SHASUMS256.txt.asc) with a releaser's key. The
+// keys of the active releasers are in nodejs/release-keys, as one keyring
+// gpgv reads; this pins that keyring to a commit and its sha256. Move both,
+// in a reviewed pull request, when Node has a new releaser (RELEASING.md,
+// "Node release keys").
+export const NODE_RELEASE_KEYS_COMMIT = "481637f813e912c4aa3622d7964ab426c97b8e8d";
+export const NODE_RELEASE_KEYRING_SHA256 =
+  "140f2ad5260fd62773b6243ce8e1d3009645d558f121b8262c55e383dc285932";
+export const NODE_KEYRING_URL = `https://raw.githubusercontent.com/nodejs/release-keys/${NODE_RELEASE_KEYS_COMMIT}/gpg-only-active-keys/pubring.kbx`;
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const VERSION = /^\d+\.\d+\.\d+$/;
@@ -335,6 +353,51 @@ export function nodeSha(shasumsText, file) {
   return hits[0][1];
 }
 
+// The clear text of a signed SHASUMS256.txt.asc, once gpgv has checked its
+// signature against the keyring at keyringPath, whose sha256 must be
+// keyringSha256. gpgv writes the clear text as it reads, before it rejects a
+// file, so its output is read only when it exits 0. Throws when the keyring
+// is not the pinned one (before gpgv runs), when the list is signed by a key
+// not in the keyring, when the signature does not verify, or when gpgv is not
+// installed.
+export function verifySignedShasums({
+  ascPath,
+  keyringPath,
+  keyringSha256 = NODE_RELEASE_KEYRING_SHA256,
+  gpgv = "gpgv",
+}) {
+  const got = createHash("sha256").update(readFileSync(keyringPath)).digest("hex");
+  if (got !== keyringSha256) {
+    throw new Error(
+      `the Node release keyring ${keyringPath} has sha256 ${got}, not the pinned ${keyringSha256} (NODE_RELEASE_KEYRING_SHA256)`,
+    );
+  }
+  const home = mkdtempSync(join(tmpdir(), "gpgv-"));
+  try {
+    // An absolute keyring path: gpgv looks for a bare name in its home.
+    const r = spawnSync(
+      gpgv,
+      ["--homedir", home, "--keyring", resolve(keyringPath), "--output", "-", resolve(ascPath)],
+      { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, maxBuffer: 16 * 1024 * 1024 },
+    );
+    if (r.error?.code === "ENOENT") {
+      throw new Error(`${gpgv} could not start: gpgv is not installed`);
+    }
+    if (r.error) throw new Error(`gpgv failed to run: ${r.error.message}`);
+    if (r.status === 0) return r.stdout;
+    const stderr = r.stderr ?? "";
+    if (/No public key/.test(stderr)) {
+      throw new Error(
+        `SHASUMS256.txt.asc is not signed by a key in nodejs/release-keys at ${NODE_RELEASE_KEYS_COMMIT}. If Node has a new releaser, move NODE_RELEASE_KEYS_COMMIT and NODE_RELEASE_KEYRING_SHA256 in .github/scripts/base-images.mjs in a reviewed pull request (RELEASING.md, "Node release keys").`,
+      );
+    }
+    const last = stderr.trim().split("\n").slice(-3).join(" | ");
+    throw new Error(`SHASUMS256.txt.asc does not verify (gpgv exit ${r.status}): ${last}`);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 // The git grep that lists the tracked files naming one of the digests, other
 // than the four pinned files and CHANGELOG.md (whose history may name old pins).
 export function grepArgs(hexes) {
@@ -364,7 +427,7 @@ export function leftovers(root, hexes) {
 
 const usage = () => {
   process.stderr.write(
-    "usage: node base-images.mjs read | latest-node <major> <index.json> [<current>] | node-sha <SHASUMS256.txt> <file> | rewrite | leftovers <sha256>...\n",
+    "usage: node base-images.mjs read | latest-node <major> <index.json> [<current>] | keyring-url | node-sha-signed <SHASUMS256.txt.asc> <keyring> <file> | rewrite | leftovers <sha256>...\n",
   );
   process.exit(2);
 };
@@ -400,9 +463,15 @@ function main([cmd, ...args]) {
       );
       return;
     }
-    case "node-sha": {
-      if (args.length !== 2) usage();
-      process.stdout.write(`${nodeSha(readFileSync(args[0], "utf8"), args[1])}\n`);
+    case "keyring-url": {
+      if (args.length > 0) usage();
+      process.stdout.write(`${NODE_KEYRING_URL}\n`);
+      return;
+    }
+    case "node-sha-signed": {
+      if (args.length !== 3) usage();
+      const text = verifySignedShasums({ ascPath: args[0], keyringPath: args[1] });
+      process.stdout.write(`${nodeSha(text, args[2])}\n`);
       return;
     }
     case "rewrite": {

@@ -11,9 +11,10 @@
 #   refresh:     run only from main -> resolve the newest digest of the app
 #                image's node:X.Y.Z-trixie-slim and of ubuntu:24.04 (docker
 #                buildx imagetools inspect) and the newest Node of the same
-#                major (nodejs.org index.json and its SHASUMS256.txt) ->
-#                rewrite the pins (.github/scripts/base-images.mjs) -> push
-#                the bot branch and open its one pull request
+#                major (nodejs.org index.json and its signed
+#                SHASUMS256.txt.asc, checked with gpgv) -> rewrite the pins
+#                (.github/scripts/base-images.mjs) -> push the bot branch and
+#                open its one pull request
 #   dispatch-ci: start the ci workflow on the bot branch
 #
 # One Node release drives both: the app image's node tag and the slicer and
@@ -21,8 +22,14 @@
 # where they differ. A Node release that nodejs.org lists but Docker Hub does
 # not have as an image yet is passed over for a week: Node stays where it is
 # and only the digests move. Node never moves to another major, and never
-# backwards. The files that hold the pins move together, and nothing else is
-# written: the three Dockerfiles, the slicing gate README's pins table, and
+# backwards. When Node moves, its sha256 comes from SHASUMS256.txt.asc only
+# after gpgv has checked the signature against the active-keys keyring of
+# nodejs/release-keys at a pinned commit, whose own sha256 is pinned too
+# (NODE_RELEASE_KEYS_COMMIT and NODE_RELEASE_KEYRING_SHA256 in the script;
+# RELEASING.md, "Node release keys"). A list signed by a key not in that
+# keyring, or one that does not verify, fails the run. The files that hold
+# the pins move together, and nothing else is written: the three
+# Dockerfiles, the slicing gate README's pins table, and
 # the three files that name the Node release alone (.node-version, the
 # x-node image of e2e/compose.yml and the Node version in README.md), so CI
 # and the docs follow the images in the same pull request. After the rewrite, the
@@ -164,8 +171,13 @@ jobs:
             app_digest="$(digest_of "node:${version}-trixie-slim")" || { echo "::error::could not read the digest of node:${version}-trixie-slim from Docker Hub" >&2; exit 1; }
             node_sha="$old_node_sha"
           else
-            curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/SHASUMS256.txt" "https://nodejs.org/dist/v${version}/SHASUMS256.txt"
-            node_sha="$(node "$script" node-sha "${RUNNER_TEMP}/SHASUMS256.txt" "node-v${version}-linux-x64.tar.xz")"
+            # The sha comes only from the signed list, once gpgv has checked
+            # it against Node's release keyring at the pinned commit, and the
+            # keyring against its pinned sha256.
+            keyring_url="$(node "$script" keyring-url)"
+            curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/pubring.kbx" "$keyring_url"
+            curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/SHASUMS256.txt.asc" "https://nodejs.org/dist/v${version}/SHASUMS256.txt.asc"
+            node_sha="$(node "$script" node-sha-signed "${RUNNER_TEMP}/SHASUMS256.txt.asc" "${RUNNER_TEMP}/pubring.kbx" "node-v${version}-linux-x64.tar.xz")"
           fi
           ubuntu_digest="$(digest_of "$ubuntu_image")" || { echo "::error::could not read the digest of ${ubuntu_image} from Docker Hub" >&2; exit 1; }
 
