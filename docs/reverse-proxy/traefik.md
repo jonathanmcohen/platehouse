@@ -1,3 +1,7 @@
+---
+description: An example Traefik setup for Platehouse, and why each setting is there.
+---
+
 # Traefik
 
 Written against Traefik 3.7. This is the one proxy setup that has run against a real Platehouse
@@ -29,8 +33,9 @@ entryPoints:
     transport:
       respondingTimeouts:
         # The whole request, body included, must arrive within this.
-        # Traefik's default is 60s, too short for a large upload.
-        readTimeout: 1h
+        # Traefik's default is 60s, too short for a large upload. 75m is
+        # above the app's own limit for one request, about 72 minutes.
+        readTimeout: 75m
         writeTimeout: 0s # the default: no limit, so long downloads finish
         idleTimeout: 180s
     http:
@@ -90,20 +95,21 @@ set. Keep it that way unless another proxy sits in front of Traefik; if one does
 
 - **Let the proxy see real addresses.** If the proxy runs in Docker and you use an allowlist, prefer
   `network_mode: host` (Docker Engine on Linux), or run it on the host. With host networking, point
-  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback, as in
-  the example Compose file). With the file provider, use `http://127.0.0.1:3000`; the Docker labels
-  need no change. Make sure nothing else the proxy listens on, such as Traefik's dashboard on 8080,
-  is exposed. If every visitor, LAN and outside, shows the same address (Docker's
-  bridge pools, Swarm's overlay pools in `10.0.0.0/8`, and Docker Desktop's `192.168.65.0/24`), do
-  not add that address to the allowlist; the allowlist cannot work on this setup. That is the case
-  on Docker Desktop (macOS and Windows), with rootless Docker's builtin port driver before
-  RootlessKit 3.0, with rootless Podman and with Swarm ingress. Run the proxy on the host, or with
-  `network_mode: host`. For rootless Docker, set `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns` and
+  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback only
+  by uncommenting the `ports:` lines in the example Compose file). With the file provider, use
+  `http://127.0.0.1:3000`; the Docker labels need no change. Make sure nothing else the proxy
+  listens on, such as Traefik's dashboard on 8080, is exposed. If every visitor, LAN and outside,
+  shows the same address (Docker's bridge pools, Swarm's overlay pools in `10.0.0.0/8`, and Docker
+  Desktop's `192.168.65.0/24`), do not add that address to the allowlist; the allowlist cannot work
+  on this setup. That is the case on Docker Desktop (macOS and Windows), with rootless Docker's
+  builtin port driver before RootlessKit 3.0, with rootless Podman and with Swarm ingress. Run the
+  proxy on the host, or with `network_mode: host`. For rootless Docker, set
+  `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns` and
   `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns`, or
   `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=pasta` with `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=implicit`
   (with RootlessKit 3.0 or newer, the default `builtin` driver with `"userland-proxy": false` also
-  works). See the rootless mode troubleshooting page in Docker's documentation. For Swarm publish with `mode:
-  host`. On Docker Desktop use a VPN rather than an allowlist.
+  works). See the rootless mode troubleshooting page in Docker's documentation. For Swarm publish
+  with `mode: host`. On Docker Desktop use a VPN rather than an allowlist.
 - **Do not allow Docker's networks.** Never allow `172.16.0.0/12`, `192.168.0.0/16` or `10.0.0.0/8`
   whole: Docker's default pools lie inside them (Docker Desktop uses `192.168.65.0/24`). For IPv6
   never allow `fc00::/7` or `fd00::/8`; allow only your LAN's own /64. Allow only your own networks,
@@ -153,8 +159,11 @@ set. Keep it that way unless another proxy sits in front of Traefik; if one does
   unless you add them. The streamed downloads on `/s/`, `/files/`, `/blobs/` and `/api/v1/files/`
   need it that way, and with no `buffering` middleware there is no body-size limit in Traefik, so
   512 MiB uploads go through.
-- **`readTimeout: 1h`.** Traefik v3 limits reading the whole request, body included, to 60
-  seconds by default. A large upload on an ordinary connection takes longer.
+- **`readTimeout: 75m`.** Traefik v3 limits reading the whole request, body included, to 60
+  seconds by default. A large upload on an ordinary connection takes longer. This is a cap on the
+  whole request, not on a pause, so it is set above the app's own limit: about 72 minutes, a whole
+  512 MiB upload at 1 Mbit/s. With `1h`, such a slow upload would be cut off before the app's
+  limit.
 - **`sanitizePath` and `allowEncodedSlash`** are both set explicitly in this configuration, so it
   does not depend on Traefik's own defaults (check Traefik's documentation for your version before
   leaving either out). Path cleaning stays on, and an encoded slash in an API path reaches the app.

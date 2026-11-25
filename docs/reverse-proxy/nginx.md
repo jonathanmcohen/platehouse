@@ -1,3 +1,7 @@
+---
+description: An example nginx configuration for Platehouse, and why each setting is there.
+---
+
 # nginx
 
 Written against nginx 1.30, the stable line. It has not been run against a real Platehouse
@@ -76,19 +80,20 @@ server {
 
 - **Let the proxy see real addresses.** If the proxy runs in Docker and you use an allowlist, prefer
   `network_mode: host` (Docker Engine on Linux), or run it on the host. With host networking, point
-  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback, as in
-  the example Compose file), and make sure nothing else the proxy listens on, such as Traefik's
-  dashboard on 8080, is exposed. If every visitor, LAN and outside, shows the same address (Docker's
-  bridge pools, Swarm's overlay pools in `10.0.0.0/8`, and Docker Desktop's `192.168.65.0/24`), do
-  not add that address to the allowlist; the allowlist cannot work on this setup. That is the case
-  on Docker Desktop (macOS and Windows), with rootless Docker's builtin port driver before
-  RootlessKit 3.0, with rootless Podman and with Swarm ingress. Run the proxy on the host, or with
-  `network_mode: host`. For rootless Docker, set `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns` and
+  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback only
+  by uncommenting the `ports:` lines in the example Compose file), and make sure nothing else the
+  proxy listens on, such as Traefik's dashboard on 8080, is exposed. If every visitor, LAN and
+  outside, shows the same address (Docker's bridge pools, Swarm's overlay pools in `10.0.0.0/8`, and
+  Docker Desktop's `192.168.65.0/24`), do not add that address to the allowlist; the allowlist
+  cannot work on this setup. That is the case on Docker Desktop (macOS and Windows), with rootless
+  Docker's builtin port driver before RootlessKit 3.0, with rootless Podman and with Swarm ingress.
+  Run the proxy on the host, or with `network_mode: host`. For rootless Docker, set
+  `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns` and
   `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns`, or
   `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=pasta` with `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=implicit`
   (with RootlessKit 3.0 or newer, the default `builtin` driver with `"userland-proxy": false` also
-  works). See the rootless mode troubleshooting page in Docker's documentation. For Swarm publish with `mode:
-  host`. On Docker Desktop use a VPN rather than an allowlist.
+  works). See the rootless mode troubleshooting page in Docker's documentation. For Swarm publish
+  with `mode: host`. On Docker Desktop use a VPN rather than an allowlist.
 - **Do not allow Docker's networks.** Never allow `172.16.0.0/12`, `192.168.0.0/16` or `10.0.0.0/8`
   whole: Docker's default pools lie inside them (Docker Desktop uses `192.168.65.0/24`). For IPv6
   never allow `fc00::/7` or `fd00::/8`; allow only your LAN's own /64. Allow only your own networks,
@@ -149,6 +154,8 @@ server {
 - **The allowlist** matches the client's own address. If something else sits in front of nginx,
   such as a load balancer, the address it sees is that device's, and you would need nginx's
   `realip` module set up to trust it.
+- **No `auth_request` or other login** (such as an OAuth2 proxy) in front of Platehouse: the API
+  and slicer links must reach the app without a cookie.
 
 nginx sends the app origin-form request targets and keeps its own path checks on, so nothing
 else is needed for those.

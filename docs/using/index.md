@@ -1,3 +1,7 @@
+---
+description: The library page, with its search, pages, sorting and Select mode, and a guide to the other Using pages.
+---
+
 # Using Platehouse
 
 Platehouse has a left sidebar, with the Platehouse logo at the top, and a top bar.
@@ -18,11 +22,13 @@ The pages in this section:
   numbers come from.
 - [Opening in a slicer](./open-in-slicer.md): the Open in Bambu Studio and Open in OrcaSlicer
   buttons and the links behind them.
-- [Organising](./organising.md): search, tags, collections, creators and renaming.
+- [Organising](./organising.md): search, tags, collections, creators and renaming, and deleting
+  tags and collections.
 - [The trash](./trash.md): deleting, restoring and purging.
 - [Activity](./activity.md): library numbers, job progress and recent events.
-- [Settings](./settings.md): the accent colour, language, My printers, API tokens, model names and
-  trash.
+- [Settings](./settings.md): the accent colour, language, My printers, API tokens, Sign out
+  everywhere, model names and trash.
+- [New in 0.1.1](./new-in-0-1-1.md): what changed in 0.1.1, and what to check before you upgrade.
 - [New in 0.1.0](./new-in-0-1-0.md): the features added late in 0.1.0, the first release.
 
 ## The library
@@ -106,9 +112,9 @@ Space on it) and a toolbar appears above the grid with the number selected.
   matches the pages reach. A new search or filter keeps the selected models it still shows and
   drops the rest, and the toolbar says how many left. To gather models from several searches or
   tags, select them under one view that shows them all, such as the whole library with no search
-  or filter. **Select** again, or Escape, ends Select mode and clears the selection. Escape does not end
-  Select mode while you are typing in a text field, such as the search box; it only leaves the
-  field.
+  or filter. **Select** again, or Escape, ends Select mode and clears the selection. Escape does not
+  end Select mode while you are typing in a text field: there it is left to the field, and in the
+  search box it clears the text you typed.
 - While the page checks which selected models a new search or filter shows, the actions wait. If
   that check fails, the toolbar says so and offers **Try again**.
 
@@ -116,9 +122,10 @@ The toolbar's actions work on every selected model at once, up to 1000 in one ac
 
 - **Add tags**: type a tag and press Enter, or pick one of the library's, up to 20 tags in one go.
   Tags a model already has are kept, and a new tag is made the first time it is used.
-- **Remove tag**: pick one of the library's tags to take off the selected models. The tag is not
-  deleted, but once no model outside the trash has it, it is no longer listed on the **Tags** page,
-  in the tag chips or in the tag pickers.
+- **Remove tag**: pick one of the library's tags to take off the selected models. Once no model
+  has the tag any more, models in the trash included, the tag is deleted. While only models in the
+  trash have it, it is kept but not listed on the **Tags** page, in the tag chips or in the tag
+  pickers. See [Organising](./organising.md#tags).
 - **Add to collection**: pick a collection, or type a new name to make one.
 - **Move to trash**: asks first, then moves the models to the trash, where they can be restored for
   30 days. See [The trash](./trash.md).

@@ -1,3 +1,7 @@
+---
+description: How to add a language to your own server, or fix words in a built-in one, with LOCALES_DIR.
+---
+
 # Adding a language to your server
 
 You can give your own Platehouse server more languages, or fix words in a built-in one, without
@@ -6,20 +10,33 @@ rebuilding anything: put translation files in a folder and set `LOCALES_DIR`.
 ## Set it up
 
 1. Make a folder on the host for the files, for example `/opt/platehouse/locales`.
-2. Mount it into the app container, read-only, and set `LOCALES_DIR` to where it is inside the
-   container. In `docker-compose.yml`, on the `platehouse` service:
+2. Mount it into the app container, read-only. In `docker-compose.yml`, add it to the
+   `platehouse` service's `volumes:`:
 
    ```yaml
    services:
      platehouse:
        volumes:
          - /opt/platehouse/locales:/data/locales:ro
-       environment:
-         LOCALES_DIR: /data/locales
    ```
 
-   `LOCALES_DIR` must be an absolute path. Left unset, Platehouse offers its built-in languages
-   only.
+   Then set `LOCALES_DIR` to where it is inside the container. The example Compose file passes it
+   on from `.env`, so add this line to `.env`:
+
+   ```ini
+   LOCALES_DIR=/data/locales
+   ```
+
+   A `docker-compose.yml` copied before the example passed it on, such as the one shipped with
+   0.1.1, ignores it in `.env`. Add this line under the `platehouse` service's `environment:`
+   first:
+
+   ```yaml
+   LOCALES_DIR: ${LOCALES_DIR:-}
+   ```
+
+   `LOCALES_DIR` must be an absolute path. Left unset or empty, Platehouse offers its built-in
+   languages only.
 3. Put a file in the folder for each language, named for its code: `de.json`, `it.json`,
    `pt-BR.json`. See [How a translation file looks](./index.md#how-a-translation-file-looks).
 
@@ -85,10 +102,21 @@ read comes back but slow, its languages are offered again and the "slow to read"
 more is logged while the folder stays that way, however many times it is read. When a read works again within the limit, the log says so once:
 `locales: LOCALES_DIR can be read again`.
 
+## The file's `$meta`
+
+`$meta` is optional in a server file. Platehouse reads two of its fields:
+
+- `"name"`: the language's name in the Language menu, in its own language, such as `"Deutsch"`.
+  Plain text of up to 40 characters; without it, or with anything else, Platehouse names the
+  language from its code.
+- `"status"`: `"machine-draft"` marks the language as a machine translation in the Language menu.
+
 ## Fixing words in a built-in language
 
 A file named for a built-in language, such as `es.json`, replaces the built-in messages it has and
-leaves the rest alone. English (`en.json`) cannot be replaced.
+leaves the rest alone. English (`en.json`) cannot be replaced. The language keeps the built-in
+one's machine translation mark unless the file's `$meta` sets a `"status"`: `"machine-draft"`
+keeps the mark, and any other status, such as `"reviewed"`, removes it.
 
 ## A partial translation
 

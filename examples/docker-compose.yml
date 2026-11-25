@@ -85,6 +85,9 @@ services:
       INBOX_DIR: /data/inbox
       TMP_DIR: /data/tmp
       INBOX_SETTLE_SECONDS: ${INBOX_SETTLE_SECONDS:-15}
+      UPLOAD_TEMP_MAX_BYTES: ${UPLOAD_TEMP_MAX_BYTES:-4294967296}
+      # Empty means not set: only the built-in languages are offered.
+      LOCALES_DIR: ${LOCALES_DIR:-}
     volumes:
       - ./data/inbox:/data/inbox
       - ./data/tmp:/data/tmp
@@ -109,8 +112,10 @@ services:
     environment:
       # The same per-plate time cap the app uses.
       SLICE_PLATE_SECONDS: ${SLICE_PLATE_SECONDS:-120}
-      # On a kernel older than Linux 6.12 the sandbox is off; "true" still lets slices and STEP previews run without it.
-      # SLICER_ALLOW_UNSANDBOXED: "false"
+      # On a kernel older than Linux 6.12 the sandbox is off; "true" still
+      # lets slices and STEP conversions run without it. See the Security
+      # page first: upgrading the kernel is the fix.
+      SLICER_ALLOW_UNSANDBOXED: ${SLICER_ALLOW_UNSANDBOXED:-false}
     read_only: true
     tmpfs:
       - /work:size=1g,mode=1777,noexec,nosuid,nodev

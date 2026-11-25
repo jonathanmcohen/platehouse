@@ -1,3 +1,7 @@
+---
+description: How to set up sign-in through your own OpenID Connect provider, and how to cut someone off.
+---
+
 # Sign-in
 
 Platehouse has no passwords of its own. Every page and file needs a sign-in through an OpenID
@@ -53,37 +57,41 @@ and for the token exchange.
 Only a user whose `groups` claim holds `OIDC_GROUP` exactly gets in. Everyone else sees a plain
 page saying they are not allowed to use this Platehouse; the page does not name the group. To let
 someone in, add them to the group at your provider; to take access away, remove them. Platehouse
-checks the group each time someone signs in, and only then. Removing someone stops their next
-sign-in. If they try to sign in again and Platehouse itself refuses them (the provider let them sign in, but they are not in the group,
-their email is not verified, or their user id is too long), the session that browser already had
-ends too, and they are signed out there at once. A refusal at the provider ends nothing: if you
-also limit the client to the group at the provider (Pocket ID's allowed user groups, an Authentik
-policy binding and the like), or disable the account there, the provider refuses them before
-Platehouse sees a sign-in, and the session that browser had carries on. A Platehouse session they
-have in any other browser, or one the provider's refusal did not end, lasts until it expires
-(7 days without use, 30 days at most), they sign out, or someone uses **Sign out everywhere** in
-**Settings** on them.
+checks the group each time someone signs in, and only then, so removing someone stops their next
+sign-in.
+
+**What a refused sign-in ends.** When Platehouse itself refuses a sign-in (the provider let the
+person sign in, but they are not in the group, their email is not verified, or their user id is
+too long), the session that browser already had ends too, and they are signed out there at once.
+A refusal at the provider ends nothing: if you also limit the client to the group at the provider
+(Pocket ID's allowed user groups, an Authentik policy binding and the like), or disable the
+account there, the provider refuses them before Platehouse sees a sign-in, and the session that
+browser had carries on. A sign-in that fails because the provider is down never ends anyone's
+session either. A Platehouse session they have in any other browser, or one a refusal did not
+end, lasts until it expires (7 days without use, 30 days at most), they sign out, or someone uses
+**Sign out everywhere** in **Settings** on them.
 
 Creating an API token needs a recent sign-in: if you signed in more than 5 minutes ago, Settings
 asks you to sign in again first, and that sign-in checks the group. So a removed person cannot
-make a new token with a session they already had. Asking for a token ends nothing by itself;
-following the Sign in again link does end that session when Platehouse is the one that refuses
-the sign-in (see above). While your provider is down nobody can make one,
-and a sign-in that fails because the provider is down never ends anyone's session.
+make a new token with a session they already had. Asking for a token ends nothing by itself; the
+sign-in that follows ends a session only as described above. While your provider is down nobody
+can make one.
 
 Removing someone does not revoke API tokens. A token never expires and is not checked against
 the group, so a token they made or had a copy of keeps reading, uploading and tagging after they
 are removed, until it is revoked. Settings shows who made each token. A token made with
-Platehouse 0.1.0, before it recorded that, shows "Made by an unknown user".
+Platehouse 0.1.0 shows "Made by an unknown user (before Platehouse recorded who made each token)".
 
 To cut someone off completely:
 
-1. Remove them from the group at your provider. From then on, any sign-in they try is refused.
-   When Platehouse is the one that refuses it, the refusal also ends the session the browser they
-   tried from had; when the provider refuses it (the client is limited to the group there, or the
-   account is disabled), it ends nothing. Their other sessions carry on until the next step.
+1. Remove them from the group at your provider. From then on, any sign-in they try is refused,
+   and a refusal ends at most the session of the browser they tried from (see
+   [What a refused sign-in ends](#the-allowed-group) above). Their other sessions carry on until
+   the next step.
 2. In **Settings**, under **Sign out everywhere**, press **Sign out** beside their name, tick the
-   box to also revoke the API tokens they made, and press **Sign out everywhere**. Every session
+   dialog's box that reads "Also revoke the N API tokens they made" (N is how many they made),
+   and press **Sign out everywhere**
+   (see [Settings](./using/settings.md#sign-out-everywhere)). Every session
    they have ends at once, and every token they made stops working, including one they were
    making at that moment: a token being made waits for Sign out everywhere, or Sign out
    everywhere waits for it and then revokes it, so it is never left working.

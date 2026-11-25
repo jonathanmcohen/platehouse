@@ -1,3 +1,7 @@
+---
+description: The languages Platehouse speaks, how a translation file looks, and the two ways to add a language.
+---
+
 # Translations
 
 Platehouse speaks English, Spanish and French, and you can add more languages.

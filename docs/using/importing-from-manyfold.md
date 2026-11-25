@@ -1,3 +1,7 @@
+---
+description: How to copy a Manyfold library into Platehouse once, with the importer.
+---
+
 # Importing from Manyfold
 
 If your library lives in [Manyfold](https://manyfold.app), the Platehouse importer copies it across
@@ -11,8 +15,8 @@ happy with the result.
 
 ## What you need
 
-- A checkout of the Platehouse repository with Node 26 and pnpm, on any machine that can reach both
-  servers. The importer is not part of the app image.
+- A checkout of the Platehouse repository with Node 26.13 or newer and pnpm, on any machine that
+  can reach both servers. The importer is not part of the app image.
 - Both servers on **https**. The importer refuses a plain http address, and it sends its tokens only
   to the two addresses you give it (a file download that Manyfold redirects to its object store is
   fetched with no token at all). A redirect to a private, loopback or link-local address, or to a name

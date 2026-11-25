@@ -1,3 +1,7 @@
+---
+description: How to add a language to Platehouse itself, or review an existing translation.
+---
+
 # Adding a language to Platehouse
 
 A language added to the source repository ships with Platehouse, for everyone. This page is for
@@ -14,6 +18,9 @@ The translations live in `packages/i18n/locales/` in the repository:
 
 The web app and the server find every `<code>.json` in that folder by themselves, so there is no
 list of languages to edit.
+
+Right-to-left languages, such as Arabic or Hebrew, are not supported yet: the page would still lay
+out left to right.
 
 ## Add a language
 

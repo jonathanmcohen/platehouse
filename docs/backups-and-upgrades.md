@@ -1,3 +1,7 @@
+---
+description: What to back up, how to restore the database, and how to upgrade Platehouse and its slicer.
+---
+
 # Backups and upgrades
 
 ## What to back up
@@ -145,6 +149,52 @@ location if it is off. After you go back, upload those files again. The warning 
 
 :::
 
+### Upgrading to 0.1.1
+
+Before and after the steps above, when you go from 0.1.0 to 0.1.1:
+
+- **Change both image tags together**, to `platehouse:0.1.1` and `platehouse-slicer:0.1.1`. The
+  0.1.1 app cannot read an older slicer's answers: new files get no estimates, the Activity page
+  shows the slicer as **Not reachable**, and preview pictures wait for the slicer for up to 2
+  hours (see [Troubleshooting](./troubleshooting.md#estimates)).
+- **Check the host's kernel** with `uname -r` before you upgrade. 0.1.1 runs estimates and STEP
+  conversions inside the slicer's sandbox too, which needs Linux 6.12 or newer. On an older
+  kernel, pictures and OpenSCAD renders are off, and estimates and STEP conversions stop unless
+  `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer (see [Security](./security.md#the-slicer-sandbox)
+  for what that gives up). The example Compose file shipped with 0.1.1 has that line commented
+  out, so to set it, add this line under the `platehouse-slicer` service's `environment:` in
+  `docker-compose.yml` (in place of the commented one) and set `SLICER_ALLOW_UNSANDBOXED=true` in
+  `.env`:
+
+  ```yaml
+  SLICER_ALLOW_UNSANDBOXED: ${SLICER_ALLOW_UNSANDBOXED:-false}
+  ```
+
+  After the upgrade, check the **Sandbox** line in the **Slicer** section of the
+  [Activity](./using/activity.md#the-slicer-section) page.
+- **Expect a slower first start.** Before it answers, the first start of 0.1.1 builds new
+  database indexes (migration 0016), which takes longer on a large library. It can take longer
+  than the app image's 60-second health check start period, so `docker compose ps` may show the
+  app as unhealthy for a while. Wait for it, and read `docker compose logs platehouse`, before you
+  restart anything.
+- **Some sessions end.** Migration 0013 ends the sessions of any account whose user id (the
+  `sub` claim) is longer than 255 characters, since such an account can no longer sign in (see
+  [Sign-in](./sign-in.md#what-platehouse-asks-of-the-provider)). Every other session carries on.
+- **Older tokens have no maker.** Settings now shows who made each API token. Tokens made with
+  0.1.0 show "Made by an unknown user (before Platehouse recorded who made each token)"; they keep
+  working. Sign out everywhere never revokes a token with no recorded maker, so after the upgrade
+  check the token list in Settings and revoke any such token you cannot account for (see
+  [Sign-in](./sign-in.md#the-allowed-group), step 3 of cutting someone off).
+- **Background work after the first start.** Older STL and STEP files get their preview pictures
+  in the background ("Preview pictures for older STL and STEP files" under **Scheduled jobs** on
+  the Activity page). MakerWorld descriptions imported before 0.1.1 are converted again from their
+  `.3mf` once (migration 0014), and models whose MakerWorld licence 0.1.0 did not recognise, CC
+  BY-ND among them, get their licence or licence note back; the Activity page lists this as
+  "MakerWorld descriptions and licences (until they finish)" until it is done. A description you
+  edited, and a licence or licence note already set, are left as they are.
+- **No init in front of the app.** The 0.1.1 app image runs tini as PID 1, like the slicer image.
+  If you added `init: true` (or `--init`) to either service, remove it.
+
 ### The slicer
 
 The slicer image is tagged with the release version, `platehouse-slicer:X.Y.Z`, the same as the
@@ -153,7 +203,8 @@ OrcaSlicer version from main or a release, never a release candidate, and `stabl
 build of any OrcaSlicer version. You move to a new release with the Upgrading steps above, which
 change both tags together. From 0.1.1 on, upgrade them together in any case: the 0.1.1 app refuses
 an older slicer, pictures and OpenSCAD renders need Linux 6.12 or newer, and on Linux older than
-6.12 estimates and STEP previews stop unless `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer.
+6.12 estimates and STEP conversions stop unless `SLICER_ALLOW_UNSANDBOXED=true` is set on the
+slicer. See [Upgrading to 0.1.1](#upgrading-to-011).
 
 When the slicer's OrcaSlicer version changes, Platehouse re-estimates the library in the
 background, since a new version can give different numbers. From 0.1.1 on, to go back, set both
@@ -223,3 +274,16 @@ or Postgres will not start on the old data folder.
 If you use a tool that updates containers automatically, such as Watchtower, give it a stop
 timeout of at least 40 seconds. The app needs up to 30 seconds to stop cleanly, and a tool that
 kills it sooner can cut off a running job.
+
+Such a tool pulls the tag a container already uses again, and recreates the container when that
+tag now names a newer image. It never changes the tag:
+
+- With the version tags the example pins, such as `0.1.1`, it finds nothing new, because a
+  version tag does not move. Upgrade by hand, with the steps above.
+- Moving tags, such as the app's `latest` and the slicer's `stable`, can leave the app and the
+  slicer on different versions. Each container is updated on its own, so one can be pulled before
+  the other has moved, and `stable` also moves between releases, whenever the daily slicer build
+  publishes a new OrcaSlicer version. Do not follow them with an automatic update; the app and the
+  slicer must be the same version. The `rc` tag is the one moving tag kept on the same version for
+  both images, and it is for test servers only (see
+  [Testing a release candidate](#testing-a-release-candidate)).

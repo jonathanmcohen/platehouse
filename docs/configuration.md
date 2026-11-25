@@ -1,12 +1,34 @@
+---
+description: Every setting the Platehouse app and slicer read from the environment, with its default, and the fixed limits.
+---
+
 # Configuration
 
 Platehouse reads its configuration from environment variables only. With the example Compose
-file you set them in `.env`. The app checks every value when it starts and refuses to start if a
-required one is missing or any one is invalid. The error names the variable and why it failed,
-and never prints its value.
+file you set most of them in `.env`, and `docker-compose.yml` passes them to the containers. Some
+are not read from `.env` as they are: `DATABASE_URL` is built from `DB_USER`, `DB_PASS` and
+`DB_NAME`; the app's `PORT`, `SLICER_URL`, `INBOX_DIR` and `TMP_DIR` are written into
+`docker-compose.yml` itself; and the slicer's `SLICE_TIMEOUT_SECONDS`, `SCAD_TIMEOUT_SECONDS`,
+`STEP_TIMEOUT_SECONDS`, `WORK_MIN_FREE_MIB` and `PORT` are not passed at all. To change one of
+those, set it under that service's `environment:` in `docker-compose.yml`. The app checks every
+value when it starts and refuses to start if a required one is missing or any one is invalid. The
+error names the variable and why it failed, and never prints its value.
 
-An empty value (`KEY=`) counts as not set: a required variable is then missing, and an optional
-one takes its default.
+A `docker-compose.yml` copied from the example before it passed `UPLOAD_TEMP_MAX_BYTES`,
+`LOCALES_DIR` and `SLICER_ALLOW_UNSANDBOXED` on, as the one shipped with 0.1.1 did not, ignores
+those three in `.env`. Add the lines you need under that service's `environment:`, the first two on
+`platehouse` and the third on `platehouse-slicer` (in place of its commented line):
+
+```yaml
+UPLOAD_TEMP_MAX_BYTES: ${UPLOAD_TEMP_MAX_BYTES:-4294967296}
+LOCALES_DIR: ${LOCALES_DIR:-}
+SLICER_ALLOW_UNSANDBOXED: ${SLICER_ALLOW_UNSANDBOXED:-false}
+```
+
+For the app, an empty value (`KEY=`) counts as not set: a required variable is then missing, and
+an optional one takes its default. The slicer does not read an empty value as not set, but the
+example Compose file gives `SLICER_ALLOW_UNSANDBOXED` its default, `false`, when `.env` leaves it
+empty.
 
 ## The app
 
@@ -106,4 +128,6 @@ These are part of Platehouse and not configurable:
 - A slicer link lasts 10 minutes.
 - A sign-in session lasts 7 days without use and 30 days at most.
 - Trashed models are purged 30 days after they were trashed.
-- An OpenSCAD file can be at most 1 MiB and a STEP file at most 256 MiB.
+- The slicer renders an OpenSCAD file of at most 1 MiB, and takes an STL or STEP file of at most
+  256 MiB. A larger file is still stored, but a larger `.scad` is not rendered, a larger STL gets
+  no preview picture, and a larger STEP file is not converted, so it has no 3D view or picture.

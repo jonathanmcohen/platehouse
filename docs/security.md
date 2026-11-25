@@ -1,3 +1,7 @@
+---
+description: What protects Platehouse, from sign-in and API tokens to the slicer sandbox, and where the limits are.
+---
+
 # Security
 
 Platehouse is built for your own network, for one person or a household. This page explains what
@@ -27,19 +31,20 @@ public address, and the device must get `403`. Any address of your own (router, 
 
 - **Let the proxy see real addresses.** If the proxy runs in Docker and you use an allowlist, prefer
   `network_mode: host` (Docker Engine on Linux), or run it on the host. With host networking, point
-  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback, as in
-  the example Compose file), and make sure nothing else the proxy listens on, such as Traefik's
-  dashboard on 8080, is exposed. If every visitor, LAN and outside, shows the same address (Docker's
-  bridge pools, Swarm's overlay pools in `10.0.0.0/8`, and Docker Desktop's `192.168.65.0/24`), do
-  not add that address to the allowlist; the allowlist cannot work on this setup. That is the case
-  on Docker Desktop (macOS and Windows), with rootless Docker's builtin port driver before
-  RootlessKit 3.0, with rootless Podman and with Swarm ingress. Run the proxy on the host, or with
-  `network_mode: host`. For rootless Docker, set `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns` and
+  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback only
+  by uncommenting the `ports:` lines in the example Compose file), and make sure nothing else the
+  proxy listens on, such as Traefik's dashboard on 8080, is exposed. If every visitor, LAN and
+  outside, shows the same address (Docker's bridge pools, Swarm's overlay pools in `10.0.0.0/8`, and
+  Docker Desktop's `192.168.65.0/24`), do not add that address to the allowlist; the allowlist
+  cannot work on this setup. That is the case on Docker Desktop (macOS and Windows), with rootless
+  Docker's builtin port driver before RootlessKit 3.0, with rootless Podman and with Swarm ingress.
+  Run the proxy on the host, or with `network_mode: host`. For rootless Docker, set
+  `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns` and
   `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns`, or
   `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=pasta` with `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=implicit`
   (with RootlessKit 3.0 or newer, the default `builtin` driver with `"userland-proxy": false` also
-  works). See the rootless mode troubleshooting page in Docker's documentation. For Swarm publish with `mode:
-  host`. On Docker Desktop use a VPN rather than an allowlist.
+  works). See the rootless mode troubleshooting page in Docker's documentation. For Swarm publish
+  with `mode: host`. On Docker Desktop use a VPN rather than an allowlist.
 - **Do not allow Docker's networks.** Never allow `172.16.0.0/12`, `192.168.0.0/16` or `10.0.0.0/8`
   whole: Docker's default pools lie inside them (Docker Desktop uses `192.168.65.0/24`). For IPv6
   never allow `fc00::/7` or `fd00::/8`; allow only your LAN's own /64. Allow only your own networks,
@@ -100,14 +105,18 @@ Each API client, such as a script or another tool on one computer, gets its own 
 - Platehouse stores only a SHA-256 hash of each token and its first 8 characters, so you can tell
   tokens apart. A stolen database does not give working tokens.
 - Each token records who made it: the user id (`sub`) your provider gave them and their name at
-  the time, shown in **Settings**. Tokens made with Platehouse 0.1.0 show "Made by an unknown
-  user".
+  the time, shown in **Settings**. Tokens made with Platehouse 0.1.0 show
+  "Made by an unknown user (before Platehouse recorded who made each token)".
 - Revoke a token in **Settings** when a client no longer needs it, if it may have leaked, or when
   someone who made or used it is removed from the group: removing a person does not revoke their
   tokens. Revoking one leaves the others working. Each token shows when it was last used.
 - **Sign out everywhere** in **Settings** ends every session of one person and can revoke every
-  token they made in the same step. See [Sign-in](./sign-in.md#the-allowed-group) for how to cut
-  someone off completely.
+  token they made in the same step. Tokens made with 0.1.0 have no recorded maker, so Sign out
+  everywhere never revokes them; revoke those by hand in the token list. Signing someone else
+  out, or revoking a token someone else
+  made (or one made by an unknown user), needs a sign-in from the last 5 minutes, as making a
+  token does; signing yourself out, or revoking a token you made, needs only a live session. See
+  [Sign-in](./sign-in.md#the-allowed-group) for how to cut someone off completely.
 - A token is sent as `Authorization: Bearer <token>`. Cookies never count for the API, and tokens
   never appear in the app's log.
 - A token can read the library, upload files and change tags and collections. It cannot delete,
@@ -325,8 +334,8 @@ container, the slicer, which is locked down.
 - **No credentials.** It holds no database password, bucket key, token or other secret. The app
   sends it a file and gets numbers or a render back.
 - **Little it can change.** It runs as its own unprivileged user with every Linux capability
-  dropped, a read-only system, and only an in-memory `/work` folder that it cannot run programs
-  from. Each job's folder is deleted afterwards.
+  dropped, a read-only system, and only an in-memory `/work` folder, mounted `noexec`, so it
+  cannot run programs from it directly. Each job's folder is deleted afterwards.
 - **Limits.** It has a CPU and memory limit, a process limit, and runs one job at a time. Each plate
   has a time cap, and the slicer kills a job that runs over. After each job it also cleans up
   processes the job left behind, and it stops a job's programs at once when its client goes away.
@@ -351,7 +360,7 @@ container, the slicer, which is locked down.
   read outside the job folder, and runs no render, slice or STEP conversion until that check
   passes. It needs Linux 6.12 or newer (Landlock ABI 6). On an older kernel, or while the check
   fails, renders and STL pictures are off. Slices and STEP conversions are off too, unless
-  `SLICER_ALLOW_UNSANDBOXED` is set on the slicer: then they run without the sandbox, with only
+  `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer: then they run without the sandbox, with only
   the limits above and the container's own isolation. Without the sandbox, a slice or STEP
   conversion can also read and change other files the slicer's user can reach, including
   leftovers of earlier jobs, reach the app over the internal network and send signals to the

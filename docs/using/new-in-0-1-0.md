@@ -1,3 +1,7 @@
+---
+description: The features added late in Platehouse 0.1.0, the first release.
+---
+
 # New in 0.1.0
 
 0.1.0 was the first release of Platehouse, so everything in these docs was new in it. This page
