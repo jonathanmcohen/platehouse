@@ -2,8 +2,9 @@
 // the slicer queue's queued jobs (issue #459), against Postgres 17. The query
 // is held to slicesThrough, which stays the reference: over generated queues
 // (slices for three printers, duplicate slices of one estimate at different
-// priorities, renders with no printer, slices with no estimate, a job waiting
-// out a retry) both must give every printer the same figure. Jobs are
+// priorities, renders with no printer, slices with no estimate or a malformed
+// one, slices whose estimate is running, finished, failed or deleted, a job
+// waiting out a retry) both must give every printer the same figure. Jobs are
 // inserted delayed by an hour so that nothing runs them.
 import { createHash, randomUUID } from "node:crypto";
 import type { Kysely } from "kysely";
@@ -29,7 +30,7 @@ import { startTestPostgres, type TestPostgres } from "../support/db.js";
 
 const PRINTERS = ["Printer A", "Printer B", "Printer C"];
 const CASES = 25;
-const PLATES = 8;
+const PLATES = 16;
 
 let pgc: TestPostgres;
 let db: Kysely<DB>;
@@ -87,26 +88,30 @@ async function addPlate(index: number): Promise<string> {
   return plateId;
 }
 
-/** Replaces every platehouse estimate with the given pending and running ones. */
-async function seedEstimates(pending: string[], running: number): Promise<void> {
+type SeededStatus = "pending" | "running" | "ok" | "failed";
+
+/**
+ * Replaces every platehouse estimate with the given ones, each on its own
+ * plate, which keeps the unique key (plate, source, printer, slicer version)
+ * satisfied.
+ */
+async function seedEstimates(
+  rows: Array<{ id?: string; printerId: string; status: SeededStatus }>,
+): Promise<void> {
   await db.deleteFrom("estimates").execute();
-  const rows = [
-    ...pending.map((printerId) => ({ printerId, status: "pending" as const })),
-    ...Array.from({ length: running }, () => ({
-      printerId: PRINTERS[0] as string,
-      status: "running" as const,
-    })),
-  ];
   for (const [i, row] of rows.entries()) {
     await db
       .insertInto("estimates")
       .values({
-        id: uuidv7(),
+        id: row.id ?? uuidv7(),
         plateId: plateIds[i] as string,
         source: "platehouse",
         printerId: row.printerId,
         slicerVersion: null,
         status: row.status,
+        // The table's checks: a finished estimate has its figures, a failed one its reason.
+        ...(row.status === "ok" ? { timeSeconds: 60, weightGrams: 1 } : {}),
+        ...(row.status === "failed" ? { failureReason: "slicer_error" } : {}),
       })
       .execute();
   }
@@ -127,6 +132,7 @@ async function expectedQueue(): Promise<Map<string, PrinterQueue>> {
     const slice = job.data?.kind === SLICE_JOB_KIND;
     return {
       id: job.id,
+      slice,
       ...(slice && typeof job.data.printerId === "string" ? { printerId: job.data.printerId } : {}),
       ...(slice && typeof job.data.estimateId === "string"
         ? { estimateId: job.data.estimateId }
@@ -142,7 +148,13 @@ async function expectedQueue(): Promise<Map<string, PrinterQueue>> {
       .where("status", "=", "running")
       .executeTakeFirstOrThrow()
   ).n;
-  const through = slicesThrough(work, running);
+  const pendingRows = await db
+    .selectFrom("estimates")
+    .select("id")
+    .where("status", "=", "pending")
+    .execute();
+  const pending = new Set(pendingRows.map((row) => row.id));
+  const through = slicesThrough(work, running, pending);
   const waiting = await db
     .selectFrom("estimates")
     .select(["printerId", sql<number>`count(*)::int`.as("n")])
@@ -206,6 +218,12 @@ describe("queueByPrinter", () => {
           return { id, priority, data: { kind: "synthetic-render", fileId: randomUUID() } };
         if (roll < 0.3)
           return { id, priority, data: { kind: SLICE_JOB_KIND, printerId: pick(PRINTERS) } };
+        if (roll < 0.35)
+          return {
+            id,
+            priority,
+            data: { kind: SLICE_JOB_KIND, printerId: pick(PRINTERS), estimateId: "not-a-uuid" },
+          };
         return {
           id,
           priority,
@@ -232,10 +250,22 @@ describe("queueByPrinter", () => {
            where name = ${QUEUE.slicer} and id = ${retrying.id}
         `.execute(db);
       }
-      await seedEstimates(
-        Array.from({ length: Math.floor(random() * 5) }, () => pick(PRINTERS)),
-        Math.floor(random() * 3),
+      // The jobs' estimates in every state, or deleted (no row) one time in five.
+      const statuses: SeededStatus[] = ["pending", "running", "ok", "failed"];
+      const jobEstimates = estimateIds.flatMap((estimateId) =>
+        random() < 0.2
+          ? []
+          : [{ id: estimateId, printerId: pick(PRINTERS), status: pick(statuses) }],
       );
+      const waiting = Array.from({ length: Math.floor(random() * 5) }, () => ({
+        printerId: pick(PRINTERS),
+        status: "pending" as const,
+      }));
+      const running = Array.from({ length: Math.floor(random() * 3) }, () => ({
+        printerId: PRINTERS[0] as string,
+        status: "running" as const,
+      }));
+      await seedEstimates([...jobEstimates, ...waiting, ...running]);
 
       const expected = await expectedQueue();
       const actual = await estimates.queueByPrinter();
@@ -249,7 +279,7 @@ describe("queueByPrinter", () => {
 
   test("reads no job rows into memory", async () => {
     await clearQueue();
-    await seedEstimates([PRINTERS[0] as string], 0);
+    await seedEstimates([{ printerId: PRINTERS[0] as string, status: "pending" }]);
     await boss.insert(QUEUE.slicer, [
       {
         data: { kind: SLICE_JOB_KIND, printerId: PRINTERS[0], estimateId: randomUUID() },
@@ -263,6 +293,56 @@ describe("queueByPrinter", () => {
       expect(findJobs).not.toHaveBeenCalled();
     } finally {
       findJobs.mockRestore();
+      await clearQueue();
+    }
+  });
+
+  test("a finished estimate's leftover job, a running estimate's queued copy and a malformed job take no place", async () => {
+    await clearQueue();
+    const [A, B] = PRINTERS as [string, string];
+    const R = uuidv7();
+    const F = uuidv7();
+    const P1 = uuidv7();
+    const P2 = uuidv7();
+    await seedEstimates([
+      { id: R, printerId: A, status: "running" },
+      { id: F, printerId: A, status: "ok" },
+      { id: P1, printerId: A, status: "pending" },
+      { id: P2, printerId: B, status: "pending" },
+    ]);
+    const slice = (estimateId?: unknown) => ({
+      kind: SLICE_JOB_KIND,
+      printerId: A,
+      ...(estimateId === undefined ? {} : { estimateId }),
+    });
+    await boss.insert(QUEUE.slicer, [
+      // Ahead of everything: one render, which takes a place, and six slices that do not.
+      { data: { kind: "synthetic-render" }, priority: 1, startAfter: 3600 },
+      { data: slice(F), priority: 1, startAfter: 3600 },
+      { data: slice(R), priority: 1, startAfter: 3600 },
+      { data: slice("not-a-uuid"), priority: 1, startAfter: 3600 },
+      { data: slice(42), priority: 1, startAfter: 3600 },
+      { data: slice(), priority: 1, startAfter: 3600 },
+      { data: slice(randomUUID()), priority: 1, startAfter: 3600 },
+      {
+        data: { kind: SLICE_JOB_KIND, printerId: A, estimateId: P1 },
+        priority: 0,
+        startAfter: 3600,
+      },
+      {
+        data: { kind: SLICE_JOB_KIND, printerId: B, estimateId: P2 },
+        priority: -1,
+        startAfter: 3600,
+      },
+    ]);
+    try {
+      const actual = Object.fromEntries(await estimates.queueByPrinter());
+      expect(actual).toEqual({
+        [A]: { waiting: 2, through: 3 },
+        [B]: { waiting: 1, through: 4 },
+      });
+      expect(actual).toEqual(Object.fromEntries(await expectedQueue()));
+    } finally {
       await clearQueue();
     }
   });
