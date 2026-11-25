@@ -33,13 +33,13 @@ highest stable release, never to a release candidate or a backport.
 
 ### Tags
 
-| Tag                        | Names                                                                                                       |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `X.Y.Z`, `X.Y.Z-rc.N`      | The slicer built for that release tag. Pin this, as `examples/docker-compose.yml` does.                     |
-| `orca-X.Y.Z`               | The newest build of that OrcaSlicer version from main or a release (never a release candidate).            |
-| `stable`                   | The newest such build of any OrcaSlicer version.                                                            |
-| `orca-X.Y.Z-r<run number>` | One build; never moves. A re-run adds its attempt: `orca-X.Y.Z-r<run number>.<attempt>`.                    |
-| `rc`                       | The newest release candidate. See [The rc tag](#the-rc-tag).                                                |
+| Tag                        | Names                                                                                           |
+| -------------------------- | ----------------------------------------------------------------------------------------------- |
+| `X.Y.Z`, `X.Y.Z-rc.N`      | The slicer built for that release tag. Pin this, as `examples/docker-compose.yml` does.         |
+| `orca-X.Y.Z`               | The newest build of that OrcaSlicer version from main or a release (never a release candidate). |
+| `stable`                   | The newest such build of any OrcaSlicer version.                                                |
+| `orca-X.Y.Z-r<run number>` | One build; never moves. A re-run adds its attempt: `orca-X.Y.Z-r<run number>.<attempt>`.        |
+| `rc`                       | The newest release candidate. See [The rc tag](#the-rc-tag).                                    |
 
 Only runs started from a release tag (its push, a re-run, or a run by hand from the tag) add the
 version tag. A re-run keeps its run number, and the first attempt's run tag stays on its image.
