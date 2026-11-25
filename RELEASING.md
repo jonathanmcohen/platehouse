@@ -68,9 +68,13 @@ gh api -X POST repos/jonathanmcohen/platehouse/environments/github-pages/deploym
 ```
 
 Pages' Source stays **GitHub Actions**; nothing else in the Pages settings changes. The pattern
-also matches rc and throwaway tags; the workflow's first step is what keeps those from
-publishing. Without the rule, a tag's deploy job fails with an environment protection error and
-the site stays as it was: add the rule, then run docs-pages by hand from the tag.
+also matches rc and throwaway tags. The workflow's decision step skips those, and refuses a tag
+whose commit is on neither main nor a `release/**` branch, but it is not a security control: a
+tag runs the workflow file at its own commit, so a tag on a commit with a changed workflow can
+leave the step out. The server-side controls are this environment rule and a tag ruleset on
+`refs/tags/v*` that lets only admins create, move or delete those tags. Without the rule, a tag's
+deploy job fails with an environment protection error and the site stays as it was: add the
+rule, then run docs-pages by hand from the tag.
 
 A tag push runs docs-pages beside the image builds, so the docs can go live some minutes before
 both images are out.

@@ -7,7 +7,8 @@
 # push and by hand (Actions, docs-pages, Run workflow), and its first step
 # decides whether to publish:
 #   - a push of the highest plain vX.Y.Z tag (release-gate.mjs latest, the
-#     rule that decides the latest image tag) publishes that tag;
+#     rule that decides the latest image tag) publishes that tag, if its
+#     commit is on main or a release/** branch, as release.yml checks;
 #   - a push of any other tag (an rc, v0.0.0-test, any other prerelease, or a
 #     backport below the highest release) publishes nothing: a notice, and a
 #     green run;
@@ -73,9 +74,11 @@ jobs:
     outputs:
       publish: ${{ steps.ref.outputs.publish }}
     steps:
+      # Full history, so the branch check sees every branch.
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Set up pnpm
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -89,11 +92,14 @@ jobs:
       # Whether this run publishes, by the rules in the header. Every step
       # after this one, and the deploy job, runs only when it says so. A
       # failed tags call fails the step, never reads as "not the highest".
+      # As in release.yml, a tag publishes only a commit on main or a
+      # release/** branch.
       - name: Which ref to publish
         id: ref
         env:
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
@@ -137,6 +143,13 @@ jobs:
             fi
             echo "::error::$(encode "$tag") is not the highest release (${highest:-none}); docs-pages publishes only from main or the highest release tag"
             exit 1
+          fi
+          if [ "$REF" != "refs/heads/main" ]; then
+            branches="$(git branch -r --contains "$SHA")"
+            if ! grep -Eq '^[[:space:]]*origin/(main$|release/)' <<<"$branches"; then
+              echo "::error::$(encode "$tag") is at $(encode "$SHA"), which is on neither origin/main nor an origin/release/ branch, so the docs site is not published"
+              exit 1
+            fi
           fi
           {
             echo "publish=true"

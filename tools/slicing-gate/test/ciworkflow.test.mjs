@@ -3704,10 +3704,23 @@ const DOCS_GH_STUB = [
   "  esac",
   "}",
 ];
+// git answers the remote branches holding SHA from BRANCHES, one per line as
+// git prints them; GIT_STATUS makes the call fail.
+const DOCS_GIT_STUB = [
+  "git() {",
+  '  echo "git $*" >> "$CALLS"',
+  '  if [ "${GIT_STATUS:-0}" != 0 ]; then echo "fatal: malformed object name" >&2; return "$GIT_STATUS"; fi',
+  '  case "$*" in',
+  '    "branch -r --contains ${SHA}") printf "%s\\n" "$BRANCHES" ;;',
+  '    *) echo "git: unexpected call: $*" >&2; return 99 ;;',
+  "  esac",
+  "}",
+];
+const DOCS_SHA = "a".repeat(40);
 // The step reads the root package.json's version, from VERSION.
 const runDocsStep = (env) =>
   runWorkflowStep(DOCS_PAGES, "build", "Which ref to publish", {
-    stubs: DOCS_GH_STUB,
+    stubs: [...DOCS_GH_STUB, ...DOCS_GIT_STUB],
     setup: (work) => {
       withGateScripts(work);
       writeFileSync(join(work, "package.json"), JSON.stringify({ name: "platehouse", version: env.VERSION ?? "0.1.1" }));
@@ -3715,7 +3728,9 @@ const runDocsStep = (env) =>
     env: {
       GH_TOKEN: "x",
       REPO: "jonathanmcohen/platehouse",
+      SHA: DOCS_SHA,
       REFS: refs("v0.1.0", "v0.1.1", "v0.1.2-rc.1", "v0.0.0-test"),
+      BRANCHES: "  origin/main",
       ...env,
     },
   });
@@ -3815,6 +3830,55 @@ test("docs-pages which ref: a run by hand from another branch refuses", () => {
   assert.equal(r.status, 1, r.log);
   assert.match(r.log, /::error::.*refs\/heads\/release\/v0\.1\.2 is neither/);
   assert.notEqual(r.outputs.publish, "true");
+});
+
+// As release.yml: a tag publishes only a commit that is on main or a
+// release/** branch, so a release tag pushed on an unmerged commit does not
+// put that commit's docs live.
+test("docs-pages: the checkout holds every branch, so the branch check sees them", () => {
+  const build = jobBlock(docsText(), "build");
+  assert.equal(stepInputs(stepBlock(build, "Check out")).inputs["fetch-depth"], "0");
+  assert.ok(stepBlock(build, "Which ref to publish").includes("\n          SHA: ${{ github.sha }}\n"));
+});
+
+for (const [name, branches] of [
+  ["a release branch", "  origin/release/v0.1.1"],
+  ["main and a release branch", "  origin/main\n  origin/release/v0.1.1"],
+]) {
+  test(`docs-pages which ref: the highest release tag on a commit on ${name} publishes`, () => {
+    const r = runDocsStep({ EVENT: "push", REF: "refs/tags/v0.1.1", BRANCHES: branches });
+    assert.equal(r.status, 0, r.log);
+    assert.equal(r.outputs.publish, "true");
+    assert.ok(r.calls.includes(`git branch -r --contains ${DOCS_SHA}`), r.calls);
+  });
+}
+
+for (const [name, branches] of [
+  ["only a feature branch", "  origin/feature/docs"],
+  ["no branch at all", ""],
+  ["a branch whose name only starts with main", "  origin/main-old"],
+  ["a branch named release without a slash", "  origin/release"],
+]) {
+  for (const event of ["push", "workflow_dispatch"]) {
+    test(`docs-pages which ref: a ${event} of the highest release tag on a commit on ${name} refuses`, () => {
+      const r = runDocsStep({ EVENT: event, REF: "refs/tags/v0.1.1", BRANCHES: branches });
+      assert.equal(r.status, 1, r.log);
+      assert.match(r.log, new RegExp(`::error::.*${DOCS_SHA}.* neither origin/main nor an origin/release/ branch`));
+      assert.notEqual(r.outputs.publish, "true");
+    });
+  }
+}
+
+test("docs-pages which ref: a failed branch lookup fails the step, never publishes", () => {
+  const r = runDocsStep({ EVENT: "push", REF: "refs/tags/v0.1.1", GIT_STATUS: "128" });
+  assert.notEqual(r.status, 0, r.log);
+  assert.equal(r.outputs.publish, undefined);
+});
+
+test("docs-pages which ref: a run by hand from main does not look up branches", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: "0.1.1", GIT_STATUS: "128" });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(r.outputs.publish, "true");
 });
 
 test("docs-pages which ref: a failed tags call fails the step", () => {
