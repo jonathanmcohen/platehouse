@@ -58,6 +58,8 @@ beforeEach(() => {
 // its picture jobs and its maintenance jobs. Render jobs without `backfill`
 // are left alone, as cancelling them would leave files pending.
 afterEach(async () => {
+  // When beforeAll failed there is no env and nothing queued; its error is the one to show.
+  if (env === undefined) return;
   const pictures = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, {
     data: { backfill: true },
     queued: true,
