@@ -27,6 +27,7 @@ import {
   recentSliceRateQuery,
   SANDBOX_OFF_CHECK_DETAIL,
   SANDBOX_OFF_KERNEL_DETAIL,
+  SLICE_JOB_KIND,
   SLICE_PRIORITY,
   SLICER_DOWN_DETAIL,
   STORE_DOWN_DETAIL,
@@ -1085,6 +1086,21 @@ describe("My printers", () => {
     return jobs.filter((j) => ["created", "retry", "active"].includes(j.state));
   }
 
+  /** A slice job left over from earlier work: sent to the slicer queue for an estimate that may already be finished. */
+  async function leftoverJob(
+    estimateId: string,
+    printerId: string,
+    priority: number,
+  ): Promise<string> {
+    const id = await boss.send(
+      QUEUE.slicer,
+      { kind: SLICE_JOB_KIND, estimateId, printerId },
+      { priority },
+    );
+    if (id === null) throw new Error("pg-boss refused the leftover job");
+    return id;
+  }
+
   test("queueing a library for a printer makes one estimate and one job per plate, and twice queues nothing more", async () => {
     await upload({ plates: 3 });
     await drain();
@@ -1511,6 +1527,45 @@ describe("My printers", () => {
         [A1, "ok"],
       ].sort(byPrinter),
     );
+  });
+
+  test("a finished plate's leftover job is not counted as the removed printer's waiting work (#490)", async () => {
+    await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+    await estimates.pollOrca();
+    await drain();
+    const done = await upload({ plates: 1 });
+    await drain();
+    const doneA1 = (await platehouseRows(plateId(done.plates, 1))).find((r) => r.printerId === A1);
+    expect(doneA1).toMatchObject({ status: "ok" });
+
+    const held = stub.hold();
+    const before = stub.calls.length;
+    try {
+      await upload({ plates: 3 });
+      await until(
+        () => stub.calls.length,
+        (n) => n > before,
+      );
+      // The slice is held and the queue is singleton, so this job stays queued.
+      await leftoverJob(doneA1?.id ?? "", A1, SLICE_PRIORITY.library);
+      await until(
+        async () =>
+          new Set(
+            (await queuedJobs())
+              .filter((j) => j.data.printerId === A1)
+              .map((j) => j.data.estimateId),
+          ).size,
+        (n) => n === 3,
+        15_000,
+      );
+      const saved = await estimates.savePrinters({ printers: [P1S], defaultId: P1S });
+      expect(saved).toEqual({ added: [], removed: [A1] });
+      expect((await queuedJobs()).filter((j) => j.data.printerId === A1)).toEqual([]);
+      expect((await estimates.queueByPrinter()).has(A1)).toBe(false);
+    } finally {
+      held.release();
+    }
+    await drain();
   });
 
   test("reading another printer's numbers, or reordering, never starts a slice", async () => {
