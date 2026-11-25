@@ -76,6 +76,20 @@ export const NODE_RELEASE_KEYS_COMMIT = "481637f813e912c4aa3622d7964ab426c97b8e8
 export const NODE_RELEASE_KEYRING_SHA256 =
   "140f2ad5260fd62773b6243ce8e1d3009645d558f121b8262c55e383dc285932";
 export const NODE_KEYRING_URL = `https://raw.githubusercontent.com/nodejs/release-keys/${NODE_RELEASE_KEYS_COMMIT}/gpg-only-active-keys/pubring.kbx`;
+// The primary key fingerprints in that keyring, each one checked against the
+// Release keys list of the nodejs/node README. A list is accepted only with
+// exactly one good signature by one of these, and a key change shows in the
+// diff here, where the binary keyring cannot.
+export const NODE_RELEASE_KEY_FINGERPRINTS = [
+  "5BE8A3F6C8A5C01D106C0AD820B1A390B168D356",
+  "DD792F5973C6DE52C432CBDAC77ABFA00DDBF2B7",
+  "CC68F5A3106FF448322E48ED27F5E38D5B0A215F",
+  "890C08DB8579162FEE0DF9DB8BEAB4DFCF555EF4",
+  "C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C",
+  "108F52B48DB57BB0CC439B2997B01419BD92F80A",
+  "655F3B5C1FB3FA8D1A0CA6BDE4A7D232B936D2FD",
+  "A363A499291CBBC940DD62E41F10027AF002F8B0",
+];
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const VERSION = /^\d+\.\d+\.\d+$/;
@@ -353,17 +367,24 @@ export function nodeSha(shasumsText, file) {
   return hits[0][1];
 }
 
+// A value as workflow-command text: %, CR and LF encoded, so a refusal that
+// names it stays one ::error:: line with the wording below.
+const commandText = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+
 // The clear text of a signed SHASUMS256.txt.asc, once gpgv has checked its
 // signature against the keyring at keyringPath, whose sha256 must be
 // keyringSha256. gpgv writes the clear text as it reads, before it rejects a
-// file, so its output is read only when it exits 0. Throws when the keyring
-// is not the pinned one (before gpgv runs), when the list is signed by a key
-// not in the keyring, when the signature does not verify, or when gpgv is not
-// installed.
+// file, so its output is used only when gpgv exits 0 and its status lines
+// (--status-fd) hold exactly one VALIDSIG whose primary key fingerprint is in
+// fingerprints. Throws when the keyring is not the pinned one (before gpgv
+// runs), when the list is signed by a key not in the keyring (naming that
+// key), when the signature does not verify, when the signer is not allowed,
+// or when gpgv is not installed.
 export function verifySignedShasums({
   ascPath,
   keyringPath,
   keyringSha256 = NODE_RELEASE_KEYRING_SHA256,
+  fingerprints = NODE_RELEASE_KEY_FINGERPRINTS,
   gpgv = "gpgv",
 }) {
   const got = createHash("sha256").update(readFileSync(keyringPath)).digest("hex");
@@ -377,22 +398,59 @@ export function verifySignedShasums({
     // An absolute keyring path: gpgv looks for a bare name in its home.
     const r = spawnSync(
       gpgv,
-      ["--homedir", home, "--keyring", resolve(keyringPath), "--output", "-", resolve(ascPath)],
-      { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, maxBuffer: 16 * 1024 * 1024 },
+      [
+        "--homedir",
+        home,
+        "--status-fd",
+        "3",
+        "--keyring",
+        resolve(keyringPath),
+        "--output",
+        "-",
+        resolve(ascPath),
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe", "pipe"],
+        env: { ...process.env, LC_ALL: "C" },
+        maxBuffer: 16 * 1024 * 1024,
+      },
     );
     if (r.error?.code === "ENOENT") {
       throw new Error(`${gpgv} could not start: gpgv is not installed`);
     }
     if (r.error) throw new Error(`gpgv failed to run: ${r.error.message}`);
-    if (r.status === 0) return r.stdout;
-    const stderr = r.stderr ?? "";
-    if (/No public key/.test(stderr)) {
+    const status = (r.output[3] ?? "")
+      .split("\n")
+      .filter((l) => l.startsWith("[GNUPG:] "))
+      .map((l) => l.slice("[GNUPG:] ".length).split(" "));
+    const noKey = status.find((s) => s[0] === "NO_PUBKEY");
+    if (noKey) {
+      // ERRSIG names the signer's fingerprint in its 7th field when the
+      // signature carries one; NO_PUBKEY names the long key ID.
+      const errsig = status.find((s) => s[0] === "ERRSIG");
+      const signer = errsig?.[7] && errsig[7] !== "-" ? errsig[7] : (noKey[1] ?? "unknown");
       throw new Error(
-        `SHASUMS256.txt.asc is not signed by a key in nodejs/release-keys at ${NODE_RELEASE_KEYS_COMMIT}. If Node has a new releaser, move NODE_RELEASE_KEYS_COMMIT and NODE_RELEASE_KEYRING_SHA256 in .github/scripts/base-images.mjs in a reviewed pull request (RELEASING.md, "Node release keys").`,
+        `SHASUMS256.txt.asc is signed by key ${commandText(signer)}, which is not in the pinned Node release keyring. Check that key against the Release keys list in the nodejs/node README, then follow RELEASING.md, "Node release keys". Never take a commit, a sha256 or a fingerprint from a pull request, an issue or this log.`,
       );
     }
-    const last = stderr.trim().split("\n").slice(-3).join(" | ");
-    throw new Error(`SHASUMS256.txt.asc does not verify (gpgv exit ${r.status}): ${last}`);
+    if (r.status !== 0) {
+      const last = (r.stderr ?? "").trim().split("\n").slice(-3).join(" | ");
+      throw new Error(`SHASUMS256.txt.asc does not verify (gpgv exit ${r.status}): ${last}`);
+    }
+    const valid = status.filter((s) => s[0] === "VALIDSIG");
+    if (valid.length !== 1) {
+      throw new Error(
+        `SHASUMS256.txt.asc has ${valid.length} good signatures, not 1, so it is refused`,
+      );
+    }
+    const primary = valid[0][10] ?? "";
+    if (!fingerprints.includes(primary)) {
+      throw new Error(
+        `SHASUMS256.txt.asc is signed by key ${commandText(primary)}, which is in the keyring but not in NODE_RELEASE_KEY_FINGERPRINTS, so it is refused. Follow RELEASING.md, "Node release keys".`,
+      );
+    }
+    return r.stdout;
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

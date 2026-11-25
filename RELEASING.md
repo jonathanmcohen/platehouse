@@ -208,12 +208,32 @@ docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse:0.2.0-rc.1 --
 
 The weekly base-images run checks Node's `SHASUMS256.txt.asc` with `gpgv` against
 nodejs/release-keys' `gpg-only-active-keys/pubring.kbx`, at the commit `NODE_RELEASE_KEYS_COMMIT`
-in `.github/scripts/base-images.mjs`, whose sha256 is `NODE_RELEASE_KEYRING_SHA256`. It takes a
-new Node release's sha256 only from a list that verifies, so a list changed on the server or on
-the way never reaches the pins.
+in `.github/scripts/base-images.mjs`, whose sha256 is `NODE_RELEASE_KEYRING_SHA256`. The list must
+carry exactly one good signature, by a key whose fingerprint is in `NODE_RELEASE_KEY_FINGERPRINTS`
+in the same file. It takes a new Node release's sha256 only from a list that passes, so a list
+changed on the server or on the way never reaches the pins.
 
-- When the run fails because the list is signed by a key not in the ring, check
-  [nodejs/release-keys](https://github.com/nodejs/release-keys) for the new releaser.
-- Then, in a reviewed pull request, set `NODE_RELEASE_KEYS_COMMIT` to that commit and
-  `NODE_RELEASE_KEYRING_SHA256` to the output of this command, run once the commit is set:
-  `curl -fsSL "$(node .github/scripts/base-images.mjs keyring-url)" | shasum -a 256`.
+When the run fails because the list is signed by a key not in the ring, the error names that key.
+Never take a commit, a sha256 or a fingerprint from a pull request, an issue or a run's log.
+GitHub serves a commit from any fork of nodejs/release-keys under the upstream URL, so a commit in
+that URL proves nothing by itself, and the binary keyring can't be read in a diff. Rotate the ring
+in this order:
+
+1. Pick a commit on the `main` branch of nodejs/release-keys, usually its head:
+   `gh api repos/nodejs/release-keys/commits/main --jq .sha`.
+2. Check that the commit is on `main`: `gh api repos/nodejs/release-keys/compare/<sha>...main --jq .status` must print `ahead` or `identical`.
+   Stop on `diverged` or `behind`: the commit is not on `main`.
+3. Download the ring from that commit and list its fingerprints:
+
+   ```sh
+   curl -fsSL -o pubring.kbx "https://raw.githubusercontent.com/nodejs/release-keys/<sha>/gpg-only-active-keys/pubring.kbx"
+   shasum -a 256 pubring.kbx
+   gpg --homedir "$(mktemp -d)" --no-default-keyring --keyring ./pubring.kbx --list-keys --with-colons |
+     awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }'
+   ```
+
+4. Check each fingerprint against the Release keys list in the nodejs/node README
+   ([nodejs/node](https://github.com/nodejs/node#release-keys)), a separate source from
+   nodejs/release-keys. Stop if any fingerprint is not there.
+5. In one reviewed pull request, change `NODE_RELEASE_KEYS_COMMIT`, `NODE_RELEASE_KEYRING_SHA256` and `NODE_RELEASE_KEY_FINGERPRINTS` together:
+   the commit, the sha256 that `shasum` printed and the fingerprints that `gpg` listed.

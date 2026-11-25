@@ -20,6 +20,7 @@ import {
   GATE_DOCKERFILE,
   GATE_README,
   NODE_KEYRING_URL,
+  NODE_RELEASE_KEY_FINGERPRINTS,
   NODE_RELEASE_KEYRING_SHA256,
   NODE_RELEASE_KEYS_COMMIT,
   NODE_VERSION_FILE,
@@ -372,43 +373,98 @@ const FIX = join(dirname(fileURLToPath(import.meta.url)), "support", "node-relea
 const FIX_KEYRING = join(FIX, "keyring.gpg");
 const FIX_SHA = createHash("sha256").update(readFileSync(FIX_KEYRING)).digest("hex");
 const fixture = (name) => join(FIX, name);
-// base-images.mjs with its keyring pin moved to the fixture keyring, for the
-// command line and the workflow step, which read the pin from the script.
+// Key A's primary fingerprint, the one key the fixture lists are allowed.
+const FIX_FINGERPRINT = "F544558457442FAD4B028F013A9A958C556307AD";
+// Key B's, which signed the other-key list and is in no keyring here.
+const OTHER_FINGERPRINT = "A50CDA10D1308275BCE3F26A7830B79213DB0255";
+const FINGERPRINTS_LINE = /export const NODE_RELEASE_KEY_FINGERPRINTS = \[[^\]]*\];/;
+// base-images.mjs with its keyring pin and fingerprint allowlist moved to the
+// fixture key, for the command line and the workflow step, which read both
+// from the script.
 const scriptPinnedToFixture = () => {
   const original = readFileSync(SCRIPT, "utf8");
-  const pinned = original.replace(NODE_RELEASE_KEYRING_SHA256, FIX_SHA);
-  assert.notEqual(pinned, original, "the keyring pin was replaced");
+  const withRing = original.replace(NODE_RELEASE_KEYRING_SHA256, FIX_SHA);
+  assert.notEqual(withRing, original, "the keyring pin was replaced");
+  const pinned = withRing.replace(FINGERPRINTS_LINE, `export const NODE_RELEASE_KEY_FINGERPRINTS = ["${FIX_FINGERPRINT}"];`);
+  assert.notEqual(pinned, withRing, "the fingerprint allowlist was replaced");
   return pinned;
 };
+const verifyFixture = (name, more = {}) =>
+  verifySignedShasums({ ascPath: fixture(name), keyringPath: FIX_KEYRING, keyringSha256: FIX_SHA, fingerprints: [FIX_FINGERPRINT], ...more });
+// A stand-in gpgv: prints body on stdout, writes status (lines without the
+// [GNUPG:] prefix) to the status fd 3, and exits with exit.
+const fakeGpgv = (dir, { body = "", status = [], exit = 0 }) => {
+  const path = join(dir, "fake-gpgv");
+  writeFileSync(join(dir, "fake-body"), body);
+  writeFileSync(join(dir, "fake-status"), status.map((l) => `[GNUPG:] ${l}\n`).join(""));
+  writeFileSync(path, `#!/bin/bash\ncat "${dir}/fake-body"\ncat "${dir}/fake-status" >&3\nexit ${exit}\n`, { mode: 0o755 });
+  return path;
+};
 
-test("verifySignedShasums: a list signed by a key in the keyring gives its text", needGpgv, () => {
-  const text = verifySignedShasums({ ascPath: fixture("SHASUMS256.txt.asc"), keyringPath: FIX_KEYRING, keyringSha256: FIX_SHA });
+test("verifySignedShasums: a list signed by an allowed key in the keyring gives its text", needGpgv, () => {
+  const text = verifyFixture("SHASUMS256.txt.asc");
   assert.equal(nodeSha(text, "node-v26.2.0-linux-x64.tar.xz"), hex("3"));
 });
+
+test("verifySignedShasums: a good signature from a key in the keyring but not in the allowlist is refused", needGpgv, () => {
+  assert.throws(
+    () => verifyFixture("SHASUMS256.txt.asc", { fingerprints: [OTHER_FINGERPRINT] }),
+    (e) => e.message.includes(FIX_FINGERPRINT) && /not in NODE_RELEASE_KEY_FINGERPRINTS/.test(e.message),
+  );
+  assert.throws(
+    () => verifySignedShasums({ ascPath: fixture("SHASUMS256.txt.asc"), keyringPath: FIX_KEYRING, keyringSha256: FIX_SHA }),
+    /not in NODE_RELEASE_KEY_FINGERPRINTS/,
+    "the default allowlist is Node's releasers, not the fixture key",
+  );
+});
+
+test("verifySignedShasums: anything but exactly one good signature is refused, and stdout is not used", () =>
+  inScratch((dir) => {
+    const body = `${hex("3")}  node-v26.2.0-linux-x64.tar.xz\n`;
+    const valid = `VALIDSIG ${FIX_FINGERPRINT} 2026-11-25 1795639258 0 4 0 1 8 01 ${FIX_FINGERPRINT}`;
+    const run = (fake) => () => verifyFixture("SHASUMS256.txt.asc", { gpgv: fakeGpgv(dir, fake) });
+    assert.equal(run({ body, status: ["NEWSIG", valid] })(), body, "one allowed VALIDSIG and exit 0 is the one shape accepted");
+    assert.throws(run({ body, status: ["NEWSIG", valid, "NEWSIG", valid] }), /2 good signatures, not 1/);
+    assert.throws(run({ body, status: [] }), /0 good signatures, not 1/);
+    assert.throws(run({ body, status: ["NEWSIG", valid], exit: 1 }), /does not verify \(gpgv exit 1\)/);
+  }));
 
 test("verifySignedShasums: lines outside the signed block are not in the text", needGpgv, () =>
   inScratch((dir) => {
     const asc = join(dir, "SHASUMS256.txt.asc");
     const added = (v) => `${hex("9")}  node-v${v}-linux-x64.tar.xz\n`;
     writeFileSync(asc, `${added("26.3.0")}${readFileSync(fixture("SHASUMS256.txt.asc"), "utf8")}${added("26.4.0")}`);
-    const text = verifySignedShasums({ ascPath: asc, keyringPath: FIX_KEYRING, keyringSha256: FIX_SHA });
+    const text = verifySignedShasums({ ascPath: asc, keyringPath: FIX_KEYRING, keyringSha256: FIX_SHA, fingerprints: [FIX_FINGERPRINT] });
     assert.equal(nodeSha(text, "node-v26.2.0-linux-x64.tar.xz"), hex("3"));
     assert.doesNotMatch(text, /26\.3\.0|26\.4\.0/);
   }));
 
 test("verifySignedShasums: a tampered list does not verify, and gives no text", needGpgv, () => {
+  assert.throws(() => verifyFixture("SHASUMS256.tampered.txt.asc"), /SHASUMS256\.txt\.asc does not verify \(gpgv exit \d+\)/);
+});
+
+test("verifySignedShasums: a list signed by a key not in the keyring names the signer and where to check it, never a commit", needGpgv, () => {
   assert.throws(
-    () => verifySignedShasums({ ascPath: fixture("SHASUMS256.tampered.txt.asc"), keyringPath: FIX_KEYRING, keyringSha256: FIX_SHA }),
-    /SHASUMS256\.txt\.asc does not verify \(gpgv exit \d+\)/,
+    () => verifyFixture("SHASUMS256.other-key.txt.asc"),
+    (e) =>
+      e.message.includes(OTHER_FINGERPRINT) &&
+      /nodejs\/node README/.test(e.message) &&
+      /RELEASING\.md, "Node release keys"/.test(e.message) &&
+      !e.message.includes(NODE_RELEASE_KEYS_COMMIT) &&
+      !/[0-9a-f]{40}/.test(e.message),
   );
 });
 
-test("verifySignedShasums: a list signed by a key not in the keyring names the pin to move", needGpgv, () => {
-  assert.throws(
-    () => verifySignedShasums({ ascPath: fixture("SHASUMS256.other-key.txt.asc"), keyringPath: FIX_KEYRING, keyringSha256: FIX_SHA }),
-    (e) => /nodejs\/release-keys/.test(e.message) && /NODE_RELEASE_KEYS_COMMIT/.test(e.message),
-  );
-});
+test("verifySignedShasums: the signer named in the refusal is encoded as workflow-command text", () =>
+  inScratch((dir) => {
+    const gpgv = fakeGpgv(dir, { status: ["NEWSIG", "ERRSIG 7830B79213DB0255 1 8 01 1795639258 9 50%\rX::warning::y", "NO_PUBKEY 7830B79213DB0255"], exit: 2 });
+    assert.throws(
+      () => verifyFixture("SHASUMS256.txt.asc", { gpgv }),
+      (e) => e.message.includes("50%25%0DX::warning::y") && !e.message.includes("\r") && !/50%[^2]/.test(e.message),
+    );
+    const keyIdOnly = fakeGpgv(dir, { status: ["NEWSIG", "ERRSIG 7830B79213DB0255 1 8 01 1795639258 9 -", "NO_PUBKEY 7830B79213DB0255"], exit: 2 });
+    assert.throws(() => verifyFixture("SHASUMS256.txt.asc", { gpgv: keyIdOnly }), /signed by key 7830B79213DB0255,/);
+  }));
 
 test("verifySignedShasums: a keyring that is not the pinned one is refused before gpgv runs", () => {
   assert.throws(
@@ -424,23 +480,41 @@ test("verifySignedShasums: a keyring that is not the pinned one is refused befor
 });
 
 test("verifySignedShasums: a gpgv that cannot start says gpgv is not installed", () => {
-  assert.throws(
-    () => verifySignedShasums({ ascPath: fixture("SHASUMS256.txt.asc"), keyringPath: FIX_KEYRING, keyringSha256: FIX_SHA, gpgv: "/nonexistent/gpgv" }),
-    /gpgv is not installed/,
-  );
+  assert.throws(() => verifyFixture("SHASUMS256.txt.asc", { gpgv: "/nonexistent/gpgv" }), /gpgv is not installed/);
 });
 
-test("the Node release keyring is pinned to a commit of nodejs/release-keys and a sha256", () => {
+test("the Node release keyring is pinned to a commit of nodejs/release-keys, a sha256 and its keys' fingerprints", () => {
   assert.match(NODE_RELEASE_KEYS_COMMIT, /^[0-9a-f]{40}$/);
   assert.match(NODE_RELEASE_KEYRING_SHA256, /^[0-9a-f]{64}$/);
   assert.equal(NODE_KEYRING_URL, `https://raw.githubusercontent.com/nodejs/release-keys/${NODE_RELEASE_KEYS_COMMIT}/gpg-only-active-keys/pubring.kbx`);
+  assert.ok(NODE_RELEASE_KEY_FINGERPRINTS.length > 0);
+  for (const f of NODE_RELEASE_KEY_FINGERPRINTS) assert.match(f, /^[0-9A-F]{40}$/);
+  assert.equal(new Set(NODE_RELEASE_KEY_FINGERPRINTS).size, NODE_RELEASE_KEY_FINGERPRINTS.length, "no fingerprint twice");
+  assert.ok(!NODE_RELEASE_KEY_FINGERPRINTS.includes(FIX_FINGERPRINT), "the fixture key is never allowed");
+  assert.match(readFileSync(SCRIPT, "utf8"), FINGERPRINTS_LINE, "one array literal the tests can find");
 });
 
 test("RELEASING.md says how the Node release keys are moved", () => {
   const releasing = readFileSync(join(ROOT, "RELEASING.md"), "utf8");
-  for (const line of ["## Node release keys", "NODE_RELEASE_KEYS_COMMIT", "NODE_RELEASE_KEYRING_SHA256"]) {
+  for (const line of ["## Node release keys", "NODE_RELEASE_KEYS_COMMIT", "NODE_RELEASE_KEYRING_SHA256", "NODE_RELEASE_KEY_FINGERPRINTS"]) {
     assert.ok(releasing.includes(line), line);
   }
+  const section = releasing.slice(releasing.indexOf("## Node release keys"));
+  // The rotation steps, in this order, each on one line.
+  const steps = [
+    "1. Pick a commit on the `main` branch of nodejs/release-keys",
+    "2. Check that the commit is on `main`: `gh api repos/nodejs/release-keys/compare/<sha>...main --jq .status` must print `ahead` or `identical`",
+    "3. Download the ring from that commit and list its fingerprints",
+    "4. Check each fingerprint against the Release keys list in the nodejs/node README",
+    "5. In one reviewed pull request, change `NODE_RELEASE_KEYS_COMMIT`, `NODE_RELEASE_KEYRING_SHA256` and `NODE_RELEASE_KEY_FINGERPRINTS` together",
+  ];
+  let at = -1;
+  for (const step of steps) {
+    const i = section.indexOf(step);
+    assert.ok(i > at, `in order: ${step}`);
+    at = i;
+  }
+  assert.ok(section.includes("Never take a commit, a sha256 or a fingerprint from a pull request, an issue or a run's log"));
 });
 
 // ----------------------------------------------------- the command line
@@ -873,7 +947,7 @@ test("base-images resolve: a list that does not verify fails, with nothing hande
   assert.deepEqual(tampered.outputs, {});
   const otherKey = resolveRun({ ASC: fixture("SHASUMS256.other-key.txt.asc") });
   assert.notEqual(otherKey.status, 0, otherKey.log);
-  assert.match(otherKey.log, /::error::.*nodejs\/release-keys/);
+  assert.match(otherKey.log, /::error::SHASUMS256\.txt\.asc is signed by key [0-9A-F]{40}, which is not in the pinned Node release keyring\. Check that key against the Release keys list in the nodejs\/node README/);
   assert.deepEqual(otherKey.outputs, {});
 });
 

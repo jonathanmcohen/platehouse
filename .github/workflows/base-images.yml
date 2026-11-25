@@ -24,10 +24,11 @@
 # and only the digests move. Node never moves to another major, and never
 # backwards. When Node moves, its sha256 comes from SHASUMS256.txt.asc only
 # after gpgv has checked the signature against the active-keys keyring of
-# nodejs/release-keys at a pinned commit, whose own sha256 is pinned too
-# (NODE_RELEASE_KEYS_COMMIT and NODE_RELEASE_KEYRING_SHA256 in the script;
-# RELEASING.md, "Node release keys"). A list signed by a key not in that
-# keyring, or one that does not verify, fails the run. The files that hold
+# nodejs/release-keys at a pinned commit, whose own sha256 is pinned too, and
+# found exactly one good signature by a key in a pinned fingerprint list
+# (NODE_RELEASE_KEYS_COMMIT, NODE_RELEASE_KEYRING_SHA256 and
+# NODE_RELEASE_KEY_FINGERPRINTS in the script; RELEASING.md, "Node release
+# keys"). Any other list fails the run. The files that hold
 # the pins move together, and nothing else is written: the three
 # Dockerfiles, the slicing gate README's pins table, and
 # the three files that name the Node release alone (.node-version, the
