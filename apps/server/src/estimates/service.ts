@@ -1110,14 +1110,6 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         .execute();
       return;
     }
-    // started_at is when this attempt began work (0011): finished_at minus it
-    // is the slicer's time on the plate, which the settings page's rate is
-    // measured from (rate.ts). A retry or a requeue sets it again here.
-    await db
-      .updateTable("estimates")
-      .set({ status: "running", attempts: sql`attempts + 1`, startedAt: sql`now()` })
-      .where("id", "=", estimate.id)
-      .execute();
     const full: Estimate = { ...estimate, filaments: [] };
     // Retries this estimate has used so far, and the connections it lost,
     // its earlier jobs' included.
@@ -1126,6 +1118,22 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       requeues: job.data.requeues ?? 0,
       lostConnections: job.data.lostConnections ?? 0,
     };
+    // Queued under shorter limits than the slicer has now, pg-boss could
+    // expire this job while it is slicing: send it again with the expiry the
+    // limits need, and leave the slicer alone.
+    if (estimateExpireSeconds((await slicerState.current()).timeouts) > job.expireInSeconds) {
+      await backToPending(estimate.id);
+      await sendSlice(full, job.priority, carried);
+      return;
+    }
+    // started_at is when this attempt began work (0011): finished_at minus it
+    // is the slicer's time on the plate, which the settings page's rate is
+    // measured from (rate.ts). A retry or a requeue sets it again here.
+    await db
+      .updateTable("estimates")
+      .set({ status: "running", attempts: sql`attempts + 1`, startedAt: sql`now()` })
+      .where("id", "=", estimate.id)
+      .execute();
     const waitUntil = Date.now() + slicerDown.waitMs;
     for (;;) {
       try {

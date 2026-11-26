@@ -316,6 +316,26 @@ export function renderTarget(
   };
 }
 
+/**
+ * The target of a request to the slicer: renderTarget from its limits, or the
+ * render fallbacks (a timer the deps set stays as set) before any are known.
+ */
+export function slicerTarget(
+  baseUrl: string,
+  kind: DerivedKind,
+  timeouts: SlicerTimeouts | null,
+  fixed: { timeoutMs?: number | undefined; uploadTimeoutMs?: number | undefined },
+): SlicerTarget {
+  if (timeouts === null) {
+    return {
+      baseUrl,
+      timeoutMs: fixed.timeoutMs ?? RENDER_TIMEOUT_MS,
+      uploadTimeoutMs: fixed.uploadTimeoutMs ?? RENDER_UPLOAD_TIMEOUT_MS,
+    };
+  }
+  return renderTarget(baseUrl, kind, timeouts, fixed);
+}
+
 /** pg-boss job states in which a job still owns its file and source: queued or running. */
 const LIVE_STATES: ReadonlySet<string> = new Set(["created", "retry", "active"]);
 
@@ -357,7 +377,9 @@ export interface DerivedOutcome {
    * temp_failed: a preview picture's last attempt could not write in its
    * own temp folder (issue #415). failed with sandbox_off: the slicer's
    * sandbox is off, so it refused the job; the file shows why and is
-   * queued again once the sandbox is on.
+   * queued again once the sandbox is on. requeued with expiry_raised: a
+   * conversion was queued with a shorter expiry than the slicer's limits now
+   * need, so it was sent again with the right one before it called the slicer.
    */
   status: "ok" | "failed" | "skipped" | "requeued";
   reason?:
@@ -368,7 +390,8 @@ export interface DerivedOutcome {
     | "store_down"
     | "store_refused"
     | "temp_failed"
-    | "sandbox_off";
+    | "sandbox_off"
+    | "expiry_raised";
 }
 
 export type DerivedErrorCode =
@@ -755,18 +778,11 @@ export function createDerived(deps: DerivedDeps) {
   /** The slicer's limits now, or the fallbacks before health has answered. */
   const limits = async (): Promise<SlicerTimeouts | null> =>
     deps.slicerState ? (await deps.slicerState.current()).timeouts : null;
-  const targetFor = async (kind: DerivedKind): Promise<SlicerTarget> => {
-    const timeouts = await limits();
-    const fixed = { timeoutMs: deps.requestTimeoutMs, uploadTimeoutMs: deps.uploadTimeoutMs };
-    if (timeouts === null) {
-      return {
-        baseUrl: deps.slicerUrl,
-        timeoutMs: fixed.timeoutMs ?? RENDER_TIMEOUT_MS,
-        uploadTimeoutMs: fixed.uploadTimeoutMs ?? RENDER_UPLOAD_TIMEOUT_MS,
-      };
-    }
-    return renderTarget(deps.slicerUrl, kind, timeouts, fixed);
-  };
+  const targetFor = async (kind: DerivedKind): Promise<SlicerTarget> =>
+    slicerTarget(deps.slicerUrl, kind, await limits(), {
+      timeoutMs: deps.requestTimeoutMs,
+      uploadTimeoutMs: deps.uploadTimeoutMs,
+    });
   const convertExpiry = (kind: DerivedKind): Promise<number> =>
     convertExpiryFor(kind, deps.slicerState);
   const retry = {
@@ -1776,7 +1792,13 @@ export function createDerived(deps: DerivedDeps) {
    */
   async function runJob(
     job: DerivedJob,
-    attempt: { retryCount: number; retryLimit: number; jobId?: string },
+    attempt: {
+      retryCount: number;
+      retryLimit: number;
+      jobId?: string;
+      expireInSeconds?: number;
+      priority?: number;
+    },
   ): Promise<DerivedOutcome> {
     const outcome = await runJobOnce(job, attempt);
     // Returned, not thrown: the picture's transaction has committed.
@@ -1792,7 +1814,13 @@ export function createDerived(deps: DerivedDeps) {
 
   async function runJobOnce(
     job: DerivedJob,
-    attempt: { retryCount: number; retryLimit: number; jobId?: string },
+    attempt: {
+      retryCount: number;
+      retryLimit: number;
+      jobId?: string;
+      expireInSeconds?: number;
+      priority?: number;
+    },
   ): Promise<DerivedOutcome> {
     const selfJobId = attempt.jobId;
     const kind = Object.hasOwn(FILE_KIND_OF, job.kind) ? FILE_KIND_OF[job.kind] : undefined;
@@ -1842,6 +1870,33 @@ export function createDerived(deps: DerivedDeps) {
     if (replacing && !(await newerThan(source.id, file.blobId))) {
       await discardStaged(source.id);
       return staleOut();
+    }
+
+    // A conversion queued under shorter limits than the slicer has now would
+    // be expired by pg-boss while it is still at work: send it again, with
+    // the expiry the limits need, before anything is called or written.
+    if (job.kind === DERIVED_KINDS.convertStep && deps.slicerState !== undefined) {
+      const needed = convertExpireSeconds((await deps.slicerState.current()).timeouts);
+      if (attempt.expireInSeconds !== undefined && needed > attempt.expireInSeconds) {
+        const id = await deps.queue.send(
+          QUEUE.slicer,
+          job,
+          slicerSendOptions(
+            job.kind,
+            {
+              ...retry,
+              retryLimit: Math.max(0, attempt.retryLimit - attempt.retryCount),
+              ...(attempt.priority === undefined ? {} : { priority: attempt.priority }),
+            },
+            needed,
+          ),
+        );
+        if (id === null) throw new Error("pg-boss created no job");
+        console.warn(
+          `derived: file ${job.fileId} sent again with a ${needed} s expiry for the slicer's limits`,
+        );
+        return { status: "requeued", reason: "expiry_raised" };
+      }
     }
 
     // The job's own temp folder: every slicer answer is streamed to a file
@@ -2614,6 +2669,8 @@ export function derivedJobHandlers(derived: Pick<Derived, "runJob">): SlicerJobH
       retryCount: job.retryCount,
       retryLimit: job.retryLimit,
       jobId: job.id,
+      expireInSeconds: job.expireInSeconds,
+      priority: job.priority,
     });
   return {
     [DERIVED_KINDS.renderScad]: handle,

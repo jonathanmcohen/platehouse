@@ -28,6 +28,7 @@ All notable changes to Platehouse are recorded here. The format follows
   - how to tell which, from the slicer's log.
 - A server whose web build is replaced while it runs (a rebuilt or bind-mounted build) serves the new pages without a restart ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
 - Putting a file back under an imported file's name in the inbox checks that the file it copies is the one it found, so a file swapped in at that moment is not copied ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
+- An estimate or STEP preview queued while the slicer was unreachable could be failed by the job queue while it was still slicing ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
 
 ### Security
 
