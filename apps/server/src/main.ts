@@ -466,6 +466,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     const queueDeps = trackJobs(jobs, {
       ingestFile: uploads.ingestUpload((input) => ingest.ingestFile(input)),
       purgeExpired: (now: Date) => trash.purgeExpired(now),
+      emptyTrash: (signal: AbortSignal) => trash.purgeMarked(signal),
       sweepOrphans: (now: Date) => orphans.sweepOrphans(now),
       sweepUploads: (now: Date) => uploads.sweepStaleUploads(now),
       slicerJobs: { ...derivedJobHandlers(derived), ...estimates.slicerJobs },
@@ -580,7 +581,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       appApi: {
         settings: { settings: repos.settings, estimates },
         tokens: { tokens, list: dbTokenList(db) },
-        organise: { db, trash },
+        organise: { db, trash, boss: startedBoss },
         users: { list: dbUserList(db), sessions },
       } satisfies AppApiDeps,
       // The Activity page: read-only numbers, queues, slicer health and events.

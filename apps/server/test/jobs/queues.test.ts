@@ -10,6 +10,7 @@ import {
   INGEST_CONCURRENCY,
   INGEST_EXPIRE_SECONDS,
   MAINTENANCE_TASKS,
+  ON_DEMAND_TASKS,
   POLL_ORCA_CRON,
   QUEUE,
   type QueueDeps,
@@ -640,5 +641,83 @@ describe("the description re-conversion on upgrade", () => {
 
   test("is not one of the fixed maintenance schedules", () => {
     expect(Object.values(MAINTENANCE_TASKS)).not.toContain(TASK);
+  });
+});
+
+describe("Empty trash on the maintenance queue", () => {
+  const TASK = ON_DEMAND_TASKS.emptyTrash;
+
+  /** Starts the queues and gives the maintenance worker. */
+  async function maintenanceWorker(over: Partial<QueueDeps> = {}) {
+    const fake = fakeBoss();
+    await startQueues(fake.boss, deps(over));
+    const work = fake.handlers.get(QUEUE.maintenance);
+    if (work === undefined) throw new Error("no maintenance worker");
+    return { ...fake, work };
+  }
+
+  test("is sent by a request and never scheduled", async () => {
+    expect(TASK).toBe("empty-trash");
+    expect(Object.values(MAINTENANCE_TASKS)).not.toContain(TASK);
+    const { scheduled } = await maintenanceWorker({ emptyTrash: async () => undefined });
+    expect(scheduled.map((s) => s.task)).not.toContain(TASK);
+  });
+
+  test("runs the registered Empty trash with a signal that is not aborted", async () => {
+    const seen: boolean[] = [];
+    const { work } = await maintenanceWorker({
+      emptyTrash: async (signal: AbortSignal) => {
+        seen.push(signal.aborted);
+      },
+    });
+    await work([{ data: { task: TASK }, signal: new AbortController().signal }]);
+    expect(seen).toEqual([false]);
+  });
+
+  test("aborts the run's signal once the job's signal aborts", async () => {
+    const job = new AbortController();
+    const seen: boolean[] = [];
+    const { work } = await maintenanceWorker({
+      emptyTrash: async (signal: AbortSignal) => {
+        seen.push(signal.aborted);
+        job.abort();
+        seen.push(signal.aborted);
+      },
+    });
+    await work([{ data: { task: TASK }, signal: job.signal }]);
+    expect(seen).toEqual([false, true]);
+  });
+
+  test("the server's stop aborts the run's signal", async () => {
+    const shutdown = new AbortController();
+    const seen: boolean[] = [];
+    const { work } = await maintenanceWorker({
+      shutdown: shutdown.signal,
+      emptyTrash: async (signal: AbortSignal) => {
+        seen.push(signal.aborted);
+        shutdown.abort();
+        seen.push(signal.aborted);
+      },
+    });
+    await work([{ data: { task: TASK }, signal: new AbortController().signal }]);
+    expect(seen).toEqual([false, true]);
+  });
+
+  test("a failed run fails the job", async () => {
+    const { work } = await maintenanceWorker({
+      emptyTrash: async () => {
+        throw new Error("1 model could not be purged");
+      },
+    });
+    await expect(
+      work([{ data: { task: TASK }, signal: new AbortController().signal }]),
+    ).rejects.toThrow("1 model could not be purged");
+  });
+
+  test("with no Empty trash registered, the job fails", async () => {
+    const { work } = await maintenanceWorker();
+    await expect(
+      work([{ data: { task: TASK }, signal: new AbortController().signal }]),
+    ).rejects.toThrow("No Empty trash is registered");
   });
 });

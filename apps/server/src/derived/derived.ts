@@ -197,7 +197,7 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIMITS, type SlicerTimeouts } from "@platehouse/slicer-contract";
-import { CompiledQuery, type Kysely, sql, type Transaction } from "kysely";
+import { type Kysely, sql, type Transaction } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { Blob, DB, FileKind, ModelFile, PreviewFailureReason } from "../db/types.js";
@@ -213,6 +213,7 @@ import {
   STORAGE_UNAVAILABLE_MESSAGE,
   type StoredFile,
 } from "../ingest/ingest.js";
+import { bossDb } from "../jobs/boss.js";
 import { MAINTENANCE_TASKS, QUEUE, SLICER_RETRY, type SlicerJobHandlers } from "../jobs/queues.js";
 import { type BuildQueue, memoryGate } from "../memory/gate.js";
 import { createRepos } from "../repos/index.js";
@@ -746,21 +747,6 @@ interface PutOutput {
 
 function describe(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-}
-
-/**
- * pg-boss's db option over a Kysely transaction, so a job is sent, or a
- * file's jobs are read, inside that transaction. Without plugins, so the
- * CamelCasePlugin leaves pg-boss's own SQL and rows alone.
- */
-function bossDb(trx: Transaction<DB>) {
-  const raw = trx.withoutPlugins();
-  return {
-    async executeSql(text: string, values: unknown[] = []) {
-      const result = await raw.executeQuery(CompiledQuery.raw(text, values));
-      return { rows: result.rows as unknown[] };
-    },
-  };
 }
 
 export function createDerived(deps: DerivedDeps) {

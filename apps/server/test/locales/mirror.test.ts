@@ -11,11 +11,7 @@ import { describe, expect, test } from "vitest";
 import { MAX_TOKEN_NAME_LENGTH } from "../../src/api/tokens.js";
 import { ROW_LABELS, SCHEDULE_LABELS, scheduleText } from "../../src/app-api/activity.js";
 import { PLAN_CHANGED_MESSAGE, TITLES_NOT_PREVIEWED_MESSAGE } from "../../src/app-api/model.js";
-import {
-  incompleteMessage,
-  PURGE_STARTED_MESSAGE,
-  STALE_TRASH,
-} from "../../src/app-api/organise.js";
+import { PURGE_STARTED_MESSAGE, STALE_TRASH } from "../../src/app-api/organise.js";
 import {
   PRINTERS_CHANGED,
   SLICER_UNAVAILABLE_MESSAGE,
@@ -98,10 +94,6 @@ describe("app API refusals (the web app's CODE_KEYS)", () => {
     ["api.planChanged", PLAN_CHANGED_MESSAGE, {}],
   ] as const)("%s", (key, sentence, values) => {
     expect(en(key, values)).toBe(sentence);
-  });
-
-  test.each([1, 2, 7])("trash.incomplete with %i left", (n) => {
-    expect(en("trash.incomplete", { count: n })).toBe(incompleteMessage(n));
   });
 });
 

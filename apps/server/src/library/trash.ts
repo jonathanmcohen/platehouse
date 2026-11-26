@@ -2,10 +2,17 @@
 // trash, where it is invisible to the library, search and the API; restore
 // brings it back with its files, tags and collections, which a trashing never
 // touches. A trashed model is purged 30 days after it was trashed
-// (purgeExpired), or at once by Empty trash (the app API, which calls
-// purgeExpired with a cutoff, organise.ts). purgeExpired also
+// (purgeExpired), or by Empty trash: the app API (organise.ts) marks every
+// model trashed at or before its cutoff (requestPurge) and queues a job on
+// the maintenance queue that purges them (purgeMarked). purgeExpired also
 // finishes every purge that began and failed, however recently the model was
-// trashed, so a failed Empty trash does not wait 30 days for its retry.
+// trashed, so a failed Empty trash job does not wait 30 days for its retry.
+//
+// The marker, purge_started_at (migration 0002), means this model's purge
+// has been committed to. The daily purge sets it at the first delete (step 2
+// below); Empty trash sets it when it is confirmed, for every model at or
+// before the cutoff, in one statement (requestPurge), and purgeMarked
+// finishes them in the job. A marked model is never restored.
 //
 // A purge removes one model at a time:
 //   1. in a transaction, lock the model's row FOR UPDATE, only if it is still
@@ -13,10 +20,11 @@
 //      marked by an earlier purge that failed), so a
 //      restore that holds the row makes the purge wait and then find no
 //      trashed model; read its blob rows and list models/<modelId>/;
-//   2. still in that transaction, set purge_started_at (migration 0002) and
-//      commit, just before the first object delete. A failure before this
-//      point (the store unreachable at the listing, the lock or a read
-//      failing) rolls it back and leaves no marker, so the model can still be
+//   2. still in that transaction, set purge_started_at, unless Empty trash
+//      set it already, and commit, just before the first object delete. A
+//      failure before this point (the store unreachable at the listing, the
+//      lock or a read failing) rolls it back and leaves no marker of the
+//      daily purge's, so a model Empty trash did not mark can still be
 //      restored: nothing of it was deleted;
 //   3. delete the bucket objects: every blob row's key, plus every listed key
 //      that is in the models/<modelId>/<blobId> layout, such as an upload that
@@ -38,16 +46,21 @@
 // nothing can change the model then: the organising calls refuse a trashed
 // model, and restore refuses one whose marker is set.
 //
+// A run given a signal (Empty trash's job, which the server's stop or
+// pg-boss aborts) checks it before each model, so it stops between models:
+// the models not begun stay marked, and the next run purges them.
+//
 // restoreModel refuses a model whose marker is set, with PurgeStarted: its
-// purge may have deleted some of its objects already, and the next purge
-// finishes it. Any other trashed model is restored without looking at the
-// bucket. An object lost some other way (reconciling the bucket counts stored
-// rows against objects) shows as unavailable when it is read
-// (getBlobStream's BlobNotFound); it never makes a model unrestorable.
+// purge may have deleted some of its objects already, or Empty trash was
+// confirmed for it, and the next purge finishes it. Any other trashed model
+// is restored without looking at the bucket. An object lost some other way
+// (reconciling the bucket counts stored rows against objects) shows as
+// unavailable when it is read (getBlobStream's BlobNotFound); it never makes
+// a model unrestorable.
 //
 // The daily 03:30 schedule for purgeExpired belongs to the job runner
 // (jobs/queues.ts), which registers it on the maintenance queue.
-import { type Kysely, sql } from "kysely";
+import { type Kysely, sql, type Transaction } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { DB } from "../db/types.js";
 import { modelsRepo } from "../repos/models.js";
@@ -219,10 +232,16 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
     });
   }
 
-  async function purgeAll(ids: string[], cutoff: Date | undefined): Promise<PurgeResult> {
+  async function purgeAll(
+    ids: string[],
+    cutoff: Date | undefined,
+    signal?: AbortSignal,
+  ): Promise<PurgeResult> {
     const purged: string[] = [];
     const failed: Array<{ modelId: string; error: unknown }> = [];
     for (const id of ids) {
+      // Outside the try: a stop ends the run here and is not a failed model.
+      signal?.throwIfAborted();
       try {
         if (await purgeModel(id, cutoff)) purged.push(id);
       } catch (error) {
@@ -243,8 +262,9 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
      * Brings a trashed model back with its files, tags and collections; false
      * when it is unknown, malformed, live, or purged meanwhile. Throws
      * PurgeStarted, and leaves the model in the trash, when a purge of it has
-     * begun. It does not read the bucket: an object lost some other way shows
-     * as unavailable when it is read, and does not stop the restore.
+     * begun or Empty trash marked it. It does not read the bucket: an object
+     * lost some other way shows as unavailable when it is read, and does not
+     * stop the restore.
      */
     async restoreModel(id: string): Promise<boolean> {
       if (!isUuid(id)) return false;
@@ -264,6 +284,46 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
         // Postgres returns it (canonical lowercase), not the caller's text.
         return modelsRepo(trx).restore(trashed.id);
       });
+    },
+
+    /**
+     * Empty trash's confirmation: marks every model trashed at or before the
+     * cutoff's millisecond, in one statement in the caller's transaction, and
+     * answers how many. trashed_at keeps microseconds, so "at or before
+     * 12:00:00.123" is "before 12:00:00.124". A marker already set is kept.
+     * A restore that holds a model's row makes this wait, and under READ
+     * COMMITTED the statement then finds the model live and leaves it.
+     */
+    async requestPurge(cutoff: Date, trx: Kysely<DB> | Transaction<DB>): Promise<number> {
+      const before = new Date(cutoff.getTime() + 1);
+      const { rows } = await sql<{ id: string }>`
+        update models set purge_started_at = coalesce(purge_started_at, now())
+         where trashed_at is not null and trashed_at < ${before}
+        returning id`.execute(trx);
+      return rows.length;
+    },
+
+    /**
+     * Empty trash's job: purges every trashed model whose marker is set,
+     * oldest first. Throws PurgeIncomplete, after trying them all, when any
+     * could not be purged; they stay marked for the next run. Rejects with
+     * the signal's reason (an AbortError) once it aborts, before the next
+     * model.
+     */
+    async purgeMarked(signal?: AbortSignal): Promise<PurgeResult> {
+      const marked = await db
+        .selectFrom("models")
+        .select("id")
+        .where("trashedAt", "is not", null)
+        .where("purgeStartedAt", "is not", null)
+        .orderBy("trashedAt")
+        .orderBy("id")
+        .execute();
+      return purgeAll(
+        marked.map((m) => m.id),
+        undefined,
+        signal,
+      );
     },
 
     /**

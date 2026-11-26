@@ -72,6 +72,15 @@ beforeAll(async () => {
   await registerOrganiseApi(app, {
     db: env.db,
     trash: createTrash({ db: env.db, store: env.store }),
+    // No Empty trash here, so no job is ever queued.
+    boss: {
+      send: async () => {
+        throw new Error("Empty trash is not in these tests");
+      },
+      findJobs: async () => {
+        throw new Error("Empty trash is not in these tests");
+      },
+    },
   });
   await app.ready();
 });
