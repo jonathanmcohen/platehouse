@@ -19,7 +19,6 @@
 // and .weight); the return code from result.json. Orca checks --mstpp only
 // after a plate finishes (OrcaSlicer.cpp), so the server also kills the
 // plate's process group at SLICE_TIMEOUT_SECONDS.
-import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import {
   CONTRACT_VERSION,
@@ -27,6 +26,7 @@ import {
   type Reason,
   type SliceResult,
 } from "@platehouse/slicer-contract";
+import { type OutFolder, openOutFolder } from "./out-folder.js";
 import { orcaMessage, reasonFor } from "./reasons.js";
 import { type GroupResult, readOutputFile } from "./sandbox.js";
 
@@ -188,17 +188,25 @@ const TIME_MAX_BYTES = 64 * KIB;
 const STATISTICS_MAX_BYTES = MIB;
 
 /**
- * A small file a slice left, read with readOutputFile: its text, null when
- * there is none, or the problem that stops the slice when it is not a
- * regular file (a link, a FIFO) or is over `limit`. Orca can change every
- * file in its own folder, so nothing there is opened any other way.
+ * GNU time's report, read by path: it sits in the job folder above Orca's,
+ * which only the server can change.
+ */
+const JOB_FOLDER: Pick<OutFolder, "read"> = { read: readOutputFile };
+
+/**
+ * The small file `file` a slice left in `folder`, read with readOutputFile:
+ * its text, null when there is none, or the problem that stops the slice
+ * when it is not a regular file (a link, a FIFO) or is over `limit`. Orca
+ * can change every file in its own folder, so nothing there is opened any
+ * other way.
  */
 function readSmall(
+  folder: Pick<OutFolder, "read">,
   file: string,
   limit: number,
   name: string,
 ): { text: string } | { problem: string } | null {
-  const read = readOutputFile(file, limit);
+  const read = folder.read(file, limit);
   if (read.ok) return { text: read.bytes.toString("utf8") };
   if ("missing" in read) return null;
   if ("notRegular" in read) {
@@ -213,20 +221,6 @@ function jsonOrNull(text: string): unknown {
     return JSON.parse(text);
   } catch {
     return null;
-  }
-}
-
-/**
- * null when `dir` is a real folder, true when nothing has that name, and the
- * problem that stops the slice when it is anything else, a link included.
- */
-function outDirProblem(dir: string): string | null | true {
-  try {
-    return lstatSync(dir).isDirectory()
-      ? null
-      : "Orca's output folder was not a folder, so nothing in it was read.";
-  } catch {
-    return true;
   }
 }
 
@@ -278,9 +272,11 @@ export const cut = (s: string): string => {
 
 /**
  * Turns one Orca run and the files it left in outDir into the contract's
- * answer. outDir must be a real folder, not a link, and every file is read
- * with readSmall, so a file Orca made into a link, a FIFO or a huge file
- * fails the slice instead of being read.
+ * answer. outDir must be a real folder, not a link, and is opened once
+ * (openOutFolder): its files are read through that one descriptor, so a
+ * process Orca left behind cannot swap the folder between reads. Every file
+ * is read with readSmall, so a file Orca made into a link, a FIFO or a huge
+ * file fails the slice instead of being read.
  */
 export function sliceOutcome(
   ctx: SliceContext,
@@ -302,90 +298,87 @@ export function sliceOutcome(
       `Slicing took longer than ${ctx.timeoutSeconds} s and was stopped.`,
     );
   }
-  const outDir = outDirProblem(files.outDir);
-  if (typeof outDir === "string") return failed(null, "slicer_error", outDir);
-  const resultFile =
-    outDir === true
-      ? null
-      : readSmall(join(files.outDir, "result.json"), RESULT_MAX_BYTES, "Orca's result.json");
-  if (resultFile && "problem" in resultFile) {
-    return failed(null, "slicer_error", resultFile.problem);
-  }
-  const result = (resultFile ? jsonOrNull(resultFile.text) : null) as {
-    return_code?: unknown;
-    error_string?: unknown;
-  } | null;
-  const code = result ? numberOrNull(result.return_code) : null;
-  if (code === null || !Number.isInteger(code)) {
-    const how = run.signal ? `signal ${run.signal}` : `exit ${run.code ?? "unknown"}`;
-    const tail = run.stderrTail.trim().split("\n").slice(-3).join(" | ");
-    return failed(
-      null,
-      "slicer_error",
-      `Orca wrote no result.json (${how})${tail ? `: ${tail}` : ""}`,
-    );
-  }
-  if (code !== 0) {
-    // Orca 2.5.0 ends every refusal by writing its code to result.json and
-    // returning that code from main (record_exit_reson, then
-    // flush_and_exit, in src/OrcaSlicer.cpp), so a clean refusal exits
-    // (256 + code) & 0xff: 239 for -17. GNU time exits with Orca's status,
-    // or 128 + the signal when Orca was killed, so a segfault shows as 139.
-    // A known status other than the clean one, or a signal, means Orca died
-    // after it wrote the code: a crash, whatever the code says, as the
-    // slicing gate rules (tools/slicing-gate/lib/classify.mjs). An unknown
-    // status is no evidence.
-    if (!isCleanExit(code, run)) {
-      const end = run.signal ? `was killed by ${run.signal}` : `exited with ${run.code}`;
+  const outDir = openOutFolder(files.outDir);
+  if ("problem" in outDir) return failed(null, "slicer_error", outDir.problem);
+  try {
+    const resultFile = readSmall(outDir, "result.json", RESULT_MAX_BYTES, "Orca's result.json");
+    if (resultFile && "problem" in resultFile) {
+      return failed(null, "slicer_error", resultFile.problem);
+    }
+    const result = (resultFile ? jsonOrNull(resultFile.text) : null) as {
+      return_code?: unknown;
+      error_string?: unknown;
+    } | null;
+    const code = result ? numberOrNull(result.return_code) : null;
+    if (code === null || !Number.isInteger(code)) {
+      const how = run.signal ? `signal ${run.signal}` : `exit ${run.code ?? "unknown"}`;
+      const tail = run.stderrTail.trim().split("\n").slice(-3).join(" | ");
       return failed(
-        code,
+        null,
         "slicer_error",
-        `Orca wrote return code ${code} (${orcaMessage(code)}), then ${end}`,
+        `Orca wrote no result.json (${how})${tail ? `: ${tail}` : ""}`,
       );
     }
-    const text = typeof result?.error_string === "string" ? result.error_string.trim() : "";
-    return failed(code, reasonFor(code), text || orcaMessage(code));
+    if (code !== 0) {
+      // Orca 2.5.0 ends every refusal by writing its code to result.json and
+      // returning that code from main (record_exit_reson, then
+      // flush_and_exit, in src/OrcaSlicer.cpp), so a clean refusal exits
+      // (256 + code) & 0xff: 239 for -17. GNU time exits with Orca's status,
+      // or 128 + the signal when Orca was killed, so a segfault shows as 139.
+      // A known status other than the clean one, or a signal, means Orca died
+      // after it wrote the code: a crash, whatever the code says, as the
+      // slicing gate rules (tools/slicing-gate/lib/classify.mjs). An unknown
+      // status is no evidence.
+      if (!isCleanExit(code, run)) {
+        const end = run.signal ? `was killed by ${run.signal}` : `exited with ${run.code}`;
+        return failed(
+          code,
+          "slicer_error",
+          `Orca wrote return code ${code} (${orcaMessage(code)}), then ${end}`,
+        );
+      }
+      const text = typeof result?.error_string === "string" ? result.error_string.trim() : "";
+      return failed(code, reasonFor(code), text || orcaMessage(code));
+    }
+    if (run.signal || (run.code ?? 0) > 128) {
+      return failed(
+        0,
+        "slicer_error",
+        `Orca wrote its numbers, then exited with ${run.signal ?? run.code}`,
+      );
+    }
+    const statsName = `plate_${ctx.plate}.statistics.json`;
+    const statsFile = readSmall(outDir, statsName, STATISTICS_MAX_BYTES, `Orca's ${statsName}`);
+    if (statsFile && "problem" in statsFile) return failed(0, "slicer_error", statsFile.problem);
+    const stats = parseStatistics(statsFile ? jsonOrNull(statsFile.text) : null);
+    const time = stats?.timeSeconds ?? 0;
+    const weight = stats?.weightGrams ?? 0;
+    if (!stats || !(time > 0) || !(weight > 0)) {
+      return failed(
+        0,
+        "slicer_error",
+        "Orca reported success without a time and a weight above zero",
+      );
+    }
+    const timeFile = readSmall(JOB_FOLDER, files.timeFile, TIME_MAX_BYTES, "GNU time's report");
+    if (timeFile && "problem" in timeFile) return failed(0, "slicer_error", timeFile.problem);
+    const timeText = timeFile?.text ?? "";
+    return {
+      ...head,
+      status: "ok",
+      printer: ctx.printer,
+      process: ctx.process,
+      filamentProfiles: ctx.filamentProfiles,
+      timeSeconds: time,
+      weightGrams: weight,
+      filaments: stats.filaments.map(({ slot, grams }) => {
+        const f = ctx.projectFilaments.find((p) => p.slot === slot);
+        return { slot, type: f?.type ?? "", color: f?.colour ?? null, grams };
+      }),
+      wallMs: run.wallMs,
+      peakRssBytes: peakRssFromTimeV(timeText) ?? 0,
+    };
+  } finally {
+    outDir.close();
   }
-  if (run.signal || (run.code ?? 0) > 128) {
-    return failed(
-      0,
-      "slicer_error",
-      `Orca wrote its numbers, then exited with ${run.signal ?? run.code}`,
-    );
-  }
-  const statsName = `plate_${ctx.plate}.statistics.json`;
-  const statsFile = readSmall(
-    join(files.outDir, statsName),
-    STATISTICS_MAX_BYTES,
-    `Orca's ${statsName}`,
-  );
-  if (statsFile && "problem" in statsFile) return failed(0, "slicer_error", statsFile.problem);
-  const stats = parseStatistics(statsFile ? jsonOrNull(statsFile.text) : null);
-  const time = stats?.timeSeconds ?? 0;
-  const weight = stats?.weightGrams ?? 0;
-  if (!stats || !(time > 0) || !(weight > 0)) {
-    return failed(
-      0,
-      "slicer_error",
-      "Orca reported success without a time and a weight above zero",
-    );
-  }
-  const timeFile = readSmall(files.timeFile, TIME_MAX_BYTES, "GNU time's report");
-  if (timeFile && "problem" in timeFile) return failed(0, "slicer_error", timeFile.problem);
-  const timeText = timeFile?.text ?? "";
-  return {
-    ...head,
-    status: "ok",
-    printer: ctx.printer,
-    process: ctx.process,
-    filamentProfiles: ctx.filamentProfiles,
-    timeSeconds: time,
-    weightGrams: weight,
-    filaments: stats.filaments.map(({ slot, grams }) => {
-      const f = ctx.projectFilaments.find((p) => p.slot === slot);
-      return { slot, type: f?.type ?? "", color: f?.colour ?? null, grams };
-    }),
-    wallMs: run.wallMs,
-    peakRssBytes: peakRssFromTimeV(timeText) ?? 0,
-  };
 }

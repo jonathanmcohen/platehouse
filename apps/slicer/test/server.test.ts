@@ -44,6 +44,15 @@ import {
 } from "./support/stubs.js";
 import { removeTempDirs, tempDir } from "./support/tmp.js";
 
+// The slicer reads Orca's out/ through /proc/self/fd, which only Linux has.
+// On a Mac these tests slice with the path-based stand-in instead; the real
+// read is under test on Linux (orca.test.ts), where CI runs them.
+vi.mock("../src/out-folder.js", async (importOriginal) => {
+  const { HAS_PROC_FD } = await import("./support/platform.js");
+  if (HAS_PROC_FD) return importOriginal();
+  return import("./support/out-folder-standin.js");
+});
+
 // node:fs as it is, except that a test can make rmSync fail for the paths it
 // names, the way a recursive delete fails with ENOTEMPTY or EBUSY on a folder
 // a killed program is still writing to. Every rmSync call is recorded with

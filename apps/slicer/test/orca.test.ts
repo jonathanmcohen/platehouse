@@ -11,13 +11,34 @@
 // signal when the child was killed. So a refusal code with any other known
 // status, or with a signal, means Orca crashed after it wrote the code.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { cut, type SliceContext, sliceOutcome } from "../src/orca.js";
+import { openOutFolder } from "../src/out-folder.js";
 import type { GroupResult } from "../src/sandbox.js";
+import { HAS_PROC_FD } from "./support/platform.js";
+
+// The real out/ read goes through /proc/self/fd, which only Linux has. On a
+// Mac the slice tests run against the path-based stand-in instead, and the
+// tests of the real read below are skipped; CI runs them on Linux.
+vi.mock("../src/out-folder.js", async (importOriginal) => {
+  const { HAS_PROC_FD } = await import("./support/platform.js");
+  if (HAS_PROC_FD) return importOriginal();
+  return import("./support/out-folder-standin.js");
+});
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -243,6 +264,131 @@ describe("files Orca leaves are read only when they are small regular files", ()
     const body = outcomeOf(j);
     expect(body).toMatchObject({ status: "failed", code: null, reason: "slicer_error" });
     expect(body.status === "failed" && body.detail).toMatch(/^Orca wrote no result\.json/);
+  });
+});
+
+// Orca's sandbox lets it change everything in its own folder, out/ included,
+// and a process Orca left behind can keep running after the slice. So out/
+// is opened once, as a folder and never through a link, and each file is
+// read through that one descriptor (/proc/self/fd/<fd>/<name>): renaming
+// out/ away and putting another folder in its place cannot change what the
+// server reads.
+describe("out/ read through a file descriptor", () => {
+  const RESULT = JSON.stringify({ return_code: 0 });
+
+  /** An out/ folder holding a result.json with `text`, in a new job folder. */
+  function outFolder(text = RESULT) {
+    const dir = mkdtempSync(join(tmpdir(), "slicer-out-fd-"));
+    dirs.push(dir);
+    const out = join(dir, "out");
+    mkdirSync(out);
+    writeFileSync(join(out, "result.json"), text);
+    return { dir, out };
+  }
+
+  test.runIf(process.platform === "linux")(
+    "/proc/self/fd is there, so the real fd read is under test",
+    () => expect(HAS_PROC_FD).toBe(true),
+  );
+
+  test.runIf(HAS_PROC_FD)(
+    "out/ as a link to a folder with a good result.json gives the not-a-folder problem",
+    () => {
+      const { dir } = outFolder();
+      const link = join(dir, "link");
+      symlinkSync(join(dir, "out"), link);
+      expect(openOutFolder(link)).toEqual({
+        problem: "Orca's output folder was not a folder, so nothing in it was read.",
+      });
+    },
+  );
+
+  test.runIf(HAS_PROC_FD)("out/ swapped after it is opened still reads the original file", () => {
+    const { dir, out } = outFolder(JSON.stringify({ return_code: 0, error_string: "original" }));
+    const folder = openOutFolder(out);
+    if ("problem" in folder) throw new Error(folder.problem);
+    try {
+      renameSync(out, join(dir, "moved"));
+      mkdirSync(out);
+      writeFileSync(join(out, "result.json"), JSON.stringify({ return_code: -17 }));
+      const read = folder.read("result.json", 64 * 1024);
+      expect(read.ok && read.bytes.toString("utf8")).toBe(
+        JSON.stringify({ return_code: 0, error_string: "original" }),
+      );
+    } finally {
+      folder.close();
+    }
+  });
+
+  test.runIf(HAS_PROC_FD).each(["../x", "a/b", ".", "..", ""])(
+    "a name that is not one plain file name (%j) is refused with a throw",
+    (name) => {
+      const folder = openOutFolder(outFolder().out);
+      if ("problem" in folder) throw new Error(folder.problem);
+      try {
+        expect(() => folder.read(name, 64 * 1024)).toThrow();
+      } finally {
+        folder.close();
+      }
+    },
+  );
+
+  test.runIf(HAS_PROC_FD)("a missing out/ reads every file as missing", () => {
+    const { dir } = outFolder();
+    const folder = openOutFolder(join(dir, "nothing"));
+    if ("problem" in folder) throw new Error(folder.problem);
+    expect(folder.read("result.json", 64 * 1024)).toEqual({ ok: false, missing: true });
+    folder.close();
+  });
+
+  test.runIf(HAS_PROC_FD)("close can be called twice, and a read after it throws", () => {
+    const folder = openOutFolder(outFolder().out);
+    if ("problem" in folder) throw new Error(folder.problem);
+    folder.close();
+    expect(() => folder.close()).not.toThrow();
+    expect(() => folder.read("result.json", 64 * 1024)).toThrow();
+  });
+
+  test.runIf(HAS_PROC_FD)("sliceOutcome leaves no descriptor open, whatever it answers", () => {
+    const run: GroupResult = {
+      code: 0,
+      signal: null,
+      timedOut: false,
+      wallMs: 10,
+      stdoutTail: "",
+      stderrTail: "",
+    };
+    const ok = outFolder();
+    writeFileSync(
+      join(ok.out, "plate_1.statistics.json"),
+      JSON.stringify({ summary: { time: 60, weight: 3, filaments: [] } }),
+    );
+    writeFileSync(join(ok.dir, "time.txt"), "");
+    const refused = outFolder(JSON.stringify({ return_code: -17 }));
+    const noResult = outFolder("not json");
+    const jobs = [ok, refused, noResult];
+    const outs = jobs.map((j) => realpathSync(j.out));
+    /** This process's descriptors that point at one of the out/ folders. */
+    const openOuts = () =>
+      readdirSync("/proc/self/fd").filter((fd) => {
+        try {
+          return outs.includes(readlinkSync(`/proc/self/fd/${fd}`));
+        } catch {
+          return false;
+        }
+      });
+    // Control: an open out/ is found.
+    const held = openOutFolder(ok.out);
+    if ("problem" in held) throw new Error(held.problem);
+    expect(openOuts()).toHaveLength(1);
+    held.close();
+    expect(openOuts()).toEqual([]);
+
+    const answers = jobs.map(
+      (j) => sliceOutcome(CTX, run, { outDir: j.out, timeFile: join(j.dir, "time.txt") }).status,
+    );
+    expect(answers).toEqual(["ok", "failed", "failed"]);
+    expect(openOuts()).toEqual([]);
   });
 });
 
