@@ -1038,6 +1038,20 @@ describe("files a slicer with its sandbox off refused", () => {
     });
   }
 
+  /**
+   * Takes every other failed file out of the requeue's reach, so a run sees
+   * only this test's file: earlier tests in this file, and the other files
+   * of the suite, leave refused files behind in the same database.
+   */
+  async function onlyCandidate(fileId: string) {
+    await env.db
+      .updateTable("files")
+      .set({ derivedMessage: "Left for another test." })
+      .where("derivedStatus", "=", "failed")
+      .where("id", "!=", fileId)
+      .execute();
+  }
+
   test("a requeue whose job check throws keeps the sandbox message", async () => {
     // Earlier tests' requeued jobs may still be queued, and a run waits while
     // any is: let them go first.
@@ -1046,6 +1060,7 @@ describe("files a slicer with its sandbox off refused", () => {
       (jobs) => jobs.length === 0,
     );
     const id = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    await onlyCandidate(id);
     let calls = 0;
     const queue: DerivedDeps["queue"] = {
       send: env.boss.send.bind(env.boss),
@@ -1094,6 +1109,7 @@ describe("files a slicer with its sandbox off refused", () => {
     const id = await refused("step", DERIVED_MESSAGES.convertSandboxOffKernel);
     const file = await env.repos.files.get(id);
     if (!file) throw new Error("no file");
+    await onlyCandidate(id);
     // requeueSandboxOff reads the health once; queueJob reads it again for a
     // STEP file's expiry, before its transaction takes the lock. The model is
     // trashed there, after the run's own query chose the file.
