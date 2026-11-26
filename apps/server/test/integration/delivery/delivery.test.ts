@@ -479,7 +479,7 @@ describe("ranges", () => {
       expect(refused.headers.get("content-range"), target.path).toBe(`bytes */${n}`);
       expect(refused.headers.get("cache-control"), target.path).toBe("no-store");
       expect(refused.bytes.length, target.path).toBe(0);
-      for (const header of ["content-disposition", "accept-ranges", "etag"]) {
+      for (const header of ["content-type", "content-disposition", "accept-ranges", "etag"]) {
         expect(refused.headers.get(header), `${target.path} ${header}`).toBeNull();
       }
       const several = await call("GET", target.path, {

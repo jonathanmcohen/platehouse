@@ -47,6 +47,18 @@ describe("parseRange", () => {
     ["bytes=١-٢", 100, undefined],
     ["bytes=99999999999999999999-", 100, undefined],
     ["bytes=-99999999999999999999", 100, undefined],
+    // The largest size a record can hold (2^53 - 1): every offset is exact.
+    ["bytes=0-", 2 ** 53 - 1, { start: 0, end: 2 ** 53 - 2 }],
+    ["bytes=9007199254740990-", 2 ** 53 - 1, { start: 2 ** 53 - 2, end: 2 ** 53 - 2 }],
+    ["bytes=9007199254740991-", 2 ** 53 - 1, U],
+    ["bytes=-9007199254740991", 2 ** 53 - 1, { start: 0, end: 2 ** 53 - 2 }],
+    ["bytes=-9007199254740992", 2 ** 53 - 1, undefined],
+    ["bytes=0-9007199254740991", 2 ** 53 - 1, { start: 0, end: 2 ** 53 - 2 }],
+    [
+      "bytes=9007199254740989-9007199254740995",
+      2 ** 53 - 1,
+      { start: 2 ** 53 - 3, end: 2 ** 53 - 2 },
+    ],
     ["bytes=0-9", 0, undefined],
     ["bytes=0-9", -5, undefined],
     ["bytes=0-9", 1.5, undefined],
@@ -124,20 +136,38 @@ describe("never throws and never leaves [0, size)", () => {
     };
     const alphabet = [..."bytes=0123456789-, \t+١"];
     const sizes = [1, 2, 7, 100, 2 ** 53 - 1];
+    /** Up to 3 random digits, or (now and then) 17, past the largest safe integer. */
+    const digits = () => {
+      const n = next() < 0.1 ? 17 : Math.floor(next() * 4);
+      let out = "";
+      for (let k = 0; k < n; k++) out += String(Math.floor(next() * 10));
+      return out;
+    };
+    let served = 0;
     for (let i = 0; i < 5000; i++) {
-      const length = Math.floor(next() * 20);
-      let header = next() < 0.5 ? "bytes=" : "";
-      for (let j = 0; j < length; j++) {
-        header += alphabet[Math.floor(next() * alphabet.length)];
+      let header: string;
+      if (next() < 0.5) {
+        // A well-formed shape with random numbers, so many headers parse.
+        header = `bytes=${digits()}-${digits()}`;
+      } else {
+        // Noise from the characters a header could carry.
+        const length = Math.floor(next() * 20);
+        header = next() < 0.5 ? "bytes=" : "";
+        for (let j = 0; j < length; j++) {
+          header += alphabet[Math.floor(next() * alphabet.length)];
+        }
       }
       const size = sizes[i % sizes.length] as number;
       const got = parseRange(header, size);
       if (got === undefined || got === U) continue;
+      served += 1;
       expect(Number.isInteger(got.start), header).toBe(true);
       expect(Number.isInteger(got.end), header).toBe(true);
       expect(got.start, header).toBeGreaterThanOrEqual(0);
       expect(got.start, header).toBeLessThanOrEqual(got.end);
       expect(got.end, header).toBeLessThan(size);
     }
+    // The loop proves something only if many headers gave a real range.
+    expect(served).toBeGreaterThanOrEqual(500);
   });
 });

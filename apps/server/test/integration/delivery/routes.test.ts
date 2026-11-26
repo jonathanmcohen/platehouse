@@ -1095,6 +1095,16 @@ describe("GET /files/:id/download and GET /blobs/:id", () => {
       expect({ opened, blobHeads }).toEqual(before);
     });
 
+    test("a matching If-None-Match is 304 even with a Range, with no Content-Range and no store read", async () => {
+      const before = { opened, blobHeads };
+      const res = await get(BLOB_SRC, { "if-none-match": `"${BLOB_SRC}"`, range: "bytes=0-3" });
+      expect(res.statusCode).toBe(304);
+      expect(res.headers.etag).toBe(`"${BLOB_SRC}"`);
+      expect(res.headers["content-range"]).toBeUndefined();
+      expect(res.rawPayload.length).toBe(0);
+      expect({ opened, blobHeads }).toEqual(before);
+    });
+
     test.each([
       ["a weak tag", `W/"${BLOB_SRC}"`],
       ["a star", "*"],

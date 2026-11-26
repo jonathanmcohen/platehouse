@@ -52,6 +52,7 @@
 // src/shell/theme.ts, which writes the cookie; a test checks the name. The
 // accent ids, default and cookie name are repeated in src/shell/accent.ts;
 // a test checks those too.
+import type { Stats } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -337,7 +338,7 @@ export async function registerWeb(
   const isMissing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 
   async function load(): Promise<ShellTemplate | undefined> {
-    let seen: Awaited<ReturnType<typeof stat>>;
+    let seen: Stats;
     try {
       seen = await stat(indexPath);
     } catch (error) {

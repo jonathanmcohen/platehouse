@@ -2462,7 +2462,7 @@ describe("the trash", () => {
     await release();
 
     const alert = ask.querySelector('[role="alert"]');
-    expect(alert?.textContent).toBeTruthy();
+    expect(alert?.textContent).toBe("This is unavailable right now. Try again in a moment.");
     expect(confirm.getAttribute("aria-disabled")).toBe("false");
     expect(focused()).toBe(confirm);
     await press(focused(), "Tab", { shiftKey: true });

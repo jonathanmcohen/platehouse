@@ -821,7 +821,9 @@ const RANGE_ANSWERS = new Set(["206", "416"]);
  * from @fastify/swagger (the GET's with -head).
  */
 function headOnly(get: FastifySchema): FastifySchema {
-  const { headers: _rangeHeaders, ...doc } = get as FastifySchema & {
+  // The whole request headers schema is dropped: the only GET route with one
+  // is the file content route, and it holds just Range and If-Range.
+  const { headers: _requestHeaders, ...doc } = get as FastifySchema & {
     summary?: string;
     description?: string;
     response?: Record<string, { description?: string; headers?: unknown }>;
