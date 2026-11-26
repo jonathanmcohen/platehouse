@@ -15,6 +15,7 @@ const full: ServerQueueDeps = {
   onIngested: async () => undefined,
   checkRenders: async () => undefined,
   backfillPreviews: async () => undefined,
+  requeueSandboxOff: async () => undefined,
   reconvertDescriptions: async () => undefined,
   reconvertPending: async () => false,
   emptyTrash: async () => undefined,
@@ -53,5 +54,12 @@ describe("ServerQueueDeps", () => {
     // @ts-expect-error -- an Empty trash job would fail with nothing to run it
     const noEmpty: ServerQueueDeps = rest;
     expect(noEmpty).toBeDefined();
+  });
+
+  test("requires the sandbox requeue, which a backfill must always be followed by (#480)", () => {
+    const { requeueSandboxOff: _requeue, ...rest } = full;
+    // @ts-expect-error -- a server could leave the sandbox-off derived rows waiting for a restart
+    const noRequeue: ServerQueueDeps = rest;
+    expect(noRequeue).toBeDefined();
   });
 });
