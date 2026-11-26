@@ -74,10 +74,12 @@ export interface BlobStore {
    * an outage StoreUnavailable, while the bytes are read too; a range the
    * store refuses is a StoreError. The object's total size, from the store's
    * Content-Range, is objectSize(stream), as for getBlobStream. An answer
-   * that ignored the range (no Content-Range, another start, or no numeric
-   * total) is refused with StoreError(GetObject, RangeIgnored), so the bytes
-   * of a stream returned are exactly the range asked for. A start or end that is not a whole number,
-   * or a range that is empty or runs backwards, is a RangeError, thrown
+   * whose Content-Range is missing, or whose start, last byte or total does
+   * not match the request (the first byte is start, the last is end - 1, the
+   * total is a whole number past the last byte), is refused with
+   * StoreError(GetObject, RangeIgnored). The header is not the body: the
+   * caller still counts the bytes it reads. A start or end that is not a
+   * whole number, or a range that is empty or runs backwards, is a RangeError, thrown
    * before anything is sent. With a signal, an abort ends the request, and
    * the bytes while they are read, with an AbortError (never a store error,
    * so a stopped read never reads as an outage); a signal already aborted
@@ -347,7 +349,13 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
       // bytes from the wrong place as the range it asked for.
       const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(contentRange ?? "");
       const total = match ? Number(match[3]) : Number.NaN;
-      if (!match || Number(match[1]) !== start || !Number.isSafeInteger(total)) {
+      if (
+        !match ||
+        Number(match[1]) !== start ||
+        Number(match[2]) !== end - 1 ||
+        !Number.isSafeInteger(total) ||
+        end - 1 >= total
+      ) {
         body.destroy();
         throw new StoreError("GetObject", "RangeIgnored");
       }

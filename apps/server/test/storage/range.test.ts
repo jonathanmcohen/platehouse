@@ -73,6 +73,10 @@ describe("getBlobRange", () => {
     ["another start", 206, "bytes 0-4/100"],
     ["a total of *", 206, "bytes 10-14/*"],
     ["a non-numeric total", 206, "bytes 10-14/abc"],
+    ["an end beyond the one asked for", 206, "bytes 10-99/100"],
+    ["an end short of the one asked for", 206, "bytes 10-12/100"],
+    ["a last byte before the first", 206, "bytes 10-5/100"],
+    ["a total smaller than the last byte", 206, "bytes 10-14/12"],
   ])("refuses %s as RangeIgnored", async (_why, status, contentRange) => {
     const { fake, store } = await fakeAt(() => ({
       status,
