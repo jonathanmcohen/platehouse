@@ -79,14 +79,14 @@ export function ensureImage(): void {
 
 /**
  * Runs one program in a fresh throwaway container from the slicer image, as
- * root with Docker's default capabilities, and removes the container after.
+ * root (or opts.user) with Docker's default capabilities, and removes the container after.
  * For checks of what is in the image itself, which do not need the hardened
  * runtime startSlicer gives: root there has no capabilities, so it cannot
  * read every folder in the image.
  */
-export function runInImage(program: string, args: string[]): Run {
+export function runInImage(program: string, args: string[], opts: { user?: string } = {}): Run {
   ensureImage();
-  return docker(["run", "--rm", "-u", "0", "--entrypoint", program, IMAGE, ...args]);
+  return docker(["run", "--rm", "-u", opts.user ?? "0", "--entrypoint", program, IMAGE, ...args]);
 }
 
 export interface RunningSlicer {
@@ -147,14 +147,21 @@ export function slicerRunArgs(hostCpus: number): string[] {
   ];
 }
 
-export async function startSlicer(): Promise<RunningSlicer> {
+/**
+ * Starts the slicer container. extraRunArgs go into docker run just before
+ * the image name, for a test that changes the runtime (a seccomp profile);
+ * slicerRunArgs itself stays what the compose file says.
+ */
+export async function startSlicer(extraRunArgs: string[] = []): Promise<RunningSlicer> {
   ensureImage();
   const info = docker(["info", "--format", "{{.NCPU}}"]);
   const hostCpus = Number(info.stdout.trim());
   if (info.code !== 0 || !Number.isFinite(hostCpus) || hostCpus < 1) {
     throw new Error(`docker info gave no CPU count: ${info.stderr}${info.stdout}`);
   }
-  const run = docker(slicerRunArgs(hostCpus));
+  const runArgs = slicerRunArgs(hostCpus);
+  runArgs.splice(runArgs.length - 1, 0, ...extraRunArgs);
+  const run = docker(runArgs);
   if (run.code !== 0) throw new Error(`docker run failed: ${run.stderr}`);
   const id = run.stdout.trim();
   const stop = () => {
