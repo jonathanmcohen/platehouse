@@ -348,7 +348,8 @@ describe("OpenSCAD in the image", () => {
           [ "$(cat "$d/comm" 2>/dev/null)" = openscad ] || continue
           score=$(cat "$d/oom_score_adj" 2>/dev/null) || continue
           for n in /proc/[0-9]*; do
-            [ "$(cat "$n/comm" 2>/dev/null)" = node ] || continue
+            # Node names its main thread "node-MainThread" in comm.
+            case "$(cat "$n/comm" 2>/dev/null)" in node*) ;; *) continue ;; esac
             [ "$(sed -n 's/^PPid:[[:space:]]*//p' "$n/status" 2>/dev/null)" = 1 ] || continue
             echo "openscad=$score server=$(cat "$n/oom_score_adj")"
             exit 0
