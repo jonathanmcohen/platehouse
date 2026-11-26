@@ -259,6 +259,7 @@ export function TrashList({ pageParam = "page" }: { pageParam?: string }) {
                   className="studio-button ph-small"
                   aria-label={t("trash.restoreLabel", { name: model.name })}
                   aria-disabled={model.purgeStarted || restoring.has(model.id)}
+                  aria-describedby={model.purgeStarted ? `trash-purging-${model.id}` : undefined}
                   onClick={() => restore(model)}
                 >
                   {t("trash.restore")}
@@ -266,13 +267,15 @@ export function TrashList({ pageParam = "page" }: { pageParam?: string }) {
               </div>
               <span className="studio-muted">
                 {model.creator === null ? null : `${t("trash.by", { creator: model.creator })} `}
-                {model.purgeStarted
-                  ? t("trash.purging")
-                  : rich(
-                      "trash.purgeAfter",
-                      { date: i18n.fmt.date(model.purgeAt) },
-                      { time: (children) => <time dateTime={model.purgeAt}>{children}</time> },
-                    )}
+                {model.purgeStarted ? (
+                  <span id={`trash-purging-${model.id}`}>{t("trash.purging")}</span>
+                ) : (
+                  rich(
+                    "trash.purgeAfter",
+                    { date: i18n.fmt.date(model.purgeAt) },
+                    { time: (children) => <time dateTime={model.purgeAt}>{children}</time> },
+                  )
+                )}
               </span>
             </li>
           ))}

@@ -2121,6 +2121,21 @@ describe("the trash", () => {
     });
   });
 
+  test("a Restore button says why it is unavailable while its model is being deleted", async () => {
+    state.trash = state.trash.map((m) =>
+      m.id === "m-trashed-1" ? { ...m, purgeStarted: true } : m,
+    );
+    await show("/trash", <TrashPage />);
+    const describedBy = (b: HTMLElement) => {
+      const id = b.getAttribute("aria-describedby");
+      return id === null ? null : document.getElementById(id)?.textContent;
+    };
+    const marked = button("Restore Old benchy");
+    expect(marked.getAttribute("aria-disabled")).toBe("true");
+    expect(describedBy(marked)).toBe("It is being deleted now and cannot be restored.");
+    expect(button("Restore Broken clip").hasAttribute("aria-describedby")).toBe(false);
+  });
+
   test("the dialog keeps focus inside it", async () => {
     await show("/trash", <TrashPage />);
     await click(button("Empty trash"));
