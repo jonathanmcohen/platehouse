@@ -233,6 +233,41 @@ describe("POST /app/api/users/sign-out is one signOutEverywhere call (issue #414
     await server.close();
   });
 
+  // Fastify's validator coerces types by default ("true" and 1 to true, [true]
+  // to true); the two flags take a real boolean only.
+  test.each([
+    ['the string "true"', "true"],
+    ["the number 1", 1],
+    ["an array of true", [true]],
+  ])("a revokeUnknownTokens of %s is 400, and nothing ends", async (_what, value) => {
+    const f = fakes();
+    const server = await app(0, f);
+    const res = await post(server, "/app/api/users/sign-out", {
+      subject: "subject-other",
+      revokeTokens: false,
+      revokeUnknownTokens: value,
+    });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(f.signedOut).toEqual([]);
+    await server.close();
+  });
+
+  test.each([
+    ['the string "true"', "true"],
+    ["the number 1", 1],
+    ["an array of true", [true]],
+  ])("a revokeTokens of %s is 400, and nothing ends", async (_what, value) => {
+    const f = fakes();
+    const server = await app(0, f);
+    const res = await post(server, "/app/api/users/sign-out", {
+      subject: "subject-other",
+      revokeTokens: value,
+    });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(f.signedOut).toEqual([]);
+    await server.close();
+  });
+
   test("a misspelt field does not turn the revoke on (Fastify strips fields the schema does not name)", async () => {
     const f = fakes();
     const server = await app(0, f);

@@ -441,7 +441,7 @@ describe("Sign out everywhere", () => {
     const theirs = await signIn("subject-gone", "Synthetic Gone");
     const laptop = await makeToken(theirs, "Their laptop");
     const desktop = await makeToken(theirs, "Their desktop");
-    // A token from before creators were recorded is never revoked by this.
+    // A token from before creators were recorded is not revoked by revokeTokens alone.
     const old = await tokens.createToken("Old script");
 
     const res = await call("POST", "/app/api/users/sign-out", me, {
@@ -770,10 +770,12 @@ describe("Sign out everywhere and tokens with no recorded maker", () => {
 
   test("a second call answers unknownTokensRevoked 0", async () => {
     const me = await signIn("subject-admin", "Synthetic Admin");
-    await tokens.createToken("Old script");
+    const old = await tokens.createToken("Old script");
+    expect(await v1Status(old.token)).toBe(200);
     const body = { subject: "subject-gone", revokeTokens: false, revokeUnknownTokens: true };
     const first = await call("POST", "/app/api/users/sign-out", me, body);
     expect(first.json()).toEqual({ sessionsEnded: 0, tokensRevoked: 0, unknownTokensRevoked: 1 });
+    expect(await v1Status(old.token)).toBe(401);
     const second = await call("POST", "/app/api/users/sign-out", me, body);
     expect(second.status, second.text).toBe(200);
     expect(second.json()).toEqual({ sessionsEnded: 0, tokensRevoked: 0, unknownTokensRevoked: 0 });
@@ -804,5 +806,6 @@ describe("Sign out everywhere and tokens with no recorded maker", () => {
     const logged = lines.join("\n");
     expect(logged).toContain("unknownTokensRevoked");
     expect(logged).not.toContain("subject-victim-logged");
+    expect(logged).not.toContain("subject-admin-logged");
   });
 });

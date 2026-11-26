@@ -13,12 +13,13 @@
 // sign-in in the last few minutes: the server refuses it otherwise with
 // sign_in_required, and the page says so with a Sign in again link. Revoking
 // tokens with no recorded maker needs that fresh sign-in for anyone, yourself
-// included, and has its own wording. After a
-// change the status line says what was ended, the list is read again, and so
-// is the token list (onTokensRevoked) when tokens were revoked. Signing yourself out
-// everywhere ends this session too, so the page says so and offers a Sign in
-// link instead of reading the list again. Focus goes to the section heading
-// after the dialog closes, since the row's own button may be gone.
+// included, and has its own wording. After a change the status line says
+// what was ended, naming the count of each box that was ticked, the list is
+// read again, and so is the token list (onTokensRevoked) when tokens were
+// revoked. Signing yourself out everywhere ends this session too, so the
+// page says so and offers a Sign in link instead of reading the list again.
+// Focus goes to the section heading after the dialog closes, since the row's
+// own button may be gone.
 //
 // A person is always named with their OIDC subject beside their name, in the
 // row, the button label, the confirmation and the status line (PR #364
@@ -146,14 +147,14 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
       sessions: answer.sessionsEnded,
       tokens: answer.tokensRevoked,
     };
-    setStatus({
-      text: unknown
-        ? t("signOut.doneRevokedUnknown", { ...values, unknown: answer.unknownTokensRevoked })
-        : revokeTokens
-          ? t("signOut.doneRevoked", values)
-          : t("signOut.done", values),
-      self: false,
-    });
+    // The sentence names what was asked for: each ticked box's count.
+    const withUnknown = { ...values, unknown: answer.unknownTokensRevoked };
+    let text: string;
+    if (unknown && revokeTokens) text = t("signOut.doneRevokedUnknown", withUnknown);
+    else if (unknown) text = t("signOut.doneUnknown", withUnknown);
+    else if (revokeTokens) text = t("signOut.doneRevoked", values);
+    else text = t("signOut.done", values);
+    setStatus({ text, self: false });
     if (answer.tokensRevoked + answer.unknownTokensRevoked > 0) onTokensRevoked();
     await list.reload();
   }

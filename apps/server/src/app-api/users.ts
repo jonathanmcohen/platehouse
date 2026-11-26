@@ -157,9 +157,11 @@ const SIGN_OUT = {
     // issue #378), so every subject that can sign in can be signed out.
     // JSON Schema's maxLength counts code points, as admit() does.
     subject: { type: "string", minLength: 1, maxLength: MAX_SUBJECT_LENGTH },
-    revokeTokens: { type: "boolean" },
+    // An enum with no type, so Fastify's validator, which coerces types by
+    // default, takes only a real boolean: "true", 1 or [true] is a 400.
+    revokeTokens: { enum: [true, false] },
     // Optional, default false: revokes the tokens with no recorded maker too.
-    revokeUnknownTokens: { type: "boolean" },
+    revokeUnknownTokens: { enum: [true, false] },
   },
   required: ["subject", "revokeTokens"],
   additionalProperties: false,
@@ -182,9 +184,9 @@ export async function registerUsersApi(
       const { list, unknownTokens } = need(deps);
       const now = (deps?.now ?? (() => new Date()))();
       const you = sessionOf(request)?.subject;
-      const users = await list(now);
+      const [users, unknown] = await Promise.all([list(now), unknownTokens()]);
       return {
-        unknownTokens: await unknownTokens(),
+        unknownTokens: unknown,
         users: users
           // A name recorded before names were cleaned is cleaned here too.
           .map((user) => ({

@@ -1860,11 +1860,77 @@ describe("the settings page", () => {
     );
     await click(boxes[1] as HTMLInputElement);
     await click(button("Sign out everywhere", dialog() as HTMLElement));
-    expect(signOutStatus()).toContain("Ended 1 session for \u2068Synthetic Gone\u2069");
-    expect(signOutStatus()).toContain("revoked 0 API tokens they made");
-    expect(signOutStatus()).toContain("revoked 1 API token made by an unknown user");
+    expect(signOutStatus()).toBe(
+      "Ended 1 session for \u2068Synthetic Gone\u2069 (user id subject-gone) and revoked 1 API token made by an unknown user.",
+    );
     expect(callsTo("GET", "/app/api/tokens").length).toBeGreaterThan(tokenReads);
     expect(text()).not.toContain("Office desktop");
+  });
+
+  test("Sign out everywhere with both boxes ticked sends both, and names both counts", async () => {
+    state.unknownTokens = 2;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 1,
+      you: false,
+    });
+    state.tokens.push({
+      id: "t-gone",
+      name: "Gone script",
+      prefix: "ph_gone12",
+      createdAt: "2026-11-01T10:00:00.000Z",
+      lastUsedAt: null,
+      createdBy: { subject: "subject-gone", name: "Synthetic Gone" },
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    await click(boxes[0] as HTMLInputElement);
+    await click(boxes[1] as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: true,
+      revokeUnknownTokens: true,
+    });
+    expect(signOutStatus()).toBe(
+      "Ended 1 session for \u2068Synthetic Gone\u2069 (user id subject-gone) and revoked 1 API token they made and 2 API tokens made by an unknown user.",
+    );
+  });
+
+  test("Sign out everywhere refused for someone else with the second box ticked keeps the general wording", async () => {
+    state.signInRequired = true;
+    state.unknownTokens = 1;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    await click(boxes[1] as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: false,
+      revokeUnknownTokens: true,
+    });
+    const alert = document.querySelector("[data-sign-out-refused]");
+    expect(alert?.textContent).toContain(
+      "To sign someone else out everywhere, sign in again first. Platehouse checks that you are still allowed in when you sign in.",
+    );
+    expect(alert?.textContent).not.toContain("made by an unknown user");
+    expect(link("Sign in again").getAttribute("href")).toBe("/auth/login?next=/settings");
+    expect(signOutStatus()).toBe("");
   });
 
   test("Sign out everywhere refused for yourself with the second box ticked asks to sign in again", async () => {
