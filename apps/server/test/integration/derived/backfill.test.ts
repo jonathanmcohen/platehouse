@@ -1039,6 +1039,12 @@ describe("files a slicer with its sandbox off refused", () => {
   }
 
   test("a requeue whose job check throws keeps the sandbox message", async () => {
+    // Earlier tests' requeued jobs may still be queued, and a run waits while
+    // any is: let them go first.
+    await until(
+      () => env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { requeue: true }, queued: true }),
+      (jobs) => jobs.length === 0,
+    );
     const id = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
     let calls = 0;
     const queue: DerivedDeps["queue"] = {
@@ -1079,6 +1085,12 @@ describe("files a slicer with its sandbox off refused", () => {
   });
 
   test("a model trashed between the requeue's check and its lock gets nothing queued", async () => {
+    // Earlier tests' requeued jobs may still be queued, and a run waits while
+    // any is: let them go first.
+    await until(
+      () => env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { requeue: true }, queued: true }),
+      (jobs) => jobs.length === 0,
+    );
     const id = await refused("step", DERIVED_MESSAGES.convertSandboxOffKernel);
     const file = await env.repos.files.get(id);
     if (!file) throw new Error("no file");

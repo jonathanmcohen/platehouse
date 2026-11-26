@@ -495,7 +495,9 @@ describe("a slicer that cannot render right now (uses no retry)", () => {
           }),
         },
       });
-      expect(await on.requeueSandboxOff(new Date()), "files queued by the requeue").toBe(0);
+      // Other files in this suite that a sandbox refusal left failed may be
+      // queued; this file, whose message is no requeue form, never is.
+      await on.requeueSandboxOff(new Date());
       expect((await jobsFor(fileId)).length, `jobs of the file after the requeue (${reason})`).toBe(
         jobsBefore,
       );
