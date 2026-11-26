@@ -132,6 +132,12 @@ exit $st
  * - "read-include": the include opens /proc/self/environ, which is not
  *   OpenSCAD, so the parser fails, as it would on a readable environ.
  * - "read-surface": the surface() works and the render succeeds.
+ * - "blocked-noisy": blocked, but each warning is wrapped in terminal colour
+ *   codes and followed by a line with a direction override (U+202E).
+ * - "blocked-elsewhere" and "blocked-within": noisy as above, and the warning
+ *   names another path that contains the case's own: the path with ".orig"
+ *   after it, or with "/elsewhere" before it. Such a file is refused with or
+ *   without a sandbox, so it proves nothing.
  * - "other": the render fails for a reason that proves nothing about the
  *   sandbox (here landrun failing to start).
  * - "hang": the render runs past the time cap and is killed.
@@ -142,6 +148,9 @@ export type ProbeMode =
   | "read-sibling"
   | "read-include"
   | "read-surface"
+  | "blocked-noisy"
+  | "blocked-elsewhere"
+  | "blocked-within"
   | "other"
   | "hang";
 
@@ -297,11 +306,21 @@ fi
       exit 1
     fi
   else
-    case "$which" in
-      read|read-sibling) printf "WARNING: Can't open import file '%s', import() at line 2\\n" "$path" >&2 ;;
-      read-include) printf "WARNING: Can't open include file '%s'.\\n" "$path" >&2 ;;
-      read-surface) printf "WARNING: The file '%s' couldn't be opened.\\n" "$path" >&2 ;;
+    shown="$path"; on=""; off=""
+    case "$mode" in
+      blocked-elsewhere) shown="$path.orig" ;;
+      blocked-within) shown="/elsewhere$path" ;;
     esac
+    case "$mode" in
+      blocked-noisy|blocked-elsewhere|blocked-within)
+        on=$(printf '\\033[33m'); off=$(printf '\\033[0m') ;;
+    esac
+    case "$which" in
+      read|read-sibling) printf "%sWARNING: Can't open import file '%s', import() at line 2%s\\n" "$on" "$shown" "$off" >&2 ;;
+      read-include) printf "%sWARNING: Can't open include file '%s'.%s\\n" "$on" "$shown" "$off" >&2 ;;
+      read-surface) printf "%sWARNING: The file '%s' couldn't be opened.%s\\n" "$on" "$shown" "$off" >&2 ;;
+    esac
+    [ -z "$on" ] || printf '\\342\\200\\256 noise\\n' >&2
     exit 1
   fi
 else

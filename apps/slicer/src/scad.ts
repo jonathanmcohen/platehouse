@@ -38,7 +38,6 @@ import {
   sandboxPaths,
   sandboxRules,
   scadArgs,
-  tailLines,
 } from "./sandbox.js";
 
 export interface ScadConfig extends SandboxConfig {
@@ -259,7 +258,10 @@ interface SelfTestCase {
   line: string;
   /** OpenSCAD's words when it cannot open the file. */
   refusal: string;
-  /** Paths a refusal line may name: the path, and for an import its real path. */
+  /**
+   * Paths a refusal line may name, in the quotes OpenSCAD puts around them:
+   * the path, and for an import its real path.
+   */
   names: string[];
 }
 
@@ -297,7 +299,7 @@ const ABI_CHECK_SECONDS = 30;
  * 3. Four reads outside the job folder, each a .scad rendered through the
  *    same prlimit and landrun call a real render uses, fail because OpenSCAD
  *    itself reports that it cannot open the file (SELF_TEST_REFUSALS) on a
- *    line naming its path: an import() of the probe, an import() of the
+ *    line naming its path in quotes: an import() of the probe, an import() of the
  *    probe's copy in another job's folder (inputs.siblingDir), an include of
  *    PROC_ENVIRON and a surface() of it. They run in that order, and the
  *    first that does not fail this way fails the check. A read that works
@@ -401,13 +403,16 @@ export async function sandboxSelfTest(
         detail: `OpenSCAD read ${path} from outside its job folder under landrun`,
       };
     }
+    // Every refusal names its file in single quotes, so a quoted match is
+    // exact: a longer path that only contains this one proves nothing.
     const refused = r.output
       .split("\n")
-      .find((l) => l.includes(refusal) && names.some((p) => l.includes(p)));
+      .find((l) => l.includes(refusal) && names.some((p) => l.includes(`'${p}'`)));
     if (!refused) {
-      // OpenSCAD's own last lines; a run with no output (a timeout, say)
-      // gives the slicer's sentence for why it stopped instead.
-      const why = tailLines(r.output, 3, 300) || r.message;
+      // OpenSCAD's own last lines, on one line without control characters;
+      // a run with no output (a timeout, say) gives the slicer's sentence
+      // for why it stopped instead.
+      const why = ledInMessage("", r.output, 3, 300) || r.message;
       return {
         ok: false,
         reason: "check_failed",
@@ -415,7 +420,7 @@ export async function sandboxSelfTest(
         detail: `the check was inconclusive: OpenSCAD did not report that it could not open ${path} (${why})`,
       };
     }
-    parts.push(`${how} of ${path}: ${refused.trim()}`);
+    parts.push(`${how} of ${path}: ${ledInMessage("", refused.trim())}`);
   }
   return {
     ok: true,

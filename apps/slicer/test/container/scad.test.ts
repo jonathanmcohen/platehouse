@@ -155,9 +155,13 @@ describe("OpenSCAD in the image", () => {
       expect(res.status).toBe(422);
       const body = slicerContract.renderError.parse(await res.json());
       // OpenSCAD ran and could not open the file, which a landrun start-up
-      // failure or a parse error would not say.
-      expect(body.message).toContain(phrase);
-      expect(body.message).toContain(path);
+      // failure or a parse error would not say: one of its lines (the
+      // message joins them with " / ") has the refusal and the quoted path.
+      const lines = body.message.split(" / ");
+      expect(
+        lines.some((l) => l.includes(phrase) && l.includes(`'${path}'`)),
+        body.message,
+      ).toBe(true);
     },
   );
 

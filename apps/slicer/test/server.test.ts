@@ -805,6 +805,48 @@ describe("sandbox self-test", () => {
     },
   );
 
+  test("OpenSCAD's colour codes and direction overrides never reach the log line of a passed self-test", async () => {
+    const s = setup();
+    const lr = fakeLandrun(
+      s.stubs,
+      { kind: "ok", content: "solid ok" },
+      { probe: "blocked-noisy" },
+    );
+    const log = logged();
+    try {
+      await start({ ...s.config, landrunBin: lr.bin });
+    } finally {
+      log.restore();
+    }
+    const line = log.lines.find((l) => l.includes("sandbox self-test:")) ?? "";
+    expect(line).toContain("sandbox self-test: ok: ");
+    expect(line).toContain("landrun blocked every read outside the job folder: ");
+    expect(line).not.toContain("\x1b");
+    expect(line).not.toContain("\u202e");
+    expect(line.trimEnd()).not.toContain("\n");
+  });
+
+  test.each([
+    { mode: "blocked-elsewhere", named: (p: string) => `${p}.orig` },
+    { mode: "blocked-within", named: (p: string) => `/elsewhere${p}` },
+  ] as const)(
+    "a refusal that names another path ($mode) proves nothing: inconclusive, check_failed, on one clean line",
+    async ({ mode, named }) => {
+      const s = setup();
+      const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: mode });
+      const base = await start({ ...s.config, landrunBin: lr.bin });
+      const state = await sandboxOfHealth(base);
+      expect(state).toMatchObject({ state: "off", reason: "check_failed" });
+      const probe = s.config.sandboxProbe;
+      expect(state.detail).toBe(
+        `the check was inconclusive: OpenSCAD did not report that it could not open ${probe} ([33mWARNING: Can't open import file '${named(probe)}', import() at line 2[0m /  noise)`,
+      );
+      // the first case failed, so the self-test stopped there
+      expect(lines(lr.runsLog)).toBe(1);
+      expect(readdirSync(s.workDir)).toEqual([]);
+    },
+  );
+
   test("a readable /proc/self/environ fails the include as a parse error: inconclusive, check_failed", async () => {
     const s = setup();
     const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "read-include" });
