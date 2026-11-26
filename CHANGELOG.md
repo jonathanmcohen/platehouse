@@ -29,7 +29,7 @@ All notable changes to Platehouse are recorded here. The format follows
 - A server whose web build is replaced while it runs (a rebuilt or bind-mounted build) serves the new pages without a restart ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
 - Putting a file back under an imported file's name in the inbox checks that the file it copies is the one it found, so a file swapped in at that moment is not copied ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
 - An estimate or STEP preview queued while the slicer was unreachable could be failed by the job queue while it was still slicing ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
-- Trying a refused render again could re-queue a file in a model being deleted, or overwrite a file that had since rendered ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)). A replacement a slicer with its sandbox off refuses now says it was not saved.
+- Trying a refused render again could re-queue a file in a model being deleted, or overwrite a file that had since rendered ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
 
 ### Security
 
