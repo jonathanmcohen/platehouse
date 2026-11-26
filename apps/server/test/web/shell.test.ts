@@ -5,7 +5,7 @@
 // dark, light or system is dark. Only those two places change.
 import { execFile } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,7 @@ import {
   ACCENTS,
   DEFAULT_ACCENT,
   defaultWebDir,
+  NOT_BUILT,
   parseShellTemplate,
   ROOT_FILE_CACHE_CONTROL,
   ROOT_FILES,
@@ -466,6 +467,102 @@ describe("registerWeb without a web build", () => {
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, "index.html"), "<html><body></body></html>");
       expect(await web.built()).toBe(false);
+    });
+  });
+});
+
+describe("registerWeb reads index.html again when it changes", () => {
+  const page = (title: string) =>
+    `<html lang="en" data-theme="dark" data-accent="bambu-green"><meta name="color-scheme" content="dark" /><title>${title}</title>`;
+  const URL = SHELL_PAGES[0] as string;
+
+  async function withBuild(
+    run: (args: {
+      app: ReturnType<typeof Fastify>;
+      web: Awaited<ReturnType<typeof registerWeb>>;
+      index: string;
+      root: string;
+    }) => Promise<void>,
+  ) {
+    const root = await mkdtemp(join(tmpdir(), "platehouse-web-reread-"));
+    const dir = join(root, "dist");
+    const index = join(dir, "index.html");
+    const app = Fastify();
+    try {
+      await app.register(fastifyCookie);
+      await mkdir(join(dir, "assets"), { recursive: true });
+      await writeFile(index, page("v1"));
+      const web = await registerWeb(app, { dir });
+      await run({ app, web, index, root });
+    } finally {
+      await app.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  const get = (app: ReturnType<typeof Fastify>) => app.inject({ method: "GET", url: URL });
+
+  test("a replaced index.html is served once its modified time moves", async () => {
+    await withBuild(async ({ app, index }) => {
+      expect((await get(app)).body).toContain("<title>v1</title>");
+      await writeFile(index, page("v2"));
+      const later = new Date(Date.now() + 10_000);
+      await utimes(index, later, later);
+      expect((await get(app)).body).toContain("<title>v2</title>");
+    });
+  });
+
+  test("a rewrite with the same size, inode and modified time keeps the cached page", async () => {
+    await withBuild(async ({ app, index }) => {
+      // A whole-second time, so restoring it later gives back the same mtimeMs.
+      const fixed = new Date(Math.floor(Date.now() / 1000) * 1000);
+      await utimes(index, fixed, fixed);
+      expect((await get(app)).body).toContain("<title>v1</title>");
+      await writeFile(index, page("v2"));
+      await utimes(index, fixed, fixed);
+      expect((await get(app)).body).toContain("<title>v1</title>");
+    });
+  });
+
+  test("a malformed replacement fails the request and is read again once fixed", async () => {
+    await withBuild(async ({ app, web, index }) => {
+      expect((await get(app)).statusCode).toBe(200);
+      await writeFile(index, "<html><body></body></html>");
+      const bad = new Date(Date.now() + 10_000);
+      await utimes(index, bad, bad);
+      expect((await get(app)).statusCode).toBe(500);
+      expect(await web.built()).toBe(false);
+      await writeFile(index, page("v3"));
+      // The same modified time as the malformed file: it was not kept.
+      await utimes(index, bad, bad);
+      const fixed = await get(app);
+      expect(fixed.statusCode).toBe(200);
+      expect(fixed.body).toContain("<title>v3</title>");
+      expect(await web.built()).toBe(true);
+    });
+  });
+
+  test("a deleted index.html answers 503 NOT_BUILT, not the old page", async () => {
+    await withBuild(async ({ app, web, index }) => {
+      expect((await get(app)).statusCode).toBe(200);
+      await rm(index);
+      const response = await get(app);
+      expect(response.statusCode).toBe(503);
+      expect(response.body).toBe(NOT_BUILT);
+      expect(await web.built()).toBe(false);
+    });
+  });
+
+  test("a replacement by rename (a new inode) with the same size and time is served", async () => {
+    await withBuild(async ({ app, index, root }) => {
+      const before = new Date(Math.floor(Date.now() / 1000) * 1000);
+      await utimes(index, before, before);
+      expect((await get(app)).body).toContain("<title>v1</title>");
+      const next = join(root, "next.html");
+      await writeFile(next, page("v2"));
+      await utimes(next, before, before);
+      await rename(next, index);
+      expect((await get(app)).body).toContain("<title>v2</title>");
     });
   });
 });
