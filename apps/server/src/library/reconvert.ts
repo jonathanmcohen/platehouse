@@ -313,14 +313,23 @@ function objectRefused(err: unknown): boolean {
   );
 }
 
-/** S3 codes that refuse one request for one object, not the store as a whole. */
-const OBJECT_CODES: ReadonlySet<string> = new Set(["InvalidRange", "NoBody", "NoSuchKey"]);
+/**
+ * Codes that refuse one request for one object, not the store as a whole:
+ * S3's, and SizeMismatch, an object shorter than the size recorded for it.
+ */
+const OBJECT_CODES: ReadonlySet<string> = new Set([
+  "InvalidRange",
+  "NoBody",
+  "NoSuchKey",
+  "SizeMismatch",
+]);
 
 /**
  * Reads a stored .3mf's MakerWorld text from the object store with ranged
  * reads, each given the run's signal. A missing object, a range the store
- * refuses, a file that is not a readable zip, or any other failure that is
- * about the file is null; a file with no MakerWorld details gives no text.
+ * refuses, an object shorter than its record, a file that is not a readable
+ * zip, or any other failure that is about the file is null; a file with no
+ * MakerWorld details gives no text.
  * A store that cannot be reached (StoreUnavailable) or refuses for another
  * reason (any other StoreError) is SourceOutage, which stops the run until
  * the store is back. A read stopped by the signal stops the run too.

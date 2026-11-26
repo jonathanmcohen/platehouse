@@ -175,8 +175,9 @@ export interface DeliveryLibrary {
   /**
    * A stored blob of a live model and its bytes, the part pickRange chooses
    * or all of them (readStored), or RangeNotSatisfiable with no store call;
-   * errors as blobHead, and StoreError (RangeIgnored) when the store did not
-   * honour the range.
+   * errors as blobHead, StoreError (RangeIgnored) when the store did not
+   * honour the range, and StoreError (SizeMismatch) when the object is
+   * shorter than the range.
    */
   openBlob(
     id: string,

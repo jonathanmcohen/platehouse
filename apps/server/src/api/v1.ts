@@ -433,7 +433,8 @@ export interface ApiLibrary {
    * The file's bytes, the part pickRange chooses from the record or all of
    * them (readStored), or RangeNotSatisfiable with no store call;
    * StoreUnavailable, BlobNotFound or StoreError when the store cannot give
-   * them, StoreError (RangeIgnored) when it did not honour the range.
+   * them, StoreError (RangeIgnored) when it did not honour the range, and
+   * StoreError (SizeMismatch) when the object is shorter than the range.
    */
   openFile(
     id: string,

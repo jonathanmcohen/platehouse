@@ -2,7 +2,7 @@
 // one model, and how a run walks the library, counts and records itself. The
 // database side and a run against a real Postgres and object store are in
 // test/integration/library/licence-fill.test.ts.
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   createLicenceFill,
   LICENCE_STEP,
@@ -10,8 +10,12 @@ import {
   type LicenceOutcome,
   type LicenceStore,
   type ReadLicence,
+  storeLicenceReader,
 } from "../../src/library/licence-fill.js";
 import { RECONVERT_PAUSED, type SourceFile, SourceOutage } from "../../src/library/reconvert.js";
+import { createBlobStore } from "../../src/storage/s3.js";
+import { build3mf } from "../integration/support/ingest.js";
+import { startFakeS3, storedObject } from "../storage/support/fake-s3.js";
 
 const model = (n: number) => `0190f5a8-3c2e-7a4b-9c1d-2e3f4a5b6c${String(n).padStart(2, "0")}`;
 const file = (fileId: string): SourceFile => ({ fileId, key: `k/${fileId}`, size: 100 });
@@ -272,5 +276,51 @@ describe("createLicenceFill", () => {
     const { run } = fill(mem, reader({}).readLicence);
     expect(await run.run()).toEqual(ZERO);
     expect(mem.finished.get(LICENCE_STEP)).toEqual(ZERO);
+  });
+});
+
+// A .3mf whose object is shorter than its recorded size, read through the real
+// store against a fake S3 endpoint that cuts a range at the object's last byte
+// as S3 does, is that file being unreadable: the run goes on to the next model.
+describe("a .3mf stored shorter than its record", () => {
+  const cleanups: Array<() => Promise<void> | void> = [];
+  afterEach(async () => {
+    while (cleanups.length > 0) await cleanups.pop()?.();
+  });
+
+  test("counts its model as unreadable, and the run goes on to the next", async () => {
+    const whole = build3mf({
+      plates: 1,
+      makerWorld: {
+        designer: "Synthetic Designer",
+        title: "Synthetic Title",
+        descriptionHtml: "<p>Synthetic</p>",
+        license: "CC BY-ND",
+      },
+    });
+    const fake = await startFakeS3(storedObject(whole.subarray(0, whole.length - 10)));
+    cleanups.push(() => fake.close());
+    const blobs = createBlobStore(
+      {
+        endpoint: fake.endpoint,
+        region: "us-east-1",
+        bucket: "platehouse-test",
+        accessKeyId: ["SYNTH", "ACCESS", "ID"].join(""),
+        secretAccessKey: ["synthetic", "licence", "secret"].join("-"),
+        forcePathStyle: true,
+      },
+      { maxAttempts: 1 },
+    );
+    cleanups.push(() => blobs.destroy());
+    const fromStore = storeLicenceReader(blobs);
+    const mem = memoryStore([model(1), model(2)], {
+      [model(1)]: [{ fileId: "a", key: "k", size: whole.length }],
+      [model(2)]: [file("b")],
+    });
+    const { run } = fill(mem, async (f, signal) =>
+      f.fileId === "a" ? fromStore(f, signal) : { license: "CC-BY-4.0" },
+    );
+    expect(await run.run()).toMatchObject({ checked: 2, unreadable: 1, filled: 1 });
+    expect([...mem.written.keys()]).toEqual([model(2)]);
   });
 });

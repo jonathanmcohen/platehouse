@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { earlierConversions } from "@platehouse/makerworld";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { MAX_DESCRIPTION_CODE_POINTS } from "../../src/library/converted-description.js";
 import {
   composeDescription,
@@ -24,8 +24,14 @@ import {
   type StoredDescription,
   storeTextReader,
 } from "../../src/library/reconvert.js";
-import { BlobNotFound, StoreError, StoreUnavailable } from "../../src/storage/s3.js";
+import {
+  BlobNotFound,
+  createBlobStore,
+  StoreError,
+  StoreUnavailable,
+} from "../../src/storage/s3.js";
 import { build3mf } from "../integration/support/ingest.js";
+import { startFakeS3, storedObject } from "../storage/support/fake-s3.js";
 
 // One description the three converters write three ways: the rc converter
 // keeps the bold marks, 0.1.0 drops them, and only the current one breaks the
@@ -800,6 +806,8 @@ describe("storeTextReader", () => {
     ["access denied", new StoreError("GetObject", "AccessDenied", 403), "outage"],
     ["a missing bucket", new StoreError("GetObject", "NoSuchBucket", 404), "outage"],
     ["a range the store refuses", new StoreError("GetObject", "InvalidRange", 416), "null"],
+    ["an object shorter than its record", new StoreError("GetObject", "SizeMismatch"), "null"],
+    ["a range the store did not honour", new StoreError("GetObject", "RangeIgnored"), "outage"],
     ["an answer with no body", new StoreError("GetObject", "NoBody"), "null"],
     ["a range the caller got wrong", new RangeError("bad range"), "null"],
     ["any other error", new TypeError("a bug in a reader"), "null"],
@@ -916,5 +924,80 @@ describe("a run and one bad file", () => {
     const reconvert = createDescriptionReconvert({ store: mem.store, readText, log: () => {} });
     expect(await reconvert.run(undefined, controller.signal)).toBe(RECONVERT_PAUSED);
     expect(readText).not.toHaveBeenCalled();
+  });
+});
+
+// A .3mf whose object is shorter than its recorded size (a damaged copy, or a
+// restore that lost its end) is read through the real store against a fake S3
+// endpoint, which cuts a range at the object's last byte as S3 does. It is
+// that file being unreadable, never an outage, so it cannot stop the run at
+// the same model every time.
+describe("a .3mf stored shorter than its record", () => {
+  const cleanups: Array<() => Promise<void> | void> = [];
+  afterEach(async () => {
+    while (cleanups.length > 0) await cleanups.pop()?.();
+  });
+
+  async function storeHolding(bytes: Buffer) {
+    const fake = await startFakeS3(storedObject(bytes));
+    cleanups.push(() => fake.close());
+    const store = createBlobStore(
+      {
+        endpoint: fake.endpoint,
+        region: "us-east-1",
+        bucket: "platehouse-test",
+        accessKeyId: ["SYNTH", "ACCESS", "ID"].join(""),
+        secretAccessKey: ["synthetic", "truncated", "secret"].join("-"),
+        forcePathStyle: true,
+      },
+      { maxAttempts: 1 },
+    );
+    cleanups.push(() => store.destroy());
+    return store;
+  }
+
+  const whole = build3mf({
+    plates: 1,
+    makerWorld: {
+      designer: "Synthetic Designer",
+      title: "Synthetic Title",
+      descriptionHtml: HTML,
+      license: "Standard Digital File License",
+    },
+  });
+
+  test("reads as could not be read, not as an outage", async () => {
+    const store = await storeHolding(whole.subarray(0, whole.length - 10));
+    const got = await storeTextReader(store)({
+      fileId: FILE_A,
+      key: "k",
+      size: whole.length,
+    }).then(
+      (v) => (v === null ? "null" : "text"),
+      (e: unknown) => (e instanceof SourceOutage ? "outage" : `other ${String(e)}`),
+    );
+    expect(got).toBe("null");
+  });
+
+  test("counts its model as could not be read, and the run goes on to the next", async () => {
+    const store = await storeHolding(whole.subarray(0, whole.length - 10));
+    const rows = [
+      stored({ modelId: model(1), description: BY_RC }),
+      stored({ modelId: model(2), description: BY_RC }),
+    ];
+    const files = {
+      [model(1)]: [{ fileId: fileOf(1), key: "k", size: whole.length }],
+      [model(2)]: [file(fileOf(2))],
+    };
+    const mem = memoryStore(rows, files);
+    const readFromStore = storeTextReader(store);
+    const reconvert = createDescriptionReconvert({
+      store: mem.store,
+      readText: async (f, signal) =>
+        f.fileId === fileOf(1) ? readFromStore(f, signal) : { html: HTML, note: null },
+      log: () => {},
+    });
+    expect(await reconvert.run()).toMatchObject({ checked: 2, unreadable: 1, changed: 1 });
+    expect(mem.writes.map((w) => w.modelId)).toEqual([model(2)]);
   });
 });

@@ -7,9 +7,10 @@
 // A Range request reads the object with getBlobRange, and the routes mounted
 // here as the server mounts them (the download, a blob and the API's file
 // content) answer 503 before any header when the store ignored the range
-// (RangeIgnored) or its Content-Range gives a total that is not the record
-// (SizeMismatch): the bytes sent are exactly the range of the recorded
-// object, or none.
+// (RangeIgnored), the object is shorter than the range asked for, so the
+// store cut the range short (SizeMismatch), or its Content-Range gives a total
+// that is not the record (SizeMismatch): the bytes sent are exactly the range
+// of the recorded object, or none.
 //
 // Every value here is synthetic, joined from parts so that no source line
 // looks like a credential.
@@ -28,6 +29,7 @@ import {
 import { buildApp } from "../../../src/app.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import type { DeliveryDeps } from "../../../src/delivery/download.js";
+import type { PickRange } from "../../../src/delivery/range.js";
 import {
   type BlobStore,
   createBlobStore,
@@ -35,7 +37,7 @@ import {
   reportObjectSize,
 } from "../../../src/storage/s3.js";
 import { createUploads } from "../../../src/uploads/tus.js";
-import { type Handler, startFakeS3 } from "../../storage/support/fake-s3.js";
+import { type Handler, startFakeS3, storedObject } from "../../storage/support/fake-s3.js";
 import { authTestApp, memoryTokenStore, testAuth } from "../support/oidc-issuer.js";
 
 const SECRET = ["synthetic", "secret", "never", "in", "an", "error", "7a2e"].join("-");
@@ -177,6 +179,10 @@ describe("a range answer the store did not honour, through the routes", () => {
     expectUnavailable(answers);
   });
 
+  it("an object shorter than the range, which the store cuts short, is 503 (SizeMismatch)", async () => {
+    expectUnavailable(await rangedAnswers(storedObject(Buffer.from("abcde"))));
+  });
+
   it("a store that honours the range with the record's total is 206 with those bytes", async () => {
     const answers = await rangedAnswers(() => ({
       status: 206,
@@ -214,7 +220,7 @@ describe("a range answer the store did not honour, through the API's file conten
     const library = {
       ...refusingApi.library,
       fileHead: async (id: string) => (id === FILE_ID ? head : undefined),
-      openFile: async (id: string, pick?: Parameters<typeof readStored>[3]) =>
+      openFile: async (id: string, pick?: PickRange) =>
         id === FILE_ID ? readStored(store, KEY, head, pick) : undefined,
     };
     const t = await authTestApp({ api: { tokens, library } });
@@ -254,6 +260,10 @@ describe("a range answer the store did not honour, through the API's file conten
         body: "a".repeat(10),
       })),
     );
+  });
+
+  it("an object shorter than the range, which the store cuts short, is 503 (SizeMismatch)", async () => {
+    expectUnavailable(await rangedAnswer(storedObject(Buffer.from("abcde"))));
   });
 
   it("a store that honours the range with the record's total is 206 with those bytes", async () => {
