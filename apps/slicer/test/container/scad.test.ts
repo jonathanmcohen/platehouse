@@ -337,10 +337,11 @@ describe("OpenSCAD in the image", () => {
   // shell inside the container looks for an openscad process, so no time is
   // lost between docker execs, and prints its OOM score and the server's.
   test("during a render, OpenSCAD's OOM score is 1000 and the server's is 0", async () => {
-    // Thirty hollow shells in one union keep OpenSCAD busy for a few seconds.
+    // A few hollow shells in one union keep OpenSCAD busy long enough to be
+    // seen; the loop below looks every 50 ms and needs no more than that.
     const heavy =
-      "for (i = [0:29]) rotate([i * 6, 0, 0]) difference() { sphere(r = 20, $fn = 200); sphere(r = 19, $fn = 200); }";
-    const render = post("/v1/scad/stl", heavy);
+      "for (i = [0:5]) rotate([i * 12, 0, 0]) difference() { sphere(r = 20, $fn = 100); sphere(r = 19, $fn = 100); }";
+    const render = post("/v1/scad/stl", heavy).then(statusOf, (e: unknown) => `fetch failed: ${e}`);
     const script = `
       for i in $(seq 600); do
         for d in /proc/[0-9]*; do
@@ -357,9 +358,11 @@ describe("OpenSCAD in the image", () => {
       done
       echo "no openscad process seen"
       exit 1`;
+    // slicer.exec blocks this process, so let the request go out first; the
+    // server renders while the shell below looks.
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const seen = slicer.exec(["sh", "-c", script]);
-    const res = await render;
-    expect(await statusOf(res)).toBe("200");
     expect(seen.stdout.trim()).toBe("openscad=1000 server=0");
+    expect(await render).toBe("200");
   });
 });
