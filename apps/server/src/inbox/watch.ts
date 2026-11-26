@@ -1471,7 +1471,9 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    *   never a file or a folder with anything in it.
    * - Anything else (a FIFO, a socket) is not put back: it throws, since
    *   nothing took the name, so SWAPPED_REASON would be false for it.
-   * Returns false only when the name was taken, the held item left where it
+   * The lstat that decided a file is a regular file is passed to copyBack,
+   * which checks that the file it opens is that one. Returns false only when
+   * the name was taken, the held item left where it
    * is. Throws when putting it back failed or cannot be done, with nothing
    * left under the name.
    */
@@ -1481,13 +1483,13 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     path: string,
     pass: InboxPass,
   ): Promise<boolean> {
-    const st = await lstat(held);
+    const st = await lstat(held, { bigint: true });
     if (st.isFile()) {
       try {
         await link(held, path);
       } catch (error) {
         if (codeOf(error) === "EEXIST") return false;
-        return await copyBack(name, held, path, pass);
+        return await copyBack(name, held, path, pass, st);
       }
       await dropHeld(held, path);
       return true;
@@ -1533,6 +1535,9 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * or taken back out from under the name by takeBackCopy, and StillWriting
    * is thrown with the held file still held, the same inode the writer goes
    * on writing. The held file is deleted only once the copy holds the name.
+   * Before any copy, the opened file's fstat (device and inode) must match
+   * the lstat putBack decided on (looked); when a file was renamed over the
+   * held name in between, that is thrown and nothing is put back.
    * The copy is a new inode, which the next pass looks at from the start as
    * it would the file itself. Returns false when the name is taken; throws,
    * with the held file still held, on any other failure, a filesystem with
@@ -1551,11 +1556,17 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     held: string,
     path: string,
     pass: InboxPass,
+    looked: BigIntStats,
   ): Promise<boolean> {
     const temp = join(dirname(held), `${HOLD_COPY_PREFIX}${uuidv7()}`);
     const source = await open(held, OPEN_SETTLED);
     try {
       const before = await source.stat({ bigint: true });
+      if (before.dev !== looked.dev || before.ino !== looked.ino) {
+        throw new Error(
+          `${path}'s held file changed between the check and the copy, so it was not put back`,
+        );
+      }
       const unchanged = async () => {
         const now = await source.stat({ bigint: true });
         return now.size === before.size && now.mtimeNs === before.mtimeNs;

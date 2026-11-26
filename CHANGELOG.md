@@ -26,6 +26,7 @@ All notable changes to Platehouse are recorded here. The format follows
   - the sandbox can be off on Linux 6.12 or newer, when Landlock is turned off, Docker blocks it, or the kernel lacks its 2025 Landlock fix (6.12 before 6.12.24, 6.13 before 6.13.12, 6.14 before 6.14.3);
   - how to tell which, from the slicer's log.
 - A server whose web build is replaced while it runs (a rebuilt or bind-mounted build) serves the new pages without a restart.
+- Putting a file back under an imported file's name in the inbox checks that the file it copies is the one it found, so a file swapped in at that moment is not copied.
 
 ## [0.1.1] - 2026-11-24
 
