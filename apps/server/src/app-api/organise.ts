@@ -96,9 +96,18 @@
 // same transaction as the marking, so a mark never commits without its job,
 // and is skipped when an empty-trash job is already queued and not started:
 // that job lists the marked models when it starts, so it purges these too.
-// Two requests at once both mark the models trashed before the earlier
-// cutoff, so one waits on the other's row locks until it commits, and then
-// finds its job; a request that marks nothing sends none.
+// The check reads that job's row FOR SHARE in the same transaction. pg-boss
+// claims a job with FOR UPDATE SKIP LOCKED, so a worker passes over a job
+// this check holds until the marks commit, and its list then has them; a job
+// a worker claimed first makes the check wait, and once the claim commits
+// the job is active, so the check finds none queued and sends a new one.
+// Without the lock, a job claimed between the check and the commit could
+// list the models before these marks are visible, and leave them marked
+// with no job until the daily purge. The marking locks the models in id
+// order, as the bulk actions do, so two requests at once do not deadlock:
+// both mark the models trashed before the earlier cutoff, so one waits on
+// the other's row locks until it commits, and then finds its job. A request
+// that marks nothing sends none.
 //
 // While an empty-trash job is queued or running, GET /app/api/trash answers
 // emptying: true, and purging counts the marked models on every page, so the
@@ -144,7 +153,7 @@ export interface OrganiseDeps {
   db: Kysely<DB>;
   trash: Pick<ReturnType<typeof createTrash>, "trashModel" | "restoreModel" | "requestPurge">;
   /** Where Empty trash queues its job, in the marking's transaction. */
-  boss: Pick<PgBoss, "send" | "findJobs">;
+  boss: Pick<PgBoss, "send">;
 }
 
 /** A model as the organising pages show it: its chips and its files. */
@@ -708,17 +717,19 @@ export async function registerOrganiseApi(
           return refuse(reply, 400, "bad_request", STALE_TRASH, { code: "stale_trash" });
         }
         // The marks and their job commit together. A job already queued
-        // and not started lists the marked models when it starts, so it is
-        // not sent twice.
+        // and not started, held FOR SHARE until the commit so no worker can
+        // claim it before the marks are visible, lists the marked models
+        // when it starts, so it is not sent twice.
         let queued = 0;
         await db.transaction().execute(async (trx) => {
           queued = await trash.requestPurge(new Date(at), trx);
           if (queued > 0) {
-            const waiting = await boss.findJobs(QUEUE.maintenance, {
-              data: { task: ON_DEMAND_TASKS.emptyTrash },
-              queued: true,
-              db: bossDb(trx),
-            });
+            const { rows: waiting } = await sql<{ id: string }>`
+              select id from ${BOSS_JOB}
+               where name = ${QUEUE.maintenance}
+                 and state < 'active'
+                 and data @> ${JSON.stringify({ task: ON_DEMAND_TASKS.emptyTrash })}::jsonb
+               for share`.execute(trx);
             if (waiting.length === 0) {
               await boss.send(
                 QUEUE.maintenance,

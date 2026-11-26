@@ -150,6 +150,22 @@ async function createdEmptyTrashJobs(): Promise<number> {
   return rows[0]?.n ?? 0;
 }
 
+/** The ids of the empty-trash jobs waiting in pg-boss ('created'), oldest first. */
+async function createdEmptyTrashJobIds(): Promise<string[]> {
+  const jobs = await boss.findJobs(QUEUE.maintenance, {
+    data: { task: ON_DEMAND_TASKS.emptyTrash },
+    queued: true,
+  });
+  return jobs.filter((j) => j.state === "created").map((j) => j.id);
+}
+
+/** Deletes the empty-trash jobs left waiting by earlier tests, so the next Empty trash sends one. */
+async function clearCreatedEmptyTrashJobs(): Promise<void> {
+  const ids = await createdEmptyTrashJobIds();
+  if (ids.length > 0) await boss.deleteJob(QUEUE.maintenance, ids);
+  expect(await createdEmptyTrashJobs()).toBe(0);
+}
+
 /** How many trashed models carry the purge marker, in the whole database. */
 async function markedCount(): Promise<number> {
   const row = await env.db
@@ -916,6 +932,8 @@ describe("Empty trash (POST /app/api/trash/empty)", () => {
     const trash = trashFor();
     await trash.trashModel(model.id);
     const cutoff = await databaseCutoff();
+    // No job waiting, so one of the two at once must send it, and only one may.
+    await clearCreatedEmptyTrashJobs();
 
     const [first, second] = await Promise.all([
       emptyTrash(trash, { cutoff }),
@@ -925,8 +943,7 @@ describe("Empty trash (POST /app/api/trash/empty)", () => {
     expect([first.status, second.status]).toEqual([202, 202]);
     expect(first.body.queued).toBeGreaterThanOrEqual(1);
     expect(second.body.queued).toBe(first.body.queued);
-    // At most one queued job: no worker runs here, so this is the one the
-    // file's first Empty trash queued.
+    // At most one queued job: no worker runs here, so it is still 'created'.
     expect(await createdEmptyTrashJobs()).toBe(1);
 
     // And one after the other.
@@ -935,6 +952,53 @@ describe("Empty trash (POST /app/api/trash/empty)", () => {
     expect(await createdEmptyTrashJobs()).toBe(1);
 
     expect((await first.runJob()).purged).toContain(model.id);
+  });
+
+  test("a job a worker claims while Empty trash checks it is not relied on: a new job is sent", async () => {
+    const first = await seedStoredModel(env);
+    const second = await seedStoredModel(env);
+    const trash = trashFor();
+    await clearCreatedEmptyTrashJobs();
+    await trash.trashModel(first.model.id);
+    expect((await emptyTrash(trash)).status).toBe(202);
+    const [claimed] = await createdEmptyTrashJobIds();
+    if (claimed === undefined) throw new Error("Empty trash queued no job");
+    await trash.trashModel(second.model.id);
+    let posted: ReturnType<typeof emptyTrash> | undefined;
+
+    // A worker claims the job as pg-boss's fetch does (its row locked and
+    // made active) while a second Empty trash checks for a queued job. The
+    // check waits for the claim; once it commits, the job is active, and a
+    // job that already listed the marked models cannot be relied on.
+    await env.db.transaction().execute(async (trx) => {
+      await sql`update ${BOSS_JOB} set state = 'active', started_on = now()
+                 where name = ${QUEUE.maintenance} and id = ${claimed}`.execute(trx);
+      posted = emptyTrash(trash);
+      await vi.waitFor(
+        async () => {
+          const { rows } = await sql<{ n: number }>`
+            select count(*)::int as n from pg_stat_activity
+             where datname = current_database()
+               and wait_event_type = 'Lock'
+               and query ilike '%for share%'`.execute(env.db);
+          expect(rows[0]?.n).toBeGreaterThan(0);
+        },
+        { timeout: 10_000, interval: 50 },
+      );
+    });
+    const result = await (posted as ReturnType<typeof emptyTrash>);
+
+    expect(result.status).toBe(202);
+    expect(result.body.queued).toBeGreaterThanOrEqual(2);
+    const waiting = await createdEmptyTrashJobIds();
+    expect(waiting).toHaveLength(1);
+    expect(waiting).not.toContain(claimed);
+
+    // Tidy up: the claimed job ends, and the new one's work is done here.
+    await boss.complete(QUEUE.maintenance, claimed);
+    expect((await result.runJob()).purged).toEqual(
+      expect.arrayContaining([first.model.id, second.model.id]),
+    );
   });
 
   test("a job that fails on the store keeps the models marked, and a later run finishes them", async () => {

@@ -291,14 +291,21 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
      * cutoff's millisecond, in one statement in the caller's transaction, and
      * answers how many. trashed_at keeps microseconds, so "at or before
      * 12:00:00.123" is "before 12:00:00.124". A marker already set is kept.
-     * A restore that holds a model's row makes this wait, and under READ
-     * COMMITTED the statement then finds the model live and leaves it.
+     * The rows are locked in id order (FOR NO KEY UPDATE, as the bulk
+     * actions lock them), so two at once cannot deadlock. A restore that
+     * holds a model's row makes this wait, and under READ COMMITTED the lock
+     * then reads the row again, finds the model live and leaves it.
      */
     async requestPurge(cutoff: Date, trx: Kysely<DB> | Transaction<DB>): Promise<number> {
       const before = new Date(cutoff.getTime() + 1);
       const { rows } = await sql<{ id: string }>`
         update models set purge_started_at = coalesce(purge_started_at, now())
-         where trashed_at is not null and trashed_at < ${before}
+         where id in (
+           select id from models
+            where trashed_at is not null and trashed_at < ${before}
+            order by id
+            for no key update
+         )
         returning id`.execute(trx);
       return rows.length;
     },

@@ -77,9 +77,6 @@ beforeAll(async () => {
       send: async () => {
         throw new Error("Empty trash is not in these tests");
       },
-      findJobs: async () => {
-        throw new Error("Empty trash is not in these tests");
-      },
     },
   });
   await app.ready();
