@@ -5,12 +5,15 @@
 // of it as code. So each of the six pages is parsed with MDX's own parser, the
 // one Docusaurus compiles them with, and may hold exactly one import of the
 // warning and one <AllowlistWarning /> with no attributes, and nothing else
-// that MDX would run. No other docs page may switch to MDX.
+// that MDX would run. No other docs page may switch to MDX, and no docs page
+// may use front matter or a fence that would let it in by another door.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { createProcessor } from "@mdx-js/mdx";
 import { describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const MDX_PAGES: Record<string, string> = {
@@ -31,18 +34,72 @@ interface MdxNode {
   position?: { start: { line: number } };
 }
 
-const FRONT_MATTER = /^---\n([\s\S]*?)\n---\n/;
+/**
+ * A page's front matter as gray-matter, which Docusaurus reads it with, finds
+ * it: from an opening "---" at the very start to the next line that starts
+ * with "---". Null when the page has none. The end is where the page's body
+ * starts. The opening line itself is checked by frontMatterProblems.
+ */
+function frontMatter(text: string): { opener: string; yaml: string; end: number } | null {
+  if (!text.startsWith("---") || text.charAt(3) === "-") return null;
+  const firstBreak = text.indexOf("\n");
+  const opener = firstBreak === -1 ? text : text.slice(0, firstBreak);
+  const close = text.indexOf("\n---", opener.length);
+  if (close === -1) return { opener, yaml: text.slice(opener.length), end: text.length };
+  const lineEnd = text.indexOf("\n", close + 1);
+  return {
+    opener,
+    yaml: text.slice(opener.length, close),
+    end: lineEnd === -1 ? text.length : lineEnd + 1,
+  };
+}
 
-/** Whether a page's front matter makes Docusaurus read it as MDX. */
-const asksForMdx = (text: string): boolean =>
-  /\bformat\s*:\s*["']?mdx\b/.test(FRONT_MATTER.exec(text)?.[1] ?? "");
+/**
+ * Why a docs page's front matter or fences could let MDX in, as a list; empty
+ * when it is plain. Every page: no carriage return or byte order mark (either
+ * changes how gray-matter splits the page), an opening line of exactly "---"
+ * (gray-matter takes ---json, ---js and others as an engine, and eval's ---js
+ * while the site builds), front matter that parses as YAML, and no
+ * mdx-code-block fence (Docusaurus unwraps those before MDX compiles the
+ * page). The YAML is parsed, so a quoted key, a tag, an alias or an escape
+ * still shows as an mdx key: a page not allowed MDX has none, and an allowed
+ * page's is exactly { format: "mdx" }.
+ */
+function frontMatterProblems(text: string, mdxAllowed: boolean): string[] {
+  const problems: string[] = [];
+  if (text.includes("\r")) problems.push("holds a carriage return");
+  if (text.startsWith("\uFEFF")) problems.push("starts with a byte order mark");
+  if (text.includes("mdx-code-block")) problems.push("holds an mdx-code-block fence");
+  const front = frontMatter(text);
+  if (text.startsWith("---") && front?.opener !== "---") {
+    problems.push(`its first line is ${JSON.stringify(text.split("\n")[0])}, not exactly ---`);
+    return problems;
+  }
+  let data: unknown = null;
+  try {
+    data = front ? parseYaml(front.yaml) : null;
+  } catch (e) {
+    problems.push(
+      `its front matter is not YAML: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`,
+    );
+    return problems;
+  }
+  const hasMdx = typeof data === "object" && data !== null && Object.hasOwn(data, "mdx");
+  if (!mdxAllowed && hasMdx) problems.push("its front matter has an mdx key");
+  if (
+    mdxAllowed &&
+    !(hasMdx && isDeepStrictEqual((data as { mdx: unknown }).mdx, { format: "mdx" }))
+  )
+    problems.push("its front matter's mdx key is not exactly { format: mdx }");
+  return problems;
+}
 
 /**
  * Each MDX construct in a page that is not the one allowed import or the one
  * bare <AllowlistWarning />, as "line N: what". Empty when the page is clean.
  */
 function mdxProblems(text: string, allowedImport: string): string[] {
-  const front = FRONT_MATTER.exec(text)?.[0] ?? "";
+  const front = text.slice(0, frontMatter(text)?.end ?? 0);
   // Blank lines keep the line numbers the same as in the file.
   const body = "\n".repeat(front.split("\n").length - 1) + text.slice(front.length);
   const tree = createProcessor().parse(body) as MdxNode;
@@ -131,26 +188,83 @@ describe("the MDX docs pages", () => {
     expect(mdxProblems(page, IMPORT)).not.toEqual([]);
   });
 
-  it("reads mdx: format: mdx in its usual spellings", () => {
-    expect(asksForMdx("---\nmdx:\n  format: mdx\n---\n")).toBe(true);
-    expect(asksForMdx('---\nmdx: { format: "mdx" }\n---\n')).toBe(true);
-    expect(asksForMdx("---\ndescription: A page.\n---\n")).toBe(false);
+  it("a page without an mdx key, or an allowed page with mdx: format: mdx, passes the front matter check", () => {
+    expect(frontMatterProblems("---\ndescription: A page.\n---\n\nText.\n", false)).toEqual([]);
+    expect(frontMatterProblems("No front matter.\n", false)).toEqual([]);
+    expect(frontMatterProblems(PAGE, true)).toEqual([]);
+  });
+
+  // Docusaurus reads front matter with gray-matter, which takes any of these
+  // as mdx.format: "mdx", or runs another engine (---js is eval'd while the
+  // site builds). Each one must be refused on a page not allowed MDX.
+  it.each([
+    ["the plain spelling", "---\nmdx:\n  format: mdx\n---\n"],
+    ["a quoted key in a flow map", '---\nmdx: {"format": "mdx"}\n---\n'],
+    ["a single-quoted key", "---\nmdx:\n  'format': mdx\n---\n"],
+    ["a YAML tag", "---\nmdx:\n  format: !!str mdx\n---\n"],
+    ["an alias", "---\nkind: &a mdx\nmdx:\n  format: *a\n---\n"],
+    ["an escaped value", '---\nmdx:\n  format: "\\x6ddx"\n---\n'],
+    ["an escaped key", '---\n"\\x6ddx": {format: mdx}\n---\n'],
+    ["an mdx key with no format", "---\nmdx: {}\n---\n"],
+    ["CRLF line endings", "---\r\nmdx:\r\n  format: mdx\r\n---\r\n"],
+    ["a carriage return anywhere", "---\ndescription: A page.\n---\n\nText.\r\n"],
+    ["JSON front matter", '---json\n{"mdx": {"format": "mdx"}}\n---\n'],
+    ["JavaScript front matter", '---js\n{ mdx: { format: "mdx" } }\n---\n'],
+    ["a byte order mark before the front matter", "\uFEFF---js\n{}\n---\n"],
+    ["front matter that is not valid YAML", "---\nmdx: [\n---\n"],
+  ])("refuses %s on a page not allowed MDX", (_name, text) => {
+    expect(frontMatterProblems(text, false)).not.toEqual([]);
+  });
+
+  it("refuses an allowed page whose mdx key says anything but format: mdx", () => {
+    expect(
+      frontMatterProblems(PAGE.replace("  format: mdx", "  format: mdx\n  other: 1"), true),
+    ).not.toEqual([]);
+    expect(
+      frontMatterProblems(PAGE.replace("---\ndescription", "---js\ndescription"), true),
+    ).not.toEqual([]);
+  });
+
+  // Docusaurus unwraps mdx-code-block fences before MDX compiles a page, so
+  // code in one runs though it looks like a code block. No docs page needs
+  // one, so the fence is refused outright, in every docs file.
+  it("refuses an mdx-code-block fence holding an export and an onClick element", () => {
+    const hidden = [
+      "```mdx-code-block",
+      "export const x = 1;",
+      "",
+      "<div onClick={() => alert(1)}>Click</div>",
+      "```",
+      "",
+    ].join("\n");
+    expect(
+      mdxProblems(`${PAGE}\n${hidden}`, IMPORT),
+      "the raw parse sees only a code block",
+    ).toEqual([]);
+    expect(frontMatterProblems(`${PAGE}\n${hidden}`, true)).not.toEqual([]);
+    expect(
+      frontMatterProblems(
+        `Text.\n\n${hidden.replace("```mdx", "````mdx").replace(/```\n$/, "````\n")}`,
+        false,
+      ),
+    ).not.toEqual([]);
   });
 
   it.each(Object.entries(MDX_PAGES))("%s holds no MDX but the warning", (path, allowedImport) => {
     const text = readFileSync(join(ROOT, path), "utf8");
-    expect(asksForMdx(text), `${path} asks for MDX`).toBe(true);
+    expect(frontMatterProblems(text, true)).toEqual([]);
     expect(mdxProblems(text, allowedImport)).toEqual([]);
   });
 
-  it("no other docs page is MDX", () => {
-    const others = docsFiles().filter(
-      (path) =>
-        !(path in MDX_PAGES) &&
-        (path.endsWith(".mdx") ||
-          (path.endsWith(".md") && asksForMdx(readFileSync(join(ROOT, path), "utf8")))),
+  it("no other docs page is MDX, and every docs page's front matter is plain YAML", () => {
+    const pages = docsFiles().filter((path) => path.endsWith(".md") || path.endsWith(".mdx"));
+    expect(pages.filter((path) => path.endsWith(".mdx"))).toEqual([]);
+    const problems = pages.flatMap((path) =>
+      frontMatterProblems(readFileSync(join(ROOT, path), "utf8"), path in MDX_PAGES).map(
+        (p) => `${path}: ${p}`,
+      ),
     );
-    expect(others).toEqual([]);
+    expect(problems).toEqual([]);
   });
 
   it("Docusaurus reads every other page as CommonMark", () => {
