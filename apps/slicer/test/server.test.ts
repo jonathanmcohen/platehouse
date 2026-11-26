@@ -20,7 +20,13 @@ import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import { afterAll, afterEach, describe, expect, test, vi } from "vitest";
 import { TOO_BIG_DETAIL } from "../src/orca.js";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
-import { landrunArgs, PIPE_GRACE_MS, readOutputFile, sandboxRules } from "../src/sandbox.js";
+import {
+  landrunArgs,
+  PIPE_GRACE_MS,
+  readOutputFile,
+  sandboxPaths,
+  sandboxRules,
+} from "../src/sandbox.js";
 import { MAX_RENDER_OUTPUT_BYTES } from "../src/scad.js";
 import {
   createSlicer,
@@ -309,12 +315,12 @@ describe("configuration", () => {
 // and the server says so once at start-up.
 describe("the clean-up of processes left behind", () => {
   test("its start-up notice says it is off when the server does not run under tini", () => {
-    expect(reapOffNotice({ reapOrphans: false })).toMatch(/processes left behind.*off.*tini/i);
+    expect(reapOffNotice({ reapLeftBehind: false })).toMatch(/processes left behind.*off.*tini/i);
     expect(reapOffNotice({})).toMatch(/off/);
   });
 
   test("there is no start-up notice when it is on", () => {
-    expect(reapOffNotice({ reapOrphans: true })).toBeNull();
+    expect(reapOffNotice({ reapLeftBehind: true })).toBeNull();
   });
 });
 
@@ -2532,14 +2538,6 @@ describe("leftover job folders and /work space", () => {
 // off they run under prlimit only, and landrun never runs.
 describe("OrcaSlicer and the STEP worker in the sandbox", () => {
   const argsOf = (file: string) => readFileSync(file, "utf8").trimEnd().split("\n");
-  const pathsFor = (config: SlicerConfig, dir: string) => ({
-    dir,
-    openscadDir: config.openscadDir,
-    orcaDir: config.orcaDir,
-    profilesDir: config.profilesDir,
-    nodeDir: config.nodeDir,
-    appDir: config.appDir,
-  });
   const ORCA_LIMITS = ["--cpu=180", "--nproc=512", "--fsize=1073741824", "--core=0"];
   const STEP_LIMITS = ["--cpu=180", "--nproc=512", `--fsize=${LIMITS.stepOutputBytes}`, "--core=0"];
 
@@ -2557,7 +2555,7 @@ describe("OrcaSlicer and the STEP worker in the sandbox", () => {
     const orca = argsOf(s.fake.argsLog);
     // Orca's own folder is a subfolder of the job folder; GNU time's report
     // sits in the job folder above it, out of Orca's reach.
-    const rules = sandboxRules("orca", pathsFor(s.config, join(dir, "orca")));
+    const rules = sandboxRules("orca", sandboxPaths(s.config, join(dir, "orca")));
     expect(rules.rw).toEqual([join(dir, "orca")]);
     expect(orca.at(-1)).toBe(join(dir, "orca", "input.3mf"));
     expect(orca[orca.indexOf("--outputdir") + 1]).toBe(join(dir, "orca", "out"));
@@ -2621,7 +2619,7 @@ describe("OrcaSlicer and the STEP worker in the sandbox", () => {
       ...STEP_LIMITS,
       "--",
       lr.bin,
-      ...landrunArgs({ rules: sandboxRules("step", pathsFor(s.config, dir)), command }),
+      ...landrunArgs({ rules: sandboxRules("step", sandboxPaths(s.config, dir)), command }),
     ]);
   });
 
@@ -2665,7 +2663,7 @@ describe("OrcaSlicer and the STEP worker in the sandbox", () => {
   });
 
   // OrcaSlicer runs as bin/orca-slicer, with its launcher's environment
-  // (launcherEnv in orca.ts), not through the AppRun bash launcher, which
+  // (launcherEnv in orca-env.ts), not through the AppRun bash launcher, which
   // would need bash and the commands it calls inside the sandbox.
   test("the image's defaults: Orca's own binary and tree, this Node's folder, the app folder", () => {
     const c = loadConfig(
@@ -2769,6 +2767,17 @@ describe("sandbox folders in the configuration", () => {
     expect(() => loadConfig({ ...VERSIONS, ORCA_BIN: "/opt/orca-other/x" }, NODE)).toThrow(
       /ORCA_BIN/,
     );
+  });
+
+  test("ORCA_BIN that is a link inside ORCA_DIR to a file outside it is refused", () => {
+    const orca = join(tempDir("slicer-orca-"), "orca");
+    mkdirSync(join(orca, "bin"), { recursive: true });
+    const outside = join(tempDir("slicer-outside-"), "not-orca");
+    writeFileSync(outside, "#!/bin/sh\n");
+    symlinkSync(outside, join(orca, "bin", "orca-slicer"));
+    expect(() =>
+      loadConfig({ ...VERSIONS, ORCA_DIR: orca, ORCA_BIN: join(orca, "bin", "orca-slicer") }, NODE),
+    ).toThrow(/ORCA_BIN/);
   });
 
   test("a Node installed under /usr is refused, since its folder would be /usr", () => {

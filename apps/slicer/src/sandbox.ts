@@ -48,7 +48,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { LIMITS } from "@platehouse/slicer-contract";
-import { launcherEnv, scratchEnv } from "./orca.js";
+import { launcherEnv, scratchEnv } from "./orca-env.js";
 
 /**
  * Paths each sandboxed program may run code from, besides its own tree
@@ -173,7 +173,7 @@ export interface SandboxRules {
  *   driver config and the locale data). Its presets and process_full are in
  *   its own tree. Its environment is scratchEnv's (HOME, TMPDIR and the XDG
  *   folders all in its own folder) plus what its AppImage launcher would set
- *   (launcherEnv in orca.ts, which says why Orca runs without the launcher).
+ *   (launcherEnv in orca-env.ts, which says why Orca runs without the launcher).
  *   It needs nothing under /etc but the fonts' config, and nothing under
  *   /proc or /sys: OrcaSlicer 2.5.0's command line reads /proc/self/statm
  *   and /proc/version only for its log, and goes on without them
@@ -184,8 +184,9 @@ export interface SandboxRules {
  * - step: reads the app, where step.js and occt-import-js are, and runs
  *   Node from its own folder and only the loader and libraries in NODE_LIBS,
  *   not the multiarch folder: unlike OpenSCAD and Orca it loads no plug-in
- *   and no helper, so it needs no more than Node links (issue #480). OPENSSL_CONF is set empty, so Node loads no
- *   OpenSSL config file (Node's documented way past one it cannot read) and
+ *   and no helper, so it needs no more than Node links (issue #480).
+ *   OPENSSL_CONF is set empty, so Node loads no OpenSSL config file (Node's
+ *   documented way past one it cannot read) and
  *   needs nothing under /etc. Without it Node opens /etc/ssl/openssl.cnf at
  *   start-up, and when the file exists but cannot be read it exits with
  *   "OpenSSL configuration error ... Permission denied" (CI run
@@ -836,7 +837,10 @@ export function ledInMessage(leadIn: string, text: string, lines = 20, chars = 2
     .slice(-lines)
     .join(" / ");
   if (one.length === 0) return "";
-  return `${leadIn}${one.length > chars ? one.slice(one.length - chars) : one}`;
+  if (one.length <= chars) return `${leadIn}${one}`;
+  // The cut counts UTF-16 units, so it can land between the halves of a pair;
+  // a low surrogate left at the front would be a lone, unprintable half.
+  return `${leadIn}${one.slice(one.length - chars).replace(/^[\uDC00-\uDFFF]/, "")}`;
 }
 
 export type ScadOutput = "stl" | "png";

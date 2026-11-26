@@ -2245,6 +2245,12 @@ test("slicer-image: the whole container suite runs on the built image before any
   assert.match(suite, /\n {10}EXPECTED_ORCA_VERSION: \$\{\{ needs\.detect\.outputs\.version \}\}\n/);
   assert.match(suite, /vitest run --project container --reporter=default --reporter=json --outputFile=suite-report\.json/);
   assert.doesNotMatch(suite, /vitest run --project container \S*\.test\.ts/, "no file filter");
+  // The smoke slice already ran as its own step, so the suite skips smoke.test.ts.
+  assert.match(suite, /--outputFile=suite-report\.json --exclude '\*\*\/test\/container\/smoke\.test\.ts'/);
+  // A skipped filament-digest test is a warning that names the file to refresh.
+  assert.match(suite, /--arg prefix "the image's default filaments equal"/);
+  assert.match(suite, /startswith\(\$prefix\)\) and \.status != "passed"/);
+  assert.match(suite, /::warning::the filament-digest test was skipped: refresh apps\/slicer\/test\/fixtures\/orca-filaments\.json for this OrcaSlicer version/);
   assert.match(suite, /No tests ran \(vitest wrote no report\)/);
   assert.match(suite, /if \[ "\$ran" -eq 0 \]/);
   assert.doesNotMatch(suite, /\n {8}(if|continue-on-error):/);

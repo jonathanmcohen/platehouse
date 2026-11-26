@@ -10,7 +10,10 @@ import { IMAGE_PATHS, type RunningSlicer, runInImage, startSlicer } from "./supp
 
 /** A folder standing for the worker's own job folder. */
 const OWN = "/work/a";
-/** A folder standing for another job's. Neither name is a job folder name, so the server's sweep leaves both alone. */
+/**
+ * A folder standing for another job's. Neither name is a job folder name, so
+ * the server's sweep leaves both alone.
+ */
 const OTHER = "/work/b";
 
 let slicer: RunningSlicer;
@@ -149,7 +152,10 @@ describe("the STEP worker's sandbox in the image", () => {
     expect(pid, `${started.stdout}${started.stderr} (exit ${started.code})`).toMatch(/^\d+$/);
     return pid;
   }
-  /** The sleep's /proc stat line, or "gone"; fails if the exec itself failed (a stopped container). */
+  /**
+   * The sleep's /proc stat line, or "gone"; fails if the exec itself failed
+   * (a stopped container).
+   */
   function statOf(pid: string): string {
     const r = slicer.exec(["sh", "-c", `cat /proc/${pid}/stat 2>/dev/null || echo gone`]);
     expect(r.code, `exec failed (exit ${r.code}): ${r.stdout}${r.stderr}`).toBe(0);

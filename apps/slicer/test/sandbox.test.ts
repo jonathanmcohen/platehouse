@@ -576,7 +576,7 @@ test("OpenSCAD's landrun and prlimit arguments are exactly what they were", () =
 });
 
 // OrcaSlicer runs as bin/orca-slicer itself, with the environment its
-// AppImage launcher would set (launcherEnv in orca.ts says why), under the
+// AppImage launcher would set (launcherEnv in orca-env.ts says why), under the
 // same landrun as OpenSCAD: it may run code only from its own tree and the
 // system libraries, read the printer profiles and the read-only data
 // OpenSCAD reads, and write only its job folder. Node cannot run under these
@@ -960,6 +960,13 @@ describe("ledInMessage", () => {
     expect(long.length).toBe("X: ".length + 2000);
     expect(long.startsWith("X: a")).toBe(true);
     expect(long.endsWith(" / end")).toBe(true);
+  });
+
+  test("a cut that lands inside a surrogate pair leaves no lone low surrogate after the lead-in", () => {
+    // 50 emoji are 100 UTF-16 units; 99 kept units start on a pair's second half.
+    const out = ledInMessage("X: ", "\u{1F600}".repeat(50), 20, 99);
+    expect(out.startsWith("X: ")).toBe(true);
+    expect(out.slice("X: ".length)).not.toMatch(/^[\uDC00-\uDFFF]/);
   });
 });
 

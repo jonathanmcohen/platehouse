@@ -1,12 +1,14 @@
 // The slicer server: Slicer HTTP contract v2 on port
 // 8080, inside the slicer container. It sits on the internal network only,
-// has no auth and holds no secrets, because it opens untrusted files: the app sends it a file and gets
+// has no auth and holds no secrets, because it opens untrusted files: the app
+// sends it a file and gets
 // numbers, a render or a mesh back. Plain node:http, no web framework: the
 // surface is seven routes, and the container opens untrusted files, so it
 // carries as little as it can.
 //
 // - One heavy job at a time: a slice, an OpenSCAD render (a .scad's, or an
-//   STL's preview picture) or a STEP conversion. The container's 4g is sized from a single slice, so a
+//   STL's preview picture) or a STEP conversion. The container's 4g is sized
+//   from a single slice, so a
 //   request for any of them while one runs is 409 busy, answered before its
 //   body is read and with the connection closed, so no socket waits. The
 //   close lingers (closeLingering, guard.ts): the server drains a body still
@@ -105,7 +107,7 @@ export interface SlicerConfig {
   profilesDir: string;
   /**
    * OrcaSlicer's own binary, bin/orca-slicer in its AppImage tree, run with
-   * its launcher's environment (launcherEnv in orca.ts), not AppRun.
+   * its launcher's environment (launcherEnv in orca-env.ts), not AppRun.
    */
   orcaBin: string;
   /** OrcaSlicer's extracted AppImage tree, which its sandbox may run code from. */
@@ -115,7 +117,10 @@ export interface SlicerConfig {
   openscadBin: string;
   openscadDir: string;
   landrunBin: string;
-  /** util-linux choom, which makes each sandboxed program the kernel's first OOM victim (sandbox.ts). */
+  /**
+   * util-linux choom, which makes each sandboxed program the kernel's first
+   * OOM victim (sandbox.ts).
+   */
   choomBin: string;
   /** util-linux prlimit, which sets each sandboxed program's resource limits (sandbox.ts). */
   prlimitBin: string;
@@ -146,7 +151,10 @@ export interface SlicerConfig {
    * conversion still runs (without the sandbox); renders never do.
    */
   allowUnsandboxed: boolean;
-  /** The kernel's release and security modules, read when the check finds an old kernel. Default readKernelInfo. */
+  /**
+   * The kernel's release and security modules, read when the check finds an
+   * old kernel. Default readKernelInfo.
+   */
   kernelInfo?: () => KernelInfo;
   /** The start-up check's retry delays; tests shorten them. Default SANDBOX_RETRY. */
   sandboxRetry?: SandboxRetry;
@@ -156,10 +164,10 @@ export interface SlicerConfig {
    * server runs under tini as in the image (runsUnderTini), never on a host
    * where PID 1 has children of its own.
    */
-  reapOrphans?: boolean;
+  reapLeftBehind?: boolean;
   /**
    * What release() runs to clean up processes left behind; tests pass a
-   * spy. Default: reapLeftovers when reapOrphans is on,
+   * spy. Default: reapLeftovers when reapLeftBehind is on,
    * nothing otherwise.
    */
   reap?: () => number[];
@@ -360,7 +368,11 @@ export function loadConfig(
       `the folder of the Node that runs the slicer (two levels above its binary) ${nodeProblem}`,
     );
   }
-  if (!resolve(e.ORCA_BIN).startsWith(`${resolve(e.ORCA_DIR)}/`)) {
+  // By real path too: a link inside ORCA_DIR must not lead to a file outside it.
+  if (
+    !resolve(e.ORCA_BIN).startsWith(`${resolve(e.ORCA_DIR)}/`) ||
+    !realFolder(e.ORCA_BIN).startsWith(`${realFolder(e.ORCA_DIR)}/`)
+  ) {
     issues.push("ORCA_BIN: must be inside ORCA_DIR");
   }
   if (issues.length > 0) {
@@ -391,7 +403,7 @@ export function loadConfig(
     workMinFreeBytes: e.WORK_MIN_FREE_MIB * MIB,
     allowUnsandboxed: e.SLICER_ALLOW_UNSANDBOXED === "true",
     limits: LIMITS,
-    reapOrphans: runsUnderTini(),
+    reapLeftBehind: runsUnderTini(),
   };
 }
 
@@ -652,14 +664,14 @@ export function createSlicer(config: SlicerConfig): Slicer {
     return dir;
   };
 
-  const reap = config.reap ?? (config.reapOrphans ? () => reapLeftovers() : null);
+  const reap = config.reap ?? (config.reapLeftBehind ? () => reapLeftovers() : null);
 
   /**
    * Kills the processes left behind (reap), when the clean-up is on, and
    * logs what it killed. Run only by a job's release(), while that job
    * still holds the lock.
    */
-  const reapLeftBehind = (): void => {
+  const reapAfterJob = (): void => {
     if (!reap) return;
     const reaped = reap();
     if (reaped.length > 0) {
@@ -692,7 +704,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
           // A program that called setsid() left the group killNow kills and
           // was re-parented to tini; nothing of the job may outlive it, or a
           // sleeping process holds /work files open until a restart.
-          reapLeftBehind();
+          reapAfterJob();
           if (dir) removeJobDir(dir);
           if (holder === job) sweepJobDirs(dir);
         } finally {
@@ -1184,8 +1196,8 @@ export function createSlicer(config: SlicerConfig): Slicer {
  * 1, the image's own entrypoint; an init added in front of it (Compose's
  * init: true, docker run --init) turns it off.
  */
-export function reapOffNotice(config: Pick<SlicerConfig, "reapOrphans">): string | null {
-  if (config.reapOrphans) return null;
+export function reapOffNotice(config: Pick<SlicerConfig, "reapLeftBehind">): string | null {
+  if (config.reapLeftBehind) return null;
   return "the clean-up of processes left behind by a job is off: the server is not running under tini as PID 1, the image's own entrypoint";
 }
 

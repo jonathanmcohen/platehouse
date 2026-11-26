@@ -597,7 +597,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/logs"
           {
             status=0
-            pnpm exec vitest run --project container --reporter=default --reporter=json --outputFile=suite-report.json || status=$?
+            pnpm exec vitest run --project container --reporter=default --reporter=json --outputFile=suite-report.json --exclude '**/test/container/smoke.test.ts' || status=$?
             if [ -s suite-report.json ]; then
               total="$(jq '.numTotalTests' suite-report.json)"
               skipped="$(jq '.numPendingTests + .numTodoTests' suite-report.json)"
@@ -615,6 +615,12 @@ jobs:
             if [ "$ran" -eq 0 ]; then
               echo "::error::No tests ran"
               exit 1
+            fi
+            # The digest test skips itself when its fixture is for another Orca
+            # version; the suite still passes, so say so here.
+            notrun="$(jq --arg prefix "the image's default filaments equal" '[.testResults[].assertionResults[] | select((.title | startswith($prefix)) and .status != "passed")] | length' suite-report.json)"
+            if [ "$notrun" -ne 0 ]; then
+              echo "::warning::the filament-digest test was skipped: refresh apps/slicer/test/fixtures/orca-filaments.json for this OrcaSlicer version"
             fi
             echo "The whole container suite passed"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/suite.log"

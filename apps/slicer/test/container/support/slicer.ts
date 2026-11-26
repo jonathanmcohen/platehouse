@@ -4,7 +4,8 @@
 // carries the same options), 4 CPUs
 // (fewer if the host has fewer), 4 GB of memory with no swap, a 1024 process
 // and thread cap, no core files, no capabilities and no-new-privileges
-// (test/harness.test.ts checks these against the compose file). Uses the docker CLI rather than testcontainers, which has
+// (test/harness.test.ts checks these against the compose file). Uses the docker
+// CLI rather than testcontainers, which has
 // no read-only-root option. The port is published on 127.0.0.1 only so the
 // tests can reach the HTTP contract.
 //
