@@ -24,10 +24,11 @@
 // health.busy is true and a job is 409 busy while it runs), and runs it again
 // after a check_failed, never after an old_kernel. health.sandbox reports
 // where it stands; GET /v1/health?kernel=1 adds "kernel", the cause of an
-// old_kernel (KERNEL_CAUSES), to the off state, and only to it. With SLICER_ALLOW_UNSANDBOXED set, a slice or a STEP
-// conversion runs without the sandbox instead of answering 503; a render or
-// an STL picture never does. health.timeouts are the time caps, in whole
-// seconds, so a caller can size its own timers from them.
+// old_kernel (KERNEL_CAUSES), to the off state, and only to it. With
+// SLICER_ALLOW_UNSANDBOXED set, a slice or a STEP conversion runs without
+// the sandbox instead of answering 503; a render or an STL picture never
+// does. health.timeouts are the time caps, in whole seconds, so a caller can
+// size its own timers from them.
 //
 // POST /v1/stl/png (issue #316) renders a preview picture of an STL, binary
 // or ASCII, sent as application/octet-stream: the same OpenSCAD, sandbox,

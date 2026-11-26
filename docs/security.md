@@ -327,8 +327,10 @@ container, the slicer, which is locked down.
   the files it writes itself, such as the slice's time and memory report, in the job folder above
   it, out of OrcaSlicer's reach.
 - **The sandbox is checked first.** At start-up the slicer checks that the sandbox really blocks a
-  read outside the job folder, and runs no render, slice or STEP conversion until that check passes.
-  It needs Linux 6.12 or newer (Landlock ABI 6). The sandbox can also be off on a newer kernel; see
+  render from reading a file outside its job folder, another job's folder, or the slicer's process
+  information under `/proc`, by an import, an include or `surface()`. It runs no render, slice or
+  STEP conversion until that check passes. It needs Linux 6.12 or newer (Landlock ABI 6). The
+  sandbox can also be off on a newer kernel; see
   [The sandbox is off on a new kernel](./troubleshooting.md#the-sandbox-is-off-on-a-new-kernel). On
   an older kernel, or while the check fails, renders and STL pictures are off. Slices and STEP
   conversions are off too, unless `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer: then they

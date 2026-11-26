@@ -822,9 +822,13 @@ export function createSlicer(config: SlicerConfig): Slicer {
   const runSandboxCheck = async (): Promise<void> => {
     if (closed) return;
     let job: Job | null = null;
+    // Another job's folder, beside the check's own, that the check may not
+    // read; "" until it is made.
+    let siblingDir = "";
     let result: SandboxCheck | null = null;
     try {
       job = takeJob();
+      if (job) siblingDir = jobDir();
     } catch (err) {
       result = failedCheck(
         `the self-test could not start: ${err instanceof Error ? err.message : String(err)}`,
@@ -839,7 +843,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
           job.dir,
           {
             probe: config.sandboxProbe,
-            siblingDir: job.dir,
+            siblingDir,
             kernelInfo: config.kernelInfo ?? readKernelInfo,
           },
           job.track,
@@ -854,6 +858,8 @@ export function createSlicer(config: SlicerConfig): Slicer {
       // A check cut short by close() says nothing about the sandbox.
       if (!closed) recordSandboxCheck(result);
     } finally {
+      // removeJobDir never throws, so the lock is always freed after it.
+      if (siblingDir) removeJobDir(siblingDir);
       job?.release();
     }
   };

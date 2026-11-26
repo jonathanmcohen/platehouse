@@ -12,6 +12,7 @@
 import { slicerContract } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { landrunArgs, sandboxRules } from "../../src/sandbox.js";
+import { PROC_ENVIRON, SELF_TEST_REFUSALS } from "../../src/scad.js";
 import { IMAGE_PATHS, type RunningSlicer, runInImage, startSlicer } from "./support/slicer.js";
 
 let slicer: RunningSlicer;
@@ -33,7 +34,6 @@ const PROBE = "/opt/platehouse/sandbox-probe.stl";
 const SIBLING = "/work/sibling-job";
 /** A job-like folder for the shell cases, which run landrun by hand. */
 const SHELL_DIR = "/work/shell-check";
-const CANNOT_OPEN = "Can't open import file";
 
 function post(path: string, body: string) {
   return fetch(`${slicer.base}${path}`, {
@@ -49,12 +49,14 @@ async function statusOf(res: Response): Promise<string> {
   return `${res.status} ${await res.clone().text()}`;
 }
 
-/** Runs OpenSCAD on `import(file)` without landrun; returns its exit code and output. */
-function importWithoutSandbox(file: string) {
+/** Runs OpenSCAD on `source` without landrun; returns its exit code and output. */
+function renderWithoutSandbox(source: string) {
   return slicer.exec([
     "sh",
     "-c",
-    `d=$(mktemp -d /work/control-XXXXXX) && printf 'import("${file}");\\n' > "$d/in.scad" && HOME="$d" /opt/openscad/AppRun --backend=manifold -o "$d/out.stl" "$d/in.scad" 2>&1; st=$?; test -s "$d/out.stl" && echo WROTE; exit $st`,
+    `d=$(mktemp -d /work/control-XXXXXX) && printf '%s\\n' "$1" > "$d/in.scad" && HOME="$d" /opt/openscad/AppRun --backend=manifold -o "$d/out.stl" "$d/in.scad" 2>&1; st=$?; test -s "$d/out.stl" && echo WROTE; exit $st`,
+    "sh",
+    source,
   ]);
 }
 
@@ -85,8 +87,10 @@ describe("OpenSCAD in the image", () => {
     expect(bytes.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
   });
 
-  // The first render ran the self-test: the kernel's Landlock ABI, then the
-  // probe import, refused by OpenSCAD itself.
+  // The first render ran the self-test: the kernel's Landlock ABI, then four
+  // reads outside the job folder, each refused by OpenSCAD itself: the probe,
+  // its copy in another job's folder, and /proc/self/environ by an include
+  // and by surface().
   test("the sandbox self-test passed before the first render, and the log says why", () => {
     const line = slicer
       .logs()
@@ -94,7 +98,15 @@ describe("OpenSCAD in the image", () => {
       .find((l) => l.includes("sandbox self-test:"));
     expect(line).toBeDefined();
     expect(line).toMatch(
-      /sandbox self-test: ok: Landlock ABI \d+( or newer)?; landrun blocked a read of \/opt\/platehouse\/sandbox-probe\.stl: .*Can't open import file/,
+      new RegExp(
+        [
+          "sandbox self-test: ok: Landlock ABI \\d+( or newer)?; landrun blocked every read outside the job folder: ",
+          `import\\(\\) of /opt/platehouse/sandbox-probe\\.stl: [^;]*${SELF_TEST_REFUSALS.import}[^;]*; `,
+          `import\\(\\) of /work/[0-9a-f-]{36}/sandbox-probe\\.stl: [^;]*${SELF_TEST_REFUSALS.import}[^;]*; `,
+          `include of /proc/self/environ: [^;]*${SELF_TEST_REFUSALS.include}[^;]*; `,
+          `surface\\(\\) of /proc/self/environ: [^;]*${SELF_TEST_REFUSALS.surface}`,
+        ].join(""),
+      ),
     );
   });
 
@@ -107,32 +119,57 @@ describe("OpenSCAD in the image", () => {
     expect(body.message).toMatch(/parser error|syntax error/i);
   });
 
-  const OUTSIDE: [string, string][] = [
-    ["the image's sandbox probe", PROBE],
-    ["a file in a sibling folder under /work", `${SIBLING}/model.stl`],
-    ["/etc/passwd, through a link named .stl", `${SIBLING}/passwd.stl`],
+  // [label, .scad source, OpenSCAD's refusal, the path it names]
+  const OUTSIDE: [string, string, string, string][] = [
+    ["the image's sandbox probe", `import("${PROBE}");`, SELF_TEST_REFUSALS.import, PROBE],
+    [
+      "a file in a sibling folder under /work",
+      `import("${SIBLING}/model.stl");`,
+      SELF_TEST_REFUSALS.import,
+      `${SIBLING}/model.stl`,
+    ],
+    [
+      "/etc/passwd, through a link named .stl",
+      `import("${SIBLING}/passwd.stl");`,
+      SELF_TEST_REFUSALS.import,
+      `${SIBLING}/passwd.stl`,
+    ],
+    [
+      "/proc/self/environ, by an include",
+      `include <${PROC_ENVIRON}>`,
+      SELF_TEST_REFUSALS.include,
+      PROC_ENVIRON,
+    ],
+    [
+      "/proc/self/environ, by surface()",
+      `surface(file = "${PROC_ENVIRON}");`,
+      SELF_TEST_REFUSALS.surface,
+      PROC_ENVIRON,
+    ],
   ];
 
   test.each(OUTSIDE)(
-    "scad import of %s, outside its own job folder, fails",
-    async (_label, file) => {
-      const res = await post("/v1/scad/stl", `import("${file}");\n`);
+    "scad read of %s, outside its own job folder, fails",
+    async (_label, source, phrase, path) => {
+      const res = await post("/v1/scad/stl", `${source}\n`);
       expect(res.status).toBe(422);
       const body = slicerContract.renderError.parse(await res.json());
       // OpenSCAD ran and could not open the file, which a landrun start-up
       // failure or a parse error would not say.
-      expect(body.message).toContain(`${CANNOT_OPEN} '${file}'`);
+      expect(body.message).toContain(phrase);
+      expect(body.message).toContain(path);
     },
   );
 
   test.each(OUTSIDE)(
     "control: without landrun OpenSCAD opens %s, so landrun is what blocks it",
-    (_label, file) => {
-      const r = importWithoutSandbox(file);
-      expect(r.stdout).not.toContain(CANNOT_OPEN);
-      // the two STL files render; /etc/passwd is not an STL, so OpenSCAD
-      // opens it and fails to read it as one
-      if (!file.endsWith("passwd.stl")) {
+    (_label, source, phrase, path) => {
+      const r = renderWithoutSandbox(source);
+      expect(r.stdout).not.toContain(phrase);
+      // the two STL files render; /etc/passwd is not an STL and
+      // /proc/self/environ is not a .scad or a surface, so OpenSCAD opens
+      // them and fails to read them
+      if (path.endsWith("model.stl") || path === PROBE) {
         expect(r.code, r.stdout).toBe(0);
         expect(r.stdout).toContain("WROTE");
       }
@@ -192,10 +229,10 @@ describe("OpenSCAD in the image", () => {
       `${SHELL_DIR}/link.stl`,
       `${SHELL_DIR}/link.scad`,
     ]);
-    expect(`${r.stdout}${r.stderr}`).toContain(CANNOT_OPEN);
+    expect(`${r.stdout}${r.stderr}`).toContain(SELF_TEST_REFUSALS.import);
     // control: without landrun the same link opens and renders
-    const control = importWithoutSandbox(`${SHELL_DIR}/inside-link.stl`);
-    expect(control.stdout).not.toContain(CANNOT_OPEN);
+    const control = renderWithoutSandbox(`import("${SHELL_DIR}/inside-link.stl");`);
+    expect(control.stdout).not.toContain(SELF_TEST_REFUSALS.import);
     expect(control.stdout).toContain("WROTE");
   });
 

@@ -56,6 +56,12 @@ const rmFails = vi.hoisted(() => ({
 const workSpace = vi.hoisted(() => ({
   free: null as ((path: string) => number) | null,
 }));
+// A test can make every mkdirSync under a path fail once `allowed` more have
+// passed, as making a folder fails on a full /work.
+const mkdirFails = vi.hoisted(() => ({
+  under: null as string | null,
+  allowed: 0,
+}));
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
   const rmSync: typeof fs.rmSync = (path, options) => {
@@ -67,6 +73,18 @@ vi.mock("node:fs", async (importOriginal) => {
     }
     return fs.rmSync(path, options);
   };
+  const mkdirSync = ((path: import("node:fs").PathLike, options?: unknown) => {
+    if (mkdirFails.under !== null && String(path).startsWith(mkdirFails.under)) {
+      if (mkdirFails.allowed > 0) {
+        mkdirFails.allowed -= 1;
+      } else {
+        throw Object.assign(new Error(`ENOSPC: no space left on device, mkdir '${String(path)}'`), {
+          code: "ENOSPC",
+        });
+      }
+    }
+    return fs.mkdirSync(path, options as never);
+  }) as typeof fs.mkdirSync;
   const statfsSync = ((path: import("node:fs").PathLike, options?: unknown) => {
     const real = fs.statfsSync(path, options as never);
     if (workSpace.free === null) return real;
@@ -74,7 +92,8 @@ vi.mock("node:fs", async (importOriginal) => {
   }) as typeof fs.statfsSync;
   return {
     ...fs,
-    default: { ...fs, rmSync, statfsSync },
+    default: { ...fs, mkdirSync, rmSync, statfsSync },
+    mkdirSync,
     rmSync,
     statfsSync,
   };
@@ -89,6 +108,8 @@ afterEach(async () => {
   rmFails.under = null;
   rmFails.calls = [];
   workSpace.free = null;
+  mkdirFails.under = null;
+  mkdirFails.allowed = 0;
   while (running.length) await running.pop()?.close();
   // Every folder setup(), stubDir() and profileTree() made for the test.
   removeTempDirs();
@@ -685,6 +706,15 @@ describe("a plate whose objects sit off the bed", () => {
 
 describe("sandbox self-test", () => {
   const lines = (file: string) => readFileSync(file, "utf8").trim().split("\n").length;
+  const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const logged = () => {
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    return { lines: written, restore: () => spy.mockRestore() };
+  };
   const render = (base: string, kind = "stl") =>
     fetch(`${base}/v1/scad/${kind}`, { method: "POST", body: "cube(10);" });
   const sandboxOfHealth = async (base: string) =>
@@ -708,25 +738,86 @@ describe("sandbox self-test", () => {
       const res = await render(base);
       expect(res.status).toBe(200);
     }
-    // one self-test at start-up, then the two renders
-    expect(lines(lr.runsLog)).toBe(3);
+    // the self-test's four cases at start-up, then the two renders
+    expect(lines(lr.runsLog)).toBe(6);
     expect(readdirSync(s.workDir)).toEqual([]);
   });
 
-  test("when the sandbox lets OpenSCAD read outside its folder, every render is 503 check_failed", async () => {
+  test("a passed self-test logs the refusal of each of its four reads, the sibling folder's included", async () => {
     const s = setup();
-    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "read" });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    const log = logged();
+    try {
+      await start({ ...s.config, landrunBin: lr.bin });
+    } finally {
+      log.restore();
+    }
+    const line = log.lines.find((l) => l.includes("sandbox self-test:")) ?? "";
+    const probe = escapeRe(s.config.sandboxProbe);
+    const sibling = `${escapeRe(s.workDir)}/[0-9a-f-]{36}/sandbox-probe\\.stl`;
+    expect(line).toMatch(
+      new RegExp(
+        [
+          "sandbox self-test: ok: Landlock ABI \\d+( or newer)?; landrun blocked every read outside the job folder: ",
+          `import\\(\\) of ${probe}: WARNING: Can't open import file '${probe}', import\\(\\) at line 2; `,
+          `import\\(\\) of (?<sibling>${sibling}): WARNING: Can't open import file '\\k<sibling>', import\\(\\) at line 2; `,
+          "include of /proc/self/environ: WARNING: Can't open include file '/proc/self/environ'\\.; ",
+          "surface\\(\\) of /proc/self/environ: WARNING: The file '/proc/self/environ' couldn't be opened\\.",
+        ].join(""),
+      ),
+    );
+    // the sibling folder is gone with the check's own
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test.each([
+    { mode: "read", path: "the probe", runs: 1 },
+    { mode: "read-sibling", path: "the sibling copy", runs: 2 },
+    { mode: "read-surface", path: "/proc/self/environ", runs: 4 },
+  ] as const)(
+    "when the sandbox lets OpenSCAD read $path ($mode), every render is 503 check_failed",
+    async ({ mode, runs }) => {
+      const s = setup();
+      const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: mode });
+      const base = await start({ ...s.config, landrunBin: lr.bin });
+      const state = await sandboxOfHealth(base);
+      expect(state).toMatchObject({ state: "off", reason: "check_failed" });
+      const path = {
+        read: escapeRe(s.config.sandboxProbe),
+        "read-sibling": `${escapeRe(s.workDir)}/[0-9a-f-]{36}/sandbox-probe\\.stl`,
+        "read-surface": "/proc/self/environ",
+      }[mode];
+      expect(state.detail).toMatch(
+        new RegExp(`^OpenSCAD read ${path} from outside its job folder under landrun$`),
+      );
+      for (const kind of ["stl", "png"]) {
+        const body = await refusal(await render(base, kind));
+        expect(body).toEqual({
+          error: "sandbox_off",
+          reason: "check_failed",
+          detail: state.detail,
+        });
+      }
+      // the self-test stopped at the read that worked, and no render ran
+      expect(lines(lr.runsLog)).toBe(runs);
+      expect(() => readFileSync(lr.argsLog)).toThrow();
+      expect(readdirSync(s.workDir)).toEqual([]);
+    },
+  );
+
+  test("a readable /proc/self/environ fails the include as a parse error: inconclusive, check_failed", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "read-include" });
     const base = await start({ ...s.config, landrunBin: lr.bin });
     const state = await sandboxOfHealth(base);
     expect(state).toMatchObject({ state: "off", reason: "check_failed" });
-    expect(state.detail).toMatch(/read .* from outside its job folder/);
-    for (const kind of ["stl", "png"]) {
-      const body = await refusal(await render(base, kind));
-      expect(body).toEqual({ error: "sandbox_off", reason: "check_failed", detail: state.detail });
-    }
-    // the one self-test ran and no render did
-    expect(lines(lr.runsLog)).toBe(1);
-    expect(() => readFileSync(lr.argsLog)).toThrow();
+    expect(state.detail).toContain(
+      "the check was inconclusive: OpenSCAD did not report that it could not open /proc/self/environ (",
+    );
+    expect(state.detail).toContain(
+      'ERROR: Parser error in file "/proc/self/environ", line 1: syntax error',
+    );
+    expect(lines(lr.runsLog)).toBe(3);
     expect(readdirSync(s.workDir)).toEqual([]);
   });
 
@@ -768,7 +859,10 @@ describe("sandbox self-test", () => {
     });
     const body = await refusal(await render(base));
     expect(body.reason).toBe("check_failed");
-    expect(body.detail).toMatch(/probe .* is missing/);
+    expect(body.detail).toBe(
+      `the sandbox probe ${join(s.stubs, "no-such-probe.stl")} is missing, so the sandbox cannot be checked`,
+    );
+    expect(readdirSync(s.workDir)).toEqual([]);
   });
 
   // A probe the slicer user cannot read makes OpenSCAD print "Can't open
@@ -799,6 +893,23 @@ describe("sandbox self-test", () => {
     const state = await sandboxOfHealth(base);
     expect(state).toMatchObject({ state: "off", reason: "check_failed" });
     expect(state.detail).toMatch(/could not start/);
+  });
+
+  test("a sibling folder that cannot be made fails the check as check_failed, frees the lock and leaves no folder", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    // the check's own folder is made; the sibling folder is not
+    mkdirFails.under = s.workDir;
+    mkdirFails.allowed = 1;
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+    expect(health.busy).toBe(false);
+    expect(health.sandbox).toMatchObject({ state: "off", reason: "check_failed" });
+    expect(health.sandbox.detail).toMatch(/^the self-test could not start: ENOSPC/);
+    // nothing ran, and the check's own folder is gone
+    expect(() => readFileSync(lr.abiLog)).toThrow();
+    expect(() => readFileSync(lr.runsLog)).toThrow();
+    expect(readdirSync(s.workDir)).toEqual([]);
   });
 
   test("SANDBOX_PROBE defaults to the file the image ships", () => {
@@ -868,7 +979,8 @@ describe("start-up sandbox check: the lock and the retries", () => {
     expect(health.sandbox.state).toBe("on");
     expect((await postSlice(base, sliceable())).status).toBe(200);
     expect(lines(lr.abiLog)).toBe(1);
-    expect(lines(lr.runsLog)).toBe(1);
+    // the self-test's four cases, and nothing more
+    expect(lines(lr.runsLog)).toBe(4);
   });
 
   test("an old kernel is final: every heavy route is 503 old_kernel without running a program, and no second check runs", async () => {
@@ -955,7 +1067,8 @@ describe("start-up sandbox check: the lock and the retries", () => {
     expect((await healthOf(base)).sandbox.state).toBe("off");
     expect((await slice).status).toBe(200);
     await waitFor(async () => (await healthOf(base)).sandbox.state === "on");
-    expect(lines(lr.runsLog)).toBe(2);
+    // the failed check's one run, then the passing check's four cases
+    expect(lines(lr.runsLog)).toBe(5);
   }, 15_000);
 
   test("close() cancels a pending retry", async () => {
@@ -1796,8 +1909,8 @@ describe("one heavy job at a time", () => {
     await expectBusy(await step(base));
     await expectBusy(await scad(base, "stl"));
     await expectBusy(await scad(base, "png"));
-    // no render ran, only the start-up self-test
-    expect(readFileSync(lr.runsLog, "utf8").trim().split("\n")).toHaveLength(1);
+    // no render ran, only the start-up self-test's four cases
+    expect(readFileSync(lr.runsLog, "utf8").trim().split("\n")).toHaveLength(4);
     expect((await first).status).toBe(200);
     // and once the slice is done, a render runs again
     expect((await scad(base, "stl")).status).toBe(200);
@@ -2167,8 +2280,8 @@ describe("a failed request never takes the server down", () => {
         expect(res.status).toBe(200);
         expect(await res.text()).toBe("solid ok");
       }
-      // one self-test, which passed and was remembered, then the two renders
-      expect(readFileSync(lr.runsLog, "utf8").trim().split("\n")).toHaveLength(3);
+      // one self-test of four cases, which passed and was remembered, then the two renders
+      expect(readFileSync(lr.runsLog, "utf8").trim().split("\n")).toHaveLength(6);
       await expectServing(base);
     },
   );

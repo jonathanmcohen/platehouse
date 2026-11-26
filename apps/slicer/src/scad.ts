@@ -12,6 +12,7 @@ import {
   accessSync,
   closeSync,
   constants,
+  copyFileSync,
   existsSync,
   fstatSync,
   openSync,
@@ -20,7 +21,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { KernelCause } from "@platehouse/slicer-contract";
 import { type KernelInfo, kernelCause, kernelDetail } from "./kernel.js";
 import {
@@ -37,6 +38,7 @@ import {
   sandboxPaths,
   sandboxRules,
   scadArgs,
+  tailLines,
 } from "./sandbox.js";
 
 export interface ScadConfig extends SandboxConfig {
@@ -222,14 +224,54 @@ export interface SandboxCheck {
 export interface SelfTestInputs {
   /** A file outside every job folder that the check imports. */
   probe: string;
-  /** A folder next to the job folder that the check may not read. */
+  /**
+   * Another job's folder under WORK_DIR, beside the check's own, that the
+   * server makes for the check and deletes after it: the check copies the
+   * probe into it and imports the copy.
+   */
   siblingDir: string;
   /** The kernel's release and security modules; read only once the ABI check fails. */
   kernelInfo: () => KernelInfo;
 }
 
-/** OpenSCAD's warning for a file import() cannot open (src/io/import_stl.cc). */
-const CANNOT_OPEN = "Can't open import file";
+/** The first line of every self-test .scad. */
+export const SELF_TEST_MARKER = "// platehouse sandbox self-test";
+
+/** The slicer's own process information, which the self-test may not read. */
+export const PROC_ENVIRON = "/proc/self/environ";
+
+/**
+ * OpenSCAD's words for a file it cannot open: by import(), by include <> and
+ * by surface().
+ */
+export const SELF_TEST_REFUSALS = {
+  import: "Can't open import file",
+  include: "Can't open include file",
+  surface: "couldn't be opened",
+} as const;
+
+/** One read the self-test expects the sandbox to refuse. */
+interface SelfTestCase {
+  /** How OpenSCAD reads the file, as the detail names it. */
+  how: "import()" | "include" | "surface()";
+  path: string;
+  /** The .scad line that reads it. */
+  line: string;
+  /** OpenSCAD's words when it cannot open the file. */
+  refusal: string;
+  /** Paths a refusal line may name: the path, and for an import its real path. */
+  names: string[];
+}
+
+function importCase(path: string): SelfTestCase {
+  return {
+    how: "import()",
+    path,
+    line: `import(${JSON.stringify(path)});`,
+    refusal: SELF_TEST_REFUSALS.import,
+    names: [...new Set([path, realpathSync(path)])],
+  };
+}
 
 /**
  * The time cap of the Landlock ABI check: a strict landrun either refuses at
@@ -252,11 +294,17 @@ const ABI_CHECK_SECONDS = 30;
  *    it only when it runs without --best-effort, so this runs the same
  *    landrun rules strict, with `openscad --version` as the command. An ABI
  *    landrun does not report makes the check inconclusive.
- * 3. A .scad that imports the probe, rendered through the same prlimit and
- *    landrun call a real render uses, fails because OpenSCAD itself reports
- *    that it cannot open the probe: "Can't open import file" naming the
- *    probe's path. Any other failure (a timeout, a crash, landrun failing to
- *    start, a full /work) proves nothing, so it is inconclusive too.
+ * 3. Four reads outside the job folder, each a .scad rendered through the
+ *    same prlimit and landrun call a real render uses, fail because OpenSCAD
+ *    itself reports that it cannot open the file (SELF_TEST_REFUSALS) on a
+ *    line naming its path: an import() of the probe, an import() of the
+ *    probe's copy in another job's folder (inputs.siblingDir), an include of
+ *    PROC_ENVIRON and a surface() of it. They run in that order, and the
+ *    first that does not fail this way fails the check. A read that works
+ *    fails it; any other failure (a timeout, a crash, landrun failing to
+ *    start, a full /work, a parse error from a readable PROC_ENVIRON, a
+ *    refusal that names another path) proves nothing, so it is inconclusive
+ *    too.
  *
  * Every failure, inconclusive or not, refuses renders; the detail says why
  * in plain words, and the server puts it in its log and in health.
@@ -287,6 +335,8 @@ export async function sandboxSelfTest(
       detail: `the check was inconclusive: the sandbox probe ${probe} cannot be read by the server (${code}), so OpenSCAD failing to open it would prove nothing`,
     };
   }
+  const sibling = join(inputs.siblingDir, basename(probe));
+  copyFileSync(probe, sibling);
 
   const abiRun = await runSandboxed(config, dir, [config.openscadBin, "--version"], {
     timeoutMs: ABI_CHECK_SECONDS * 1000,
@@ -321,32 +371,56 @@ export async function sandboxSelfTest(
   }
   const abiText = `Landlock ABI ${abi.abi}${abi.atLeast ? " or newer" : ""}`;
 
-  writeFileSync(join(dir, SCAD_INPUT), `import(${JSON.stringify(probe)});\n`);
-  const r = await renderScad(config, dir, "stl", track);
-  if (r.ok) {
-    return {
-      ok: false,
-      reason: "check_failed",
-      kernel: null,
-      detail: `OpenSCAD read ${probe} from outside its job folder under landrun`,
-    };
-  }
-  const paths = new Set([probe, realpathSync(probe)]);
-  const refusal = r.output
-    .split("\n")
-    .find((line) => line.includes(CANNOT_OPEN) && [...paths].some((p) => line.includes(p)));
-  if (refusal) {
-    return {
-      ok: true,
-      reason: null,
-      kernel: null,
-      detail: `${abiText}; landrun blocked a read of ${probe}: ${refusal.trim()}`,
-    };
+  const cases: SelfTestCase[] = [
+    importCase(probe),
+    importCase(sibling),
+    {
+      how: "include",
+      path: PROC_ENVIRON,
+      line: `include <${PROC_ENVIRON}>`,
+      refusal: SELF_TEST_REFUSALS.include,
+      names: [PROC_ENVIRON],
+    },
+    {
+      how: "surface()",
+      path: PROC_ENVIRON,
+      line: `surface(file = ${JSON.stringify(PROC_ENVIRON)});`,
+      refusal: SELF_TEST_REFUSALS.surface,
+      names: [PROC_ENVIRON],
+    },
+  ];
+  const parts: string[] = [];
+  for (const { how, path, line, refusal, names } of cases) {
+    writeFileSync(join(dir, SCAD_INPUT), `${SELF_TEST_MARKER}\n${line}\n`);
+    const r = await renderScad(config, dir, "stl", track);
+    if (r.ok) {
+      return {
+        ok: false,
+        reason: "check_failed",
+        kernel: null,
+        detail: `OpenSCAD read ${path} from outside its job folder under landrun`,
+      };
+    }
+    const refused = r.output
+      .split("\n")
+      .find((l) => l.includes(refusal) && names.some((p) => l.includes(p)));
+    if (!refused) {
+      // OpenSCAD's own last lines; a run with no output (a timeout, say)
+      // gives the slicer's sentence for why it stopped instead.
+      const why = tailLines(r.output, 3, 300) || r.message;
+      return {
+        ok: false,
+        reason: "check_failed",
+        kernel: null,
+        detail: `the check was inconclusive: OpenSCAD did not report that it could not open ${path} (${why})`,
+      };
+    }
+    parts.push(`${how} of ${path}: ${refused.trim()}`);
   }
   return {
-    ok: false,
-    reason: "check_failed",
+    ok: true,
+    reason: null,
     kernel: null,
-    detail: `the check was inconclusive: OpenSCAD did not report that it could not open ${probe} (${r.message.split("\n").at(-1) ?? ""})`,
+    detail: `${abiText}; landrun blocked every read outside the job folder: ${parts.join("; ")}`,
   };
 }
