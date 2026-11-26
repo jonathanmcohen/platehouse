@@ -115,8 +115,8 @@ slicer has answered.
 | `ORCA_VERSION`, `OPENSCAD_VERSION` | Set by the image | -                          | The versions built into the image. Do not change them.                                                                                                                                                                                                                                                                                   |
 
 The image also sets the paths of the programs it runs and the folders its sandbox lets them use
-(`WORK_DIR`, `PROFILES_DIR`, `ORCA_BIN`, `ORCA_DIR`, `APP_DIR`, `OPENSCAD_BIN`, `OPENSCAD_DIR` and
-others). Leave them as they are: the slicer refuses to start when one of those folders is a
+(`WORK_DIR`, `PROFILES_DIR`, `ORCA_BIN`, `ORCA_DIR`, `APP_DIR`, `OPENSCAD_BIN`, `OPENSCAD_DIR`,
+`CHOOM_BIN`, `PRLIMIT_BIN` and others). Leave them as they are: the slicer refuses to start when one of those folders is a
 system folder such as `/usr`, sits under or around `WORK_DIR`, or when `ORCA_BIN` is not inside
 `ORCA_DIR`.
 

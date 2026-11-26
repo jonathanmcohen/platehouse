@@ -33,10 +33,11 @@
 //   is set (sandboxGate).
 // - Every external program runs in its own process group, killed whole at
 //   its time cap (SLICE_TIMEOUT_SECONDS, default SLICE_PLATE_SECONDS + 60).
-//   OpenSCAD, OrcaSlicer and the STEP worker each run under prlimit and
+//   OpenSCAD, OrcaSlicer and the STEP worker each start as choom, which
+//   makes them the kernel's first OOM victim, then run under prlimit and
 //   landrun with their own rules (sandbox.ts); a slice or conversion that
 //   SLICER_ALLOW_UNSANDBOXED lets run while the sandbox is off runs under
-//   prlimit alone.
+//   choom and prlimit alone.
 // - An error in a request costs that request, never the process (guard.ts):
 //   it is answered 500, or its connection is closed, and its job is undone
 //   (program killed, folder deleted, lock freed). The 500 closes with the
@@ -79,6 +80,7 @@ import {
 } from "./orca.js";
 import { loadProfiles } from "./profiles.js";
 import {
+  oomFirst,
   prlimitCommand,
   reapLeftovers,
   runGroup,
@@ -113,6 +115,8 @@ export interface SlicerConfig {
   openscadBin: string;
   openscadDir: string;
   landrunBin: string;
+  /** util-linux choom, which makes each sandboxed program the kernel's first OOM victim (sandbox.ts). */
+  choomBin: string;
   /** util-linux prlimit, which sets each sandboxed program's resource limits (sandbox.ts). */
   prlimitBin: string;
   /** A file outside every job folder that the sandbox self-test imports. */
@@ -224,6 +228,7 @@ const envSchema = z.object({
   OPENSCAD_BIN: z.string().min(1).default("/opt/openscad/AppRun"),
   OPENSCAD_DIR: z.string().min(1).default("/opt/openscad"),
   LANDRUN_BIN: z.string().min(1).default("/usr/local/bin/landrun"),
+  CHOOM_BIN: z.string().min(1).default("/usr/bin/choom"),
   PRLIMIT_BIN: z.string().min(1).default("/usr/bin/prlimit"),
   SANDBOX_PROBE: z.string().min(1).default("/opt/platehouse/sandbox-probe.stl"),
   STEP_WORKER: z
@@ -371,6 +376,7 @@ export function loadConfig(
     openscadBin: e.OPENSCAD_BIN,
     openscadDir: e.OPENSCAD_DIR,
     landrunBin: e.LANDRUN_BIN,
+    choomBin: e.CHOOM_BIN,
     prlimitBin: e.PRLIMIT_BIN,
     sandboxProbe: e.SANDBOX_PROBE,
     stepWorker: e.STEP_WORKER,
@@ -937,23 +943,27 @@ export function createSlicer(config: SlicerConfig): Slicer {
         filamentFiles: picks.map((p) => p?.file ?? ""),
         input,
       });
-      // prlimit, then GNU time, outside the sandbox so it can write its
+      // choom, then prlimit, then GNU time, outside the sandbox so it can write its
       // report to the job folder, then landrun with Orca's rules, then Orca
-      // (prlimitCommand). Unsandboxed, landrun is left out. Orca's
+      // (oomFirst, prlimitCommand). Unsandboxed, landrun is left out. Orca's
       // environment (its rules' env: scratchEnv plus its launcher's) is
       // what landrun passes it, and what it inherits without landrun.
-      // prlimit and GNU time see its LD_LIBRARY_PATH too: both link glibc,
-      // which the AppImage never bundles (Orca's appimage_lib_policy.sh),
-      // and prlimit also util-linux's libsmartcols; landrun is static.
+      // choom, prlimit and GNU time see its LD_LIBRARY_PATH too: all link
+      // glibc, which the AppImage never bundles (Orca's
+      // appimage_lib_policy.sh), and prlimit also util-linux's
+      // libsmartcols; landrun is static.
       const rules = sandboxRules("orca", sandboxPaths(config, box));
-      const command = prlimitCommand({
-        program: "orca",
-        timeoutSeconds: config.sliceTimeoutSeconds,
-        outside: [config.timeBin, "-v", "-o", timeFile],
-        landrun: gate === "run" ? { bin: config.landrunBin, rules } : null,
-        command: [config.orcaBin, ...args],
-      });
-      const run = await runGroup(config.prlimitBin, command, {
+      const { bin, args: command } = oomFirst(
+        config,
+        prlimitCommand({
+          program: "orca",
+          timeoutSeconds: config.sliceTimeoutSeconds,
+          outside: [config.timeBin, "-v", "-o", timeFile],
+          landrun: gate === "run" ? { bin: config.landrunBin, rules } : null,
+          command: [config.orcaBin, ...args],
+        }),
+      );
+      const run = await runGroup(bin, command, {
         cwd: box,
         env: rules.env,
         timeoutMs: config.sliceTimeoutSeconds * 1000,

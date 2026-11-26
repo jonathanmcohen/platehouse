@@ -17,6 +17,7 @@ import {
   MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
   NODE_LIBS,
+  oomFirst,
   prlimitArgs,
   prlimitCommand,
   readLandlockAbi,
@@ -922,5 +923,55 @@ describe("ledInMessage", () => {
     expect(long.length).toBe("X: ".length + 2000);
     expect(long.startsWith("X: a")).toBe(true);
     expect(long.endsWith(" / end")).toBe(true);
+  });
+});
+
+// Every sandboxed program starts as choom, which sets its OOM score to 1000
+// and runs prlimit in its place. Only the program's own tree gets the high
+// score: the server stays at 0, so a memory shortage kills the program first.
+describe("oomFirst", () => {
+  const CHOOM = { choomBin: "/usr/bin/choom", prlimitBin: "/usr/bin/prlimit" };
+  const rules = sandboxRules("orca", PATHS);
+  const time = ["/usr/bin/time", "-v", "-o", `${DIR}/time.txt`];
+  const landrun = { bin: "/usr/local/bin/landrun", rules };
+  const cases = [
+    {
+      name: "openscad with landrun",
+      opts: { program: "openscad", timeoutSeconds: 30, landrun, command: [OPENSCAD] },
+    },
+    {
+      name: "openscad without landrun",
+      opts: { program: "openscad", timeoutSeconds: 30, landrun: null, command: [OPENSCAD] },
+    },
+    {
+      name: "orca with landrun and GNU time outside",
+      opts: { program: "orca", timeoutSeconds: 180, outside: time, landrun, command: ["/orca"] },
+    },
+    {
+      name: "orca without landrun",
+      opts: {
+        program: "orca",
+        timeoutSeconds: 180,
+        outside: time,
+        landrun: null,
+        command: ["/orca"],
+      },
+    },
+    {
+      name: "step with landrun",
+      opts: { program: "step", timeoutSeconds: 120, landrun, command: ["/node", "/w.js"] },
+    },
+    {
+      name: "step without landrun",
+      opts: { program: "step", timeoutSeconds: 120, landrun: null, command: ["/node", "/w.js"] },
+    },
+  ] as const;
+
+  test.each(cases)("$name: choom -n 1000 -- prlimit, then prlimit's whole command", ({ opts }) => {
+    const limits = prlimitCommand({ ...opts, command: [...opts.command] });
+    expect(oomFirst(CHOOM, limits)).toEqual({
+      bin: "/usr/bin/choom",
+      args: ["-n", "1000", "--", "/usr/bin/prlimit", ...limits],
+    });
   });
 });

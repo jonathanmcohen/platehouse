@@ -34,6 +34,7 @@ import {
 import { streamChunked } from "./support/http.js";
 import { profileTree, put, TREE_PRINTERS } from "./support/profiles.js";
 import {
+  fakeChoom,
   fakeLandrun,
   fakeOrca,
   fakePrlimit,
@@ -137,6 +138,7 @@ function setup(
   const workDir = tempDir("slicer-work-");
   const fake = fakeOrca(stubs, orca);
   const prlimit = fakePrlimit(stubs);
+  const choom = fakeChoom(stubs);
   const sandboxProbe = join(stubs, "sandbox-probe.stl");
   writeFileSync(sandboxProbe, "solid probe\nendsolid probe\n");
   const config: SlicerConfig = {
@@ -151,6 +153,7 @@ function setup(
     nodeDir: dirname(dirname(process.execPath)),
     appDir: "/opt/platehouse/app",
     landrunBin: fakeLandrun(stubs, { kind: "ok", content: "solid x" }).bin,
+    choomBin: choom.bin,
     prlimitBin: prlimit.bin,
     sandboxProbe,
     stepWorker: fakeStepWorker(stubs, { kind: "ok", content: "glTF" }),
@@ -170,7 +173,7 @@ function setup(
     kernelInfo: () => ({ release: "6.11.0", lsm: null }),
     ...over,
   };
-  return { config, stubs, fake, workDir, prlimit };
+  return { config, stubs, fake, workDir, prlimit, choom };
 }
 
 /**
@@ -1522,6 +1525,14 @@ describe("OpenSCAD and STEP", () => {
     expect(args.slice(at + 2)).toContain("--best-effort");
   });
 
+  test("CHOOM_BIN defaults to util-linux's choom in the image", () => {
+    const c = loadConfig(
+      { ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" },
+      "/opt/node/bin/node",
+    );
+    expect(c.choomBin).toBe("/usr/bin/choom");
+  });
+
   test("PRLIMIT_BIN defaults to util-linux's prlimit in the image", () => {
     const c = loadConfig(
       { ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" },
@@ -2734,5 +2745,55 @@ describe("sandbox folders in the configuration", () => {
     expect(() => loadConfig({ ...VERSIONS, APP_DIR: "/secret,value" }, NODE)).toThrow(
       expect.objectContaining({ message: expect.not.stringContaining("secret") }),
     );
+  });
+});
+
+// Every sandboxed program starts as "choom -n 1000 -- prlimit ...", so the
+// kernel's OOM killer takes the program first and never the server. The
+// self-test uses the same chain as real runs: the ABI check and its four
+// renders are five runs. With no choom there is no run at all, and nothing
+// falls back to running without it.
+describe("choom puts every sandboxed program first in line for the OOM killer", () => {
+  const lines = (file: string) =>
+    readFileSync(file, "utf8")
+      .split("\n")
+      .filter((l) => l !== "");
+  const SELF_TEST_RUNS = 5;
+  const render = (base: string) =>
+    fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(10);" });
+  const sandboxOfHealth = async (base: string) =>
+    slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json()).sandbox;
+
+  test("the self-test, a render, a slice and a STEP conversion each run behind choom -n 1000 --", async () => {
+    const s = setup();
+    const base = await start(s.config);
+    expect(await sandboxOf(base)).toBe("on");
+    expect(lines(s.choom.argsLog)).toHaveLength(SELF_TEST_RUNS);
+    expect((await render(base)).status).toBe(200);
+    expect((await postSlice(base, sliceable())).status).toBe(200);
+    const step = await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
+    expect(step.status).toBe(200);
+    const log = lines(s.choom.argsLog);
+    expect(log).toHaveLength(SELF_TEST_RUNS + 3);
+    for (const line of log) {
+      expect(line.startsWith(`-n 1000 -- ${s.prlimit.bin} --cpu=`)).toBe(true);
+    }
+  });
+
+  test("a choomBin that does not exist makes the self-test check_failed and a slice fail, and nothing runs unsandboxed", async () => {
+    const s = setup({ allowUnsandboxed: true, choomBin: "/nonexistent/choom" });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    expect(await sandboxOfHealth(base)).toMatchObject({ state: "off", reason: "check_failed" });
+    // The sandbox is off and unsandboxed runs are allowed, so the slice
+    // reaches the spawn: it fails there, and Orca never starts.
+    const res = await postSlice(base, sliceable());
+    expect(slicerContract.sliceResult.parse(await res.json())).toMatchObject({
+      status: "failed",
+    });
+    expect(() => readFileSync(s.fake.argsLog)).toThrow();
+    expect(() => readFileSync(lr.argsLog)).toThrow();
+    expect(() => readFileSync(lr.runsLog)).toThrow();
+    expect(() => readFileSync(s.prlimit.argsLog)).toThrow();
   });
 });

@@ -331,4 +331,35 @@ describe("OpenSCAD in the image", () => {
     const options = (work ?? "").split(" ")[3]?.split(",") ?? [];
     expect(options).toEqual(expect.arrayContaining(["noexec", "nosuid", "nodev"]));
   });
+  // Issue #480: every sandboxed program starts as "choom -n 1000 -- prlimit
+  // ...", so when the container runs out of memory the kernel stops the
+  // render before the slicer. The render is started and not awaited; one
+  // shell inside the container looks for an openscad process, so no time is
+  // lost between docker execs, and prints its OOM score and the server's.
+  test("during a render, OpenSCAD's OOM score is 1000 and the server's is 0", async () => {
+    // Thirty hollow shells in one union keep OpenSCAD busy for a few seconds.
+    const heavy =
+      "for (i = [0:29]) rotate([i * 6, 0, 0]) difference() { sphere(r = 20, $fn = 200); sphere(r = 19, $fn = 200); }";
+    const render = post("/v1/scad/stl", heavy);
+    const script = `
+      for i in $(seq 600); do
+        for d in /proc/[0-9]*; do
+          [ "$(cat "$d/comm" 2>/dev/null)" = openscad ] || continue
+          score=$(cat "$d/oom_score_adj" 2>/dev/null) || continue
+          for n in /proc/[0-9]*; do
+            [ "$(cat "$n/comm" 2>/dev/null)" = node ] || continue
+            [ "$(sed -n 's/^PPid:[[:space:]]*//p' "$n/status" 2>/dev/null)" = 1 ] || continue
+            echo "openscad=$score server=$(cat "$n/oom_score_adj")"
+            exit 0
+          done
+        done
+        sleep 0.05
+      done
+      echo "no openscad process seen"
+      exit 1`;
+    const seen = slicer.exec(["sh", "-c", script]);
+    const res = await render;
+    expect(await statusOf(res)).toBe("200");
+    expect(seen.stdout.trim()).toBe("openscad=1000 server=0");
+  });
 });

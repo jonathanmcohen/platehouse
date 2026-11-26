@@ -316,6 +316,7 @@ RUN source /usr/local/lib/need.sh \
  && need -x /opt/openscad/AppRun \
  && need -x /opt/openscad/usr/bin/openscad \
  && need -x /usr/local/bin/landrun \
+ && need -x /usr/bin/choom \
  && need -x /usr/bin/prlimit \
  && need -d /usr/lib/x86_64-linux-gnu \
  && need -f /lib64/ld-linux-x86-64.so.2 \

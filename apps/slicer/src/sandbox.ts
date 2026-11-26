@@ -129,6 +129,8 @@ export interface SandboxPaths {
 /** The server's settings every sandboxed run needs: the two wrappers and the image's folders. */
 export interface SandboxConfig extends Omit<SandboxPaths, "dir"> {
   landrunBin: string;
+  /** util-linux choom, which raises each program's OOM score before it runs. */
+  choomBin: string;
   /** util-linux prlimit, which sets each program's resource limits. */
   prlimitBin: string;
 }
@@ -431,6 +433,21 @@ export function prlimitCommand(opts: {
         ]
       : command),
   ];
+}
+
+/**
+ * The command every sandboxed program starts as: choom sets its OOM score
+ * to 1000 and runs prlimit in its place, so prlimit, landrun and the
+ * program inherit it. When memory runs out the kernel stops the program
+ * first, not the slicer server, whose own score stays 0. choom is outside
+ * the sandbox and only raises a score. No path leaves it out: with no
+ * choom the run fails.
+ */
+export function oomFirst(
+  config: Pick<SandboxConfig, "choomBin" | "prlimitBin">,
+  prlimitArgs: string[],
+): { bin: string; args: string[] } {
+  return { bin: config.choomBin, args: ["-n", "1000", "--", config.prlimitBin, ...prlimitArgs] };
 }
 
 /** What readOutputFile found. */

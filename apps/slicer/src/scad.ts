@@ -29,6 +29,7 @@ import {
   ledInMessage,
   MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
+  oomFirst,
   prlimitCommand,
   readLandlockAbi,
   readOutputFile,
@@ -125,21 +126,21 @@ function runSandboxed(
   opts: { timeoutMs: number; strict?: boolean; track?: (kill: (() => void) | null) => void },
 ): Promise<GroupResult> {
   const rules = sandboxRules("openscad", sandboxPaths(config, dir));
-  return runGroup(
-    config.prlimitBin,
+  const { bin, args } = oomFirst(
+    config,
     prlimitCommand({
       program: "openscad",
       timeoutSeconds: config.scadTimeoutSeconds,
       landrun: { bin: config.landrunBin, rules, strict: opts.strict ?? false },
       command,
     }),
-    {
-      cwd: dir,
-      env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dir, TMPDIR: dir, LANG: "C.UTF-8" },
-      timeoutMs: opts.timeoutMs,
-      ...(opts.track ? { track: opts.track } : {}),
-    },
   );
+  return runGroup(bin, args, {
+    cwd: dir,
+    env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dir, TMPDIR: dir, LANG: "C.UTF-8" },
+    timeoutMs: opts.timeoutMs,
+    ...(opts.track ? { track: opts.track } : {}),
+  });
 }
 
 /**

@@ -16,6 +16,7 @@ All notable changes to Platehouse are recorded here. The format follows
 - The weekly base image update checks the signature on Node's checksum list against the Node release keys before it proposes a new Node version ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
 - Interrupted downloads can be resumed: file downloads, slicer links, pictures and the API's file download (`GET /api/v1/files/{id}/content`) answer requests for part of a file. The API reference documents the new answers ([#463](https://github.com/jonathanmcohen/platehouse/issues/463)).
 - Empty trash answers at once and deletes the models in the background. The Trash page shows them as being deleted until they are gone. A model can no longer be restored once Empty trash is confirmed ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
+- When the slicer runs out of memory, the kernel now stops the render, slice or conversion, not the slicer itself ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
 
 ### Fixed
 

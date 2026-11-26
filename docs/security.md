@@ -321,11 +321,12 @@ container, the slicer, which is locked down.
   - OrcaSlicer reads its own files, the printer and filament profiles, and fonts.
   - The STEP converter reads the slicer's own code, which holds the converter.
 
-  Each also runs with limits on CPU time, file size and processes, and OpenSCAD on memory too. The
-  slicer reads a program's results only when each is an ordinary file of a limited size, never
-  through a link. OrcaSlicer works in its own folder inside the job folder, and the slicer keeps
-  the files it writes itself, such as the slice's time and memory report, in the job folder above
-  it, out of OrcaSlicer's reach.
+  Each also runs with limits on CPU time, file size and processes, and OpenSCAD on memory too.
+  When the container runs out of memory, the kernel stops the render, slice or conversion first,
+  not the slicer. The slicer reads a program's results only when each is an ordinary file of a
+  limited size, never through a link. OrcaSlicer works in its own folder inside the job folder, and
+  the slicer keeps the files it writes itself, such as the slice's time and memory report, in the
+  job folder above it, out of OrcaSlicer's reach.
 - **The sandbox is checked first.** At start-up the slicer checks that the sandbox really blocks a
   render from reading a file outside its job folder, another job's folder, or the slicer's process
   information under `/proc`, by an import, an include or `surface()`. It runs no render, slice or

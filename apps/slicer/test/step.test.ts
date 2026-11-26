@@ -6,7 +6,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { meshesToGlb, type OcctMesh, runStepWorker, type StepWorkerOptions } from "../src/step.js";
-import { fakeLandrun, fakePrlimit, fakeStepWorker, stubDir } from "./support/stubs.js";
+import { fakeChoom, fakeLandrun, fakePrlimit, fakeStepWorker, stubDir } from "./support/stubs.js";
 import { removeTempDirs, tempDir } from "./support/tmp.js";
 
 afterEach(removeTempDirs);
@@ -73,6 +73,7 @@ function options(worker: string, over: Partial<StepWorkerOptions> = {}): StepWor
     timeoutSeconds: 30,
     maxOutputBytes: 1024,
     sandboxed: true,
+    choomBin: fakeChoom(stubs).bin,
     prlimitBin: fakePrlimit(stubs).bin,
     landrunBin: fakeLandrun(stubs, { kind: "ok", content: "" }).bin,
     openscadDir: "/opt/openscad",

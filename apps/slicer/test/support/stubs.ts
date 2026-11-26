@@ -365,6 +365,28 @@ ${probe}${tail}`,
 }
 
 /**
+ * A fake choom: "choom -n 1000 -- cmd ..." appends one line of its arguments
+ * to choom.log for every run, then runs cmd in its place, as choom does
+ * once it has set the OOM score. Any other first three arguments exit 97.
+ */
+export function fakeChoom(dir: string): { bin: string; argsLog: string } {
+  const argsLog = join(dir, "choom.log");
+  const bin = writeScript(
+    join(dir, "choom"),
+    `#!/bin/sh
+if [ "$1" != "-n" ] || [ "$2" != "1000" ] || [ "$3" != "--" ]; then
+  echo "fake choom: wrong arguments" >&2
+  exit 97
+fi
+printf '%s\\n' "$*" >> '${argsLog}'
+shift 3
+exec "$@"
+`,
+  );
+  return { bin, argsLog };
+}
+
+/**
  * A fake prlimit: "prlimit LIMITS... -- cmd ..." writes every argument of
  * its latest run, one per line, to prlimit.log, then runs cmd in its place,
  * as prlimit does once it has set the limits.
