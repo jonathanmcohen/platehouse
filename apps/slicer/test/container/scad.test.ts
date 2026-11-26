@@ -348,7 +348,8 @@ describe("OpenSCAD in the image", () => {
         for d in /proc/[0-9]*; do
           c=$(cat "$d/comm" 2>/dev/null) || continue
           grep -qx "$c" /work/oom-seen.txt || echo "$c" >> /work/oom-seen.txt
-          [ "$c" = openscad ] || continue
+          # The AppImage's launcher runs OpenSCAD under the name AppRun.
+          case "$c" in openscad|AppRun) ;; *) continue ;; esac
           score=$(cat "$d/oom_score_adj" 2>/dev/null) || continue
           for n in /proc/[0-9]*; do
             # Node names its main thread "node-MainThread" in comm.
