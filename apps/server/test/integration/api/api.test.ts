@@ -199,6 +199,11 @@ beforeAll(async () => {
         if (storeDown) return Promise.reject(new StoreUnavailable("GetObject", "ECONNREFUSED"));
         return env.store.getBlobStream(key);
       },
+      getBlobRange(key, start, end) {
+        getObjects += 1;
+        if (storeDown) return Promise.reject(new StoreUnavailable("GetObject", "ECONNREFUSED"));
+        return env.store.getBlobRange(key, start, end);
+      },
       headBlob(key) {
         headObjects += 1;
         if (storeDown) return Promise.reject(new StoreUnavailable("HeadObject", "ECONNREFUSED"));
@@ -869,6 +874,183 @@ describe("duplicates (approved for 0.1.0, 2026-11-19)", () => {
   });
 });
 
+describe("ranges on the file content route", () => {
+  // One byte range per request, through the shared parser, reader and
+  // writer the browser downloads use, behind the bearer check: a request
+  // without a live token learns nothing of the file, not even its size.
+  async function rangedFile() {
+    const outcome = await upload(`Ranged ${marker()}.stl`, ASCII_STL);
+    expect(outcome.status, outcome.error).toBe("done");
+    const file = await env.repos.files.get(outcome.fileId ?? "");
+    return {
+      outcome,
+      path: `/api/v1/files/${outcome.fileId}/content`,
+      etag: `"${file?.blobId}"`,
+      n: Buffer.byteLength(ASCII_STL),
+    };
+  }
+
+  test("a range is 206 with those bytes and the 200's headers", async () => {
+    const { path, etag, n } = await rangedFile();
+    expect(n).toBeGreaterThan(20);
+    const whole = await call("GET", path);
+    expect(whole.status).toBe(200);
+    expect(whole.headers.get("accept-ranges")).toBe("bytes");
+    expect(whole.headers.get("etag")).toBe(etag);
+    const res = await call("GET", path, { headers: { range: "bytes=0-9" } });
+    expect(res.status).toBe(206);
+    expect(res.text).toBe(ASCII_STL.slice(0, 10));
+    expect(res.headers.get("content-range")).toBe(`bytes 0-9/${n}`);
+    expect(res.headers.get("content-length")).toBe("10");
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+    expect(res.headers.get("etag")).toBe(etag);
+    for (const header of [
+      "content-type",
+      "cache-control",
+      "x-content-type-options",
+      "content-disposition",
+    ]) {
+      expect(res.headers.get(header), header).toBe(whole.headers.get(header));
+    }
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("content-disposition")).toMatch(/^attachment; filename="/);
+  });
+
+  test("a suffix, an open end and a last byte past the end", async () => {
+    const { path, n } = await rangedFile();
+    for (const [range, start, end] of [
+      ["bytes=-5", n - 5, n - 1],
+      ["bytes=5-", 5, n - 1],
+      ["bytes=5-99999", 5, n - 1],
+    ] as const) {
+      const res = await call("GET", path, { headers: { range } });
+      expect(res.status, range).toBe(206);
+      expect(res.text, range).toBe(ASCII_STL.slice(start, end + 1));
+      expect(res.headers.get("content-range"), range).toBe(`bytes ${start}-${end}/${n}`);
+    }
+  });
+
+  test("a range from the size on is 416 with no file header; several ranges are 200 in full", async () => {
+    const { path, n } = await rangedFile();
+    const before = getObjects;
+    const refused = await call("GET", path, { headers: { range: `bytes=${n}-` } });
+    expect(refused.status).toBe(416);
+    expect(refused.headers.get("content-range")).toBe(`bytes */${n}`);
+    expect(refused.headers.get("cache-control")).toBe("no-store");
+    expect(refused.text).toBe("");
+    for (const header of ["content-disposition", "accept-ranges", "etag"]) {
+      expect(refused.headers.get(header), header).toBeNull();
+    }
+    expect(refused.headers.get("content-type") ?? "").not.toMatch(/model\/stl/);
+    // Decided from the record alone: no GetObject.
+    expect(getObjects).toBe(before);
+    const several = await call("GET", path, { headers: { range: "bytes=0-1,5-6" } });
+    expect(several.status).toBe(200);
+    expect(several.text).toBe(ASCII_STL);
+    expect(several.headers.get("content-range")).toBeNull();
+  });
+
+  test("a Range the parser cannot use is 200 in full, never 400", async () => {
+    const { path } = await rangedFile();
+    for (const range of ["bytes=abc", "bytes=9-2", "items=0-1", "bytes=-", "bytes=0-1,", " "]) {
+      const res = await call("GET", path, { headers: { range } });
+      expect(res.status, range).toBe(200);
+      expect(res.text, range).toBe(ASCII_STL);
+      expect(res.headers.get("content-range"), range).toBeNull();
+    }
+  });
+
+  test("If-Range with the ETag is 206, with another tag 200 in full; a HEAD ignores Range", async () => {
+    const { path, etag, n } = await rangedFile();
+    const matched = await call("GET", path, {
+      headers: { range: "bytes=0-9", "if-range": etag },
+    });
+    expect(matched.status).toBe(206);
+    expect(matched.text).toBe(ASCII_STL.slice(0, 10));
+    const other = await rangedFile();
+    for (const tag of [other.etag, `W/${etag}`, "Wed, 25 Nov 2026 00:00:00 GMT"]) {
+      const res = await call("GET", path, { headers: { range: "bytes=0-9", "if-range": tag } });
+      expect(res.status, tag).toBe(200);
+      expect(res.text, tag).toBe(ASCII_STL);
+    }
+    const head = await fetch(`${base}${path}`, {
+      method: "HEAD",
+      headers: { authorization: `Bearer ${token}`, range: "bytes=0-9" },
+    });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe(String(n));
+    expect(head.headers.get("accept-ranges")).toBe("bytes");
+    expect(head.headers.get("etag")).toBe(etag);
+    expect(head.headers.get("content-range")).toBeNull();
+    expect((await head.arrayBuffer()).byteLength).toBe(0);
+  });
+
+  test("the file's ETag is its blob's id, quoted, on GET and HEAD", async () => {
+    const { path, etag } = await rangedFile();
+    expect(etag).toMatch(/^"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"$/);
+    for (const method of ["GET", "HEAD"]) {
+      const res = await fetch(`${base}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      await res.arrayBuffer();
+      expect(res.headers.get("etag"), method).toBe(etag);
+    }
+  });
+
+  test("a range without a live token is 401 and says nothing of the file", async () => {
+    const { path, n } = await rangedFile();
+    const revoked = await newToken("ranges revoked");
+    expect(await tokens.revokeToken(revoked.id)).toBe(true);
+    const cases: Array<[string, string | false]> = [
+      ["no token", false],
+      ["a malformed token", "not-a-token"],
+      ["a revoked token", revoked.token],
+    ];
+    for (const [label, auth] of cases) {
+      for (const range of ["bytes=0-9", `bytes=${n}-`]) {
+        const what = `${label} ${range}`;
+        const res = await call("GET", path, { auth, headers: { range } });
+        expect(res.status, what).toBe(401);
+        expect(res.headers.get("www-authenticate"), what).toBe("Bearer");
+        expect(res.json(), what).toEqual({ error: "unauthorized" });
+        for (const header of ["content-range", "accept-ranges", "etag", "content-disposition"]) {
+          expect(res.headers.get(header), `${what} ${header}`).toBeNull();
+        }
+        expect(res.text, what).not.toContain(String(n));
+      }
+    }
+  });
+
+  test("after a range request, a trashed model's file is 404", async () => {
+    const { outcome, path } = await rangedFile();
+    const before = await call("GET", path, { headers: { range: "bytes=0-9" } });
+    expect(before.status).toBe(206);
+    expect(await env.repos.models.trash(outcome.modelId ?? "")).toBe(true);
+    for (const range of ["bytes=0-9", "bytes=99999-"]) {
+      const after = await call("GET", path, { headers: { range } });
+      expect(after.status, range).toBe(404);
+      expect(after.json(), range).toEqual({ error: "not_found" });
+      expect(after.headers.get("content-range"), range).toBeNull();
+    }
+  });
+
+  test("a range while the store is down is the route's own 503, with no range header", async () => {
+    const { path } = await rangedFile();
+    storeDown = true;
+    try {
+      const res = await call("GET", path, { headers: { range: "bytes=0-9" } });
+      expect(res.status).toBe(503);
+      expect(res.json()).toEqual({ error: "unavailable", message: FILE_UNAVAILABLE_MESSAGE });
+      for (const header of ["content-range", "accept-ranges", "etag", "content-disposition"]) {
+        expect(res.headers.get(header), header).toBeNull();
+      }
+    } finally {
+      storeDown = false;
+    }
+  });
+});
+
 describe("the OpenAPI document", () => {
   test("openapi describes every v1 route and uses PUBLIC_ORIGIN", async () => {
     // inject, so the spoofed Host reaches the app exactly as written.
@@ -945,9 +1127,9 @@ describe("the request log", () => {
     expect(lines.length).toBeGreaterThan(50);
     expect(lines.some((line) => line.includes("/api/v1/models"))).toBe(true);
     expect(lines.some((line) => line.includes('"statusCode":401'))).toBe(true);
-    // The suite's own token, a revoked one, one nobody issued, and the two
-    // of the revocation test.
-    expect(sentTokens.length).toBe(5);
+    // The suite's own token, a revoked one, one nobody issued, the two of
+    // the revocation test, and the revoked one the range requests send.
+    expect(sentTokens.length).toBe(6);
     for (const sent of sentTokens) {
       const body = sent.slice(TOKEN_PREFIX.length);
       expect(body).toHaveLength(TOKEN_BODY_LENGTH);

@@ -2,9 +2,11 @@
 // /app/api routes, like the token routes: they need a signed-in session, and
 // the one that changes state needs Origin to be PUBLIC_ORIGIN (the gate).
 //
-//   GET  /app/api/users           {users: [{subject, name, sessions, tokens, you}]}
-//   POST /app/api/users/sign-out  {subject, revokeTokens} -> 200
-//                                 {sessionsEnded, tokensRevoked} | 400 |
+//   GET  /app/api/users           {users: [{subject, name, sessions, tokens, you}],
+//                                  unknownTokens}
+//   POST /app/api/users/sign-out  {subject, revokeTokens, revokeUnknownTokens?} -> 200
+//                                 {sessionsEnded, tokensRevoked,
+//                                  unknownTokensRevoked} | 400 |
 //                                 403 sign_in_required | 429 rate_limited
 //
 // - Platehouse has no user table: a user is an OIDC subject. The list is
@@ -15,29 +17,34 @@
 // - Sign out ends every session of the subject, live or not, so every
 //   browser they are signed in on is sent to the login page on its next
 //   request. With revokeTokens it then revokes every live API token they
-//   made. A token made before Platehouse recorded who made it has no maker
-//   and is never revoked here; Settings lists it as made by an unknown user,
-//   to revoke by hand. Both steps are one transaction
-//   (Sessions.signOutEverywhere), and token creation reads the maker's
-//   session row under a lock in the same transaction as its insert (issue
-//   #414), so the two wait for each other: a token made at the same moment
-//   is either refused, because its session is gone, or committed before the
-//   sessions end and so revoked with the rest. No token the user makes
-//   while being signed out this way is left live. Both steps can be
-//   repeated: a second press ends and revokes nothing more.
+//   made. A token made before Platehouse recorded who made it has no maker;
+//   it is revoked only with revokeUnknownTokens (default false), which
+//   revokes every live token with no maker, whoever the subject is. Settings
+//   lists these as made by an unknown user and counts them (unknownTokens).
+//   All the steps are one transaction (Sessions.signOutEverywhere), and token
+//   creation reads the maker's session row under a lock in the same
+//   transaction as its insert (issue #414), so the two wait for each other:
+//   a token made at the same moment is either refused, because its session
+//   is gone, or committed before the sessions end and so revoked with the
+//   rest. No token the user makes while being signed out this way is left
+//   live. The steps can be repeated: a second press ends and revokes
+//   nothing more.
 // - Who may use it: signing yourself out everywhere needs a live session,
 //   and your own session ends too. Signing someone else out, and so
 //   revoking their tokens, also needs a sign-in in the last
 //   TOKEN_SIGN_IN_WINDOW_MS (auth/fresh.ts), else 403 sign_in_required and
 //   nothing ends: the group is checked only at sign-in, so a session kept by
 //   someone since removed from it must not be able to sign everyone else
-//   out. Platehouse has no roles: everyone in OIDC_GROUP has the same access.
+//   out. revokeUnknownTokens needs that fresh sign-in for any subject,
+//   yourself included, because the tokens it revokes may be anyone's.
+//   Platehouse has no roles: everyone in OIDC_GROUP has the same access.
 // - One session may call Sign out everywhere at most SESSION_LIMIT_MAX
 //   times in any SESSION_LIMIT_WINDOW_MS (10 in 10 minutes, auth/limit.ts,
 //   issue #424), whoever it signs out; the next answers 429
 //   {error: "rate_limited"} with Retry-After in seconds, and ends nothing. A
 //   call is counted once the fresh sign-in check (for someone else) has
-//   passed, before anything ends, as token creation counts.
+//   passed (for someone else, or with revokeUnknownTokens), before anything
+//   ends, as token creation counts.
 // - The request log records no body (app.ts), so no subject is logged.
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
@@ -70,6 +77,8 @@ export interface KnownUser {
 export interface UsersApiDeps {
   /** Everyone with a live session or a live token they made, at now. */
   list(now: Date): Promise<KnownUser[]>;
+  /** How many live tokens have no recorded maker (the Settings page's count). */
+  unknownTokens(): Promise<number>;
   /** Ends the sessions and revokes the tokens in one transaction. */
   sessions: Pick<Sessions, "signOutEverywhere">;
   /** The clock "live" is read on; the real one when left out. */
@@ -129,6 +138,18 @@ export function dbUserList(db: Kysely<DB>): (now: Date) => Promise<KnownUser[]> 
   };
 }
 
+/** The live API tokens with no recorded maker (made before Platehouse 0.1.1). */
+export function dbUnknownTokenCount(db: Kysely<DB>): () => Promise<number> {
+  return async () => {
+    const { rows } = await sql<{ count: number }>`
+      select count(*)::int as count
+      from api_tokens
+      where created_by_subject is null and revoked_at is null
+    `.execute(db);
+    return rows[0]?.count ?? 0;
+  };
+}
+
 const SIGN_OUT = {
   type: "object",
   properties: {
@@ -136,7 +157,11 @@ const SIGN_OUT = {
     // issue #378), so every subject that can sign in can be signed out.
     // JSON Schema's maxLength counts code points, as admit() does.
     subject: { type: "string", minLength: 1, maxLength: MAX_SUBJECT_LENGTH },
-    revokeTokens: { type: "boolean" },
+    // An enum with no type, so Fastify's validator, which coerces types by
+    // default, takes only a real boolean: "true", 1 or [true] is a 400.
+    revokeTokens: { enum: [true, false] },
+    // Optional, default false: revokes the tokens with no recorded maker too.
+    revokeUnknownTokens: { enum: [true, false] },
   },
   required: ["subject", "revokeTokens"],
   additionalProperties: false,
@@ -156,11 +181,12 @@ export async function registerUsersApi(
   });
   await appApiScope(app, (scope) => {
     scope.get("/users", async (request) => {
-      const { list } = need(deps);
+      const { list, unknownTokens } = need(deps);
       const now = (deps?.now ?? (() => new Date()))();
       const you = sessionOf(request)?.subject;
-      const users = await list(now);
+      const [users, unknown] = await Promise.all([list(now), unknownTokens()]);
       return {
+        unknownTokens: unknown,
         users: users
           // A name recorded before names were cleaned is cleaned here too.
           .map((user) => ({
@@ -177,31 +203,36 @@ export async function registerUsersApi(
       };
     });
 
-    scope.post<{ Body: { subject: string; revokeTokens: boolean } }>(
-      "/users/sign-out",
-      { schema: { body: SIGN_OUT } },
-      async (request, reply) => {
-        const { sessions } = need(deps);
-        const { subject, revokeTokens } = request.body;
-        // The gate let this request in with a session (session-class route).
-        const session = sessionOf(request);
-        const now = clock();
-        if (session === undefined || (subject !== session.subject && !isFresh(session, now))) {
-          return refuseStale(reply);
-        }
-        // Counted only once the session may make this call, and before any work.
-        const limited = signOuts.take(session.id);
-        if (!limited.ok) {
-          request.log.warn("app api: Sign out everywhere over the per-session limit");
-          return refuseLimited(reply, limited.retryAfterSeconds);
-        }
-        const { sessionsEnded, tokensRevoked } = await sessions.signOutEverywhere(
-          subject,
-          revokeTokens,
-        );
-        request.log.info({ sessionsEnded, tokensRevoked }, "app api: signed a user out everywhere");
-        return { sessionsEnded, tokensRevoked };
-      },
-    );
+    scope.post<{
+      Body: { subject: string; revokeTokens: boolean; revokeUnknownTokens?: boolean };
+    }>("/users/sign-out", { schema: { body: SIGN_OUT } }, async (request, reply) => {
+      const { sessions } = need(deps);
+      const { subject, revokeTokens, revokeUnknownTokens = false } = request.body;
+      // The gate let this request in with a session (session-class route).
+      const session = sessionOf(request);
+      const now = clock();
+      // revokeUnknownTokens reaches tokens of any user, so it needs the
+      // fresh sign-in even when signing yourself out. The refusal comes
+      // before the limiter and before anything ends.
+      if (
+        session === undefined ||
+        ((subject !== session.subject || revokeUnknownTokens) && !isFresh(session, now))
+      ) {
+        return refuseStale(reply);
+      }
+      // Counted only once the session may make this call, and before any work.
+      const limited = signOuts.take(session.id);
+      if (!limited.ok) {
+        request.log.warn("app api: Sign out everywhere over the per-session limit");
+        return refuseLimited(reply, limited.retryAfterSeconds);
+      }
+      const { sessionsEnded, tokensRevoked, unknownTokensRevoked } =
+        await sessions.signOutEverywhere(subject, revokeTokens, revokeUnknownTokens);
+      request.log.info(
+        { sessionsEnded, tokensRevoked, unknownTokensRevoked },
+        "app api: signed a user out everywhere",
+      );
+      return { sessionsEnded, tokensRevoked, unknownTokensRevoked };
+    });
   });
 }

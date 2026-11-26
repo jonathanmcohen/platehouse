@@ -7,10 +7,17 @@ import type { Config } from "../../src/config.js";
 import {
   BlobNotFound,
   createBlobStore,
+  objectSize,
   StoreError,
   StoreUnavailable,
 } from "../../src/storage/s3.js";
-import { type Handler, s3Error, startBlackHole, startFakeS3 } from "./support/fake-s3.js";
+import {
+  type Handler,
+  s3Error,
+  startBlackHole,
+  startFakeS3,
+  startHeldBodyS3,
+} from "./support/fake-s3.js";
 
 const KEY = "models/0190f5a8-3c2e-7a4b-9c1d-2e3f4a5b6c7d/0190f5a8-3c2f-7d10-a2b3-c4d5e6f70819";
 
@@ -56,6 +63,84 @@ describe("getBlobRange", () => {
     expect(fake.requests[0]?.method).toBe("GET");
     expect(fake.requests[0]?.path).toBe(`/platehouse-test/${KEY}`);
     expect(fake.requests[0]?.headers.range).toBe("bytes=10-14");
+  });
+
+  it("reports the object's total size from Content-Range", async () => {
+    const { store } = await fakeAt(() => ({
+      status: 206,
+      headers: { "content-type": "application/octet-stream", "content-range": "bytes 10-14/100" },
+      body: "hello",
+    }));
+    expect(objectSize(await store.getBlobRange(KEY, 10, 15))).toBe(100);
+  });
+
+  // An answer that is not the range asked for, from a store that ignored the
+  // Range or sent a malformed Content-Range: that is about the store.
+  it.each([
+    ["a 200 with the whole body and no content-range", 200, undefined],
+    ["another start", 206, "bytes 0-4/100"],
+    ["a total of *", 206, "bytes 10-14/*"],
+    ["a non-numeric total", 206, "bytes 10-14/abc"],
+    ["an end beyond the one asked for", 206, "bytes 10-99/100"],
+    ["a last byte before the first", 206, "bytes 10-5/100"],
+    ["a total smaller than the last byte", 206, "bytes 10-14/12"],
+  ])("refuses %s as RangeIgnored", async (_why, status, contentRange) => {
+    const { fake, store } = await fakeAt(() => ({
+      status,
+      headers: {
+        "content-type": "application/octet-stream",
+        ...(contentRange ? { "content-range": contentRange } : {}),
+      },
+      body: "hello",
+    }));
+    const err = await store.getBlobRange(KEY, 10, 15).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StoreError);
+    expect((err as StoreError).code).toBe("RangeIgnored");
+    expect((err as StoreError).operation).toBe("GetObject");
+    expect(fake.requests).toHaveLength(1);
+  });
+
+  // A well-formed answer from the right start that stops short of the end
+  // asked for: S3 cuts a range at the object's last byte, so the object is
+  // shorter than the caller recorded. That is about the one object.
+  it.each([
+    ["the object ends inside the range", "bytes 10-11/12"],
+    ["the object ends at the range's start", "bytes 10-10/11"],
+    ["a last byte short of the one asked for", "bytes 10-12/100"],
+  ])("refuses an answer where %s as SizeMismatch", async (_why, contentRange) => {
+    const { fake, store } = await fakeAt(() => ({
+      status: 206,
+      headers: { "content-type": "application/octet-stream", "content-range": contentRange },
+      body: "he",
+    }));
+    const err = await store.getBlobRange(KEY, 10, 15).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StoreError);
+    expect((err as StoreError).code).toBe("SizeMismatch");
+    expect((err as StoreError).operation).toBe("GetObject");
+    expect(fake.requests).toHaveLength(1);
+  });
+
+  // The body of a refused answer is destroyed, so its connection is not held
+  // open until the socket times out.
+  it.each([
+    ["RangeIgnored", 200, {}],
+    ["RangeIgnored", 206, { "content-range": "bytes 0-4/100" }],
+    ["SizeMismatch", 206, { "content-range": "bytes 10-11/12" }],
+  ])("destroys the body of an answer it refuses as %s", async (code, status, headers) => {
+    const held = await startHeldBodyS3({ status, headers, total: 4096, sent: 2 });
+    cleanups.push(() => held.close());
+    const store = createBlobStore(settings(held.endpoint), {
+      maxAttempts: 1,
+      socketTimeoutMs: 60_000,
+    });
+    cleanups.push(() => store.destroy());
+    const err = await store.getBlobRange(KEY, 10, 15).catch((e: unknown) => e);
+    expect((err as StoreError).code).toBe(code);
+    const released = await Promise.race([
+      held.closed.then(() => "closed"),
+      new Promise((resolve) => setTimeout(() => resolve("held"), 2_000)),
+    ]);
+    expect(released).toBe("closed");
   });
 
   it("is BlobNotFound when the key does not exist", async () => {
@@ -118,7 +203,7 @@ describe("getBlobRange with a signal", () => {
   it("reads as usual with a signal that does not abort", async () => {
     const { store } = await fakeAt(() => ({
       status: 206,
-      headers: { "content-type": "application/octet-stream" },
+      headers: { "content-type": "application/octet-stream", "content-range": "bytes 0-4/100" },
       body: "hello",
     }));
     const controller = new AbortController();

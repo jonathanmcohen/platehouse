@@ -1721,6 +1721,49 @@ describe("putting a file back under its name without hard links", () => {
     expect(await readdir(inbox)).toEqual([]);
   });
 
+  test("a file renamed over the held name before the copy is not copied", async () => {
+    const fake = fakeIngest();
+    const path = join(inbox, "part.stl");
+    const created: string[] = [];
+    fsHooks.beforeCreate = async (newPath) => {
+      if (newPath === path) created.push(newPath);
+    };
+    // Link is refused, and in that moment another file is renamed over the
+    // held file's name in its holding folder.
+    let swappedHeld = false;
+    fsHooks.beforeLink = async (newPath, existingPath) => {
+      if (newPath !== path || !isHeld(existingPath, path)) return;
+      swappedHeld = true;
+      const beside = `${existingPath}.swap`;
+      writeFileSync(beside, THIRD);
+      renameSync(beside, existingPath);
+      throw coded(`EPERM: operation not permitted, link '${newPath}'`, "EPERM");
+    };
+    let swapped = false;
+    const w = watcher(fake, {
+      storedFile: async (id) => {
+        if (!swapped) {
+          swapped = true;
+          renameOverSync("part.stl", SECOND);
+        }
+        return fake.stored.get(id);
+      },
+    });
+    await writeFile(path, FIRST);
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(swappedHeld).toBe(true);
+    // Nothing is put back under the name, and nothing was created there.
+    await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(created).toEqual([]);
+    expect(pass.failed).toEqual([{ name: "part.stl", reason: PUT_BACK_FAILED_REASON }]);
+    // The swapped file is kept whole in failed, and no copy is left behind.
+    expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(THIRD);
+    const left = await readdir(inbox, { recursive: true });
+    expect(left.filter((entry) => basename(entry).startsWith(HOLD_COPY_PREFIX))).toEqual([]);
+  });
+
   test.each([
     ["nothing else takes the name", false],
     ["another file is renamed over the name during the copy", true],

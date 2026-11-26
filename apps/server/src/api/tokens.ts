@@ -12,8 +12,8 @@
 //   stored, logged or shown again. It also records who made it, the OIDC
 //   subject and display name of the session (issue #322), so Sign out
 //   everywhere can revoke one user's tokens (auth/sessions.ts
-//   signOutEverywhere). A token made before that was recorded has no maker
-//   and is never revoked that way.
+//   signOutEverywhere). A token made before that was recorded has no maker;
+//   Sign out everywhere revokes those only when asked to (revokeUnknown).
 // - createTokenForSession makes a token for one session and reads that
 //   session's row again under a lock in the same transaction as the insert
 //   (issue #414): it answers "stale", and makes nothing, when the row is gone

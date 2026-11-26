@@ -53,7 +53,11 @@ async function setUp(app: ReturnType<typeof Fastify>) {
       },
       find: async () => undefined,
       end: async () => {},
-      signOutEverywhere: async () => ({ sessionsEnded: 0, tokensRevoked: 0 }),
+      signOutEverywhere: async () => ({
+        sessionsEnded: 0,
+        tokensRevoked: 0,
+        unknownTokensRevoked: 0,
+      }),
     },
     publicOrigin: ORIGIN,
     absoluteUrl: (path) => `${ORIGIN}${path}`,

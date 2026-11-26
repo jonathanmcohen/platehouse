@@ -34,9 +34,12 @@
 //   a signed-out browser loads them on the auth pages, and the manifest,
 //   which browsers fetch without cookies, loads with no session.
 //
-// index.html is read when the app is built, and again on a page request
-// while it is missing, so a server started before the web app was built
-// picks the build up. Until then a shell page answers 503 with one fixed
+// index.html is read again when it changes (one stat per shell page request,
+// comparing modified time, size and inode), so a rebuilt or bind-mounted
+// build is served without a restart, and a server started before the web app
+// was built picks the build up. A deleted build answers 503 rather than the
+// old shell, and a malformed one fails the request without being kept. A
+// shell page that finds no index.html answers 503 with one fixed
 // sentence and no path, and the server logs one warning at startup naming
 // the index.html it looked for. The server still starts, and /healthz
 // answers as app.ts defines it unless WebDeps.required is set: then
@@ -49,7 +52,8 @@
 // src/shell/theme.ts, which writes the cookie; a test checks the name. The
 // accent ids, default and cookie name are repeated in src/shell/accent.ts;
 // a test checks those too.
-import { readFile } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
@@ -329,18 +333,39 @@ export async function registerWeb(
   locales?: Pick<Locales, "resolve">,
 ): Promise<WebShell> {
   const indexPath = join(deps.dir, "index.html");
-  let template: ShellTemplate | undefined;
+  let cached: { template: ShellTemplate; mtimeMs: number; size: number; ino: number } | undefined;
+
+  const isMissing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 
   async function load(): Promise<ShellTemplate | undefined> {
-    if (template !== undefined) return template;
+    let seen: Stats;
+    try {
+      seen = await stat(indexPath);
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+      cached = undefined;
+      return undefined;
+    }
+    if (
+      cached !== undefined &&
+      cached.mtimeMs === seen.mtimeMs &&
+      cached.size === seen.size &&
+      cached.ino === seen.ino
+    ) {
+      return cached.template;
+    }
     let html: string;
     try {
       html = await readFile(indexPath, "utf8");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
+      // Deleted between the stat and the read: the same as missing.
+      if (!isMissing(error)) throw error;
+      cached = undefined;
+      return undefined;
     }
-    template = parseShellTemplate(html);
+    // Kept only once it parses, so a malformed file is read again next time.
+    const template = parseShellTemplate(html);
+    cached = { template, mtimeMs: seen.mtimeMs, size: seen.size, ino: seen.ino };
     return template;
   }
 

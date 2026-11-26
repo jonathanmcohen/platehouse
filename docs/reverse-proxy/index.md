@@ -98,6 +98,9 @@ buffering and compression:
 | `/blobs/`        | Thumbnails, renders and meshes |
 | `/api/v1/files/` | File downloads through the API |
 
+Downloads can be resumed: the app answers `Range` requests, and with the settings these guides
+give, nginx, Caddy, Traefik and Apache all pass the `Range` header through by default.
+
 Model files do not compress well anyway, and buffering a large file in the proxy delays the first
 byte and uses its disk.
 

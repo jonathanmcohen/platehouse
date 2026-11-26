@@ -2,8 +2,10 @@
 // the app's own Postgres, so there is no Redis. pg-boss owns the schema
 // pgboss and creates and migrates it itself on
 // start(); the app's migrations never touch it.
+import { CompiledQuery, type Transaction } from "kysely";
 import { PgBoss } from "pg-boss";
 import { POOL_CONNECT_TIMEOUT_MS } from "../db/kysely.js";
+import type { DB } from "../db/types.js";
 
 export const BOSS_SCHEMA = "pgboss";
 
@@ -30,4 +32,19 @@ export function createBoss(opts: {
   });
   boss.on("error", opts.onError ?? logBossError);
   return boss;
+}
+
+/**
+ * pg-boss's db option over a Kysely transaction, so a job is sent, or a
+ * file's jobs are read, inside that transaction. Without plugins, so the
+ * CamelCasePlugin leaves pg-boss's own SQL and rows alone.
+ */
+export function bossDb(trx: Transaction<DB>) {
+  const raw = trx.withoutPlugins();
+  return {
+    async executeSql(text: string, values: unknown[] = []) {
+      const result = await raw.executeQuery(CompiledQuery.raw(text, values));
+      return { rows: result.rows as unknown[] };
+    },
+  };
 }

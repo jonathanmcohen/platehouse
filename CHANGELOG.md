@@ -14,6 +14,8 @@ All notable changes to Platehouse are recorded here. The format follows
 
 - The docs site now publishes when a release is tagged, so it describes the latest release and not unreleased work. A docs fix between releases is published by hand ([#499](https://github.com/jonathanmcohen/platehouse/issues/499)).
 - The weekly base image update checks the signature on Node's checksum list against the Node release keys before it proposes a new Node version ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
+- Interrupted downloads can be resumed: file downloads, slicer links, pictures and the API's file download (`GET /api/v1/files/{id}/content`) answer requests for part of a file. The API reference documents the new answers ([#463](https://github.com/jonathanmcohen/platehouse/issues/463)).
+- Empty trash answers at once and deletes the models in the background. The Trash page shows them as being deleted until they are gone. A model can no longer be restored once Empty trash is confirmed ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
 
 ### Fixed
 
@@ -23,6 +25,12 @@ All notable changes to Platehouse are recorded here. The format follows
   - on Docker Engine older than 26.0.0, other than the 25.0.5 and 23.0.11 patch releases (24.x has no fix), the slicer can still look up outside names when the host uses a local resolver;
   - the sandbox can be off on Linux 6.12 or newer, when Landlock is turned off, Docker blocks it, or the kernel lacks its 2025 Landlock fix (6.12 before 6.12.24, 6.13 before 6.13.12, 6.14 before 6.14.3);
   - how to tell which, from the slicer's log.
+- A server whose web build is replaced while it runs (a rebuilt or bind-mounted build) serves the new pages without a restart ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
+- Putting a file back under an imported file's name in the inbox checks that the file it copies is the one it found, so a file swapped in at that moment is not copied ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
+
+### Security
+
+- Sign out everywhere can also revoke the API tokens made before Platehouse 0.1.1, whose maker is unknown, with a second box in its dialog. Ticking it needs a sign-in from the last 5 minutes, also when signing yourself out, because those tokens may be anyone's. Cutting someone off no longer needs a hand step for them.
 
 ## [0.1.1] - 2026-11-24
 

@@ -26,6 +26,7 @@ import { howLong, REREAD_SHOWS_CHANGE, WAITING_POLL_MS } from "../src/settings/P
 import { SettingsPage } from "../src/settings/SettingsPage";
 import { VERSIONING_OFF_WARNING } from "../src/settings/VersioningBanner";
 import { TagsPage } from "../src/tags/TagsPage";
+import { EMPTYING_POLL_MS } from "../src/trash/TrashList";
 import { TrashPage } from "../src/trash/TrashPage";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -100,6 +101,8 @@ interface FakeState {
     tokens: number;
     you: boolean;
   }>;
+  /** Live tokens with no recorded maker, as GET /app/api/users counts them. */
+  unknownTokens: number;
   /** When true, a new token is refused because the session's sign-in is too old (issue #322). */
   signInRequired: boolean;
   /** When true, the token list and the user list cannot be read (500). */
@@ -154,10 +157,10 @@ function hold(key: string): () => Promise<void> {
 const failing = new Set<string>();
 
 /**
- * When set, Empty trash leaves the last model in the trash and answers as
- * the server does for PurgeIncomplete (apps/server/src/app-api/organise.ts).
+ * Whether the server's Empty trash job is running: GET /app/api/trash answers
+ * it as emptying, and the models it has marked as purging.
  */
-let emptyIncomplete = false;
+let emptying = false;
 /**
  * When set, GET /app/api/settings answers printers: null, as the server does
  * when the slicer is unreachable, busy or refuses (apps/server/src/app-api/settings.ts).
@@ -168,6 +171,12 @@ let slicerDown = false;
  * waits here, in request order, until the test calls it.
  */
 let parked: Array<() => void> | null = null;
+/**
+ * When set, each GET /app/api/trash answer is built when asked and then
+ * waits here, in request order, until the test calls it: a listing read
+ * before Empty trash's answer can arrive after it.
+ */
+let parkedTrash: Array<() => void> | null = null;
 /** Every token value the fake handed out. */
 const issued: string[] = [];
 
@@ -374,12 +383,18 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     state.tokens = state.tokens.filter((t) => t.id !== seg[1]);
     return json(204);
   }
-  if (method === "GET" && path === "/app/api/users") return json(200, { users: state.users });
+  if (method === "GET" && path === "/app/api/users")
+    return json(200, { users: state.users, unknownTokens: state.unknownTokens });
   // Sign out everywhere, as the server does: every session of the user ends,
   // and with revokeTokens every live token they made is revoked.
   if (method === "POST" && path === "/app/api/users/sign-out") {
     if (state.rateLimited) return limited();
-    if (state.signInRequired && body.subject !== "subject-me") return json(403, STALE_ANSWER);
+    // Revoking tokens with no maker needs a fresh sign-in for any target, yourself included.
+    if (
+      state.signInRequired &&
+      (body.subject !== "subject-me" || body.revokeUnknownTokens === true)
+    )
+      return json(403, STALE_ANSWER);
     const user = state.users.find((u) => u.subject === body.subject);
     const sessionsEnded = user?.sessions ?? 0;
     const theirs = state.tokens.filter((t) => t.createdBy?.subject === body.subject);
@@ -394,7 +409,12 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
           : u,
       )
       .filter((u) => u.sessions > 0 || u.tokens > 0);
-    return json(200, { sessionsEnded, tokensRevoked });
+    const unknownTokensRevoked = body.revokeUnknownTokens === true ? state.unknownTokens : 0;
+    if (body.revokeUnknownTokens === true) {
+      state.tokens = state.tokens.filter((t) => t.createdBy !== null);
+      state.unknownTokens = 0;
+    }
+    return json(200, { sessionsEnded, tokensRevoked, unknownTokensRevoked });
   }
   if (method === "GET" && path === "/app/api/trash") {
     // Paged as the server pages it: newest first, 100 to a page, a page past
@@ -404,14 +424,19 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     const pageCount = Math.max(1, Math.ceil(total / pageSize));
     const page = Math.min(Math.max(Number(url.searchParams.get("page") ?? 1), 1), pageCount);
     const newestFirst = [...state.trash].sort((a, b) => b.trashedAt.localeCompare(a.trashedAt));
-    return json(200, {
+    const answer = json(200, {
       models: newestFirst.slice((page - 1) * pageSize, page * pageSize),
       readAt: state.now,
       page,
       pageSize,
       pageCount,
       total,
+      emptying,
+      purging: state.trash.filter((m) => m.purgeStarted).length,
     });
+    if (parkedTrash === null) return answer;
+    const queue = parkedTrash;
+    return new Promise<Response>((resolve) => queue.push(() => resolve(answer)));
   }
   // Empty trash purges only the models trashed at or before the cutoff it is
   // sent, as the server does: a model trashed after the page read the list
@@ -422,18 +447,15 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     if (Number.isNaN(cutoff) || cutoff > Date.parse(state.now)) {
       return json(400, { error: "bad_request" });
     }
+    // The server marks the models and queues the job; it answers at once,
+    // with its clock read after the marks commit, which every listing read
+    // since then answers as readAt or later. Marking nothing queues no job.
+    // The job is the test's to finish (finishEmptying).
     const asked = state.trash.filter((m) => Date.parse(m.trashedAt) <= cutoff);
-    const stuck = emptyIncomplete ? asked.slice(-1) : [];
-    const purged = asked.length - stuck.length;
-    state.trash = state.trash.filter((m) => !asked.includes(m) || stuck.includes(m));
-    if (emptyIncomplete) {
-      return json(500, {
-        error: "incomplete",
-        purged,
-        message: "1 model could not be deleted and stays in the trash; the next purge tries again.",
-      });
-    }
-    return json(200, { purged });
+    state.trash = state.trash.map((m) => (asked.includes(m) ? { ...m, purgeStarted: true } : m));
+    if (asked.length > 0) emptying = true;
+    state.now = new Date(Date.parse(state.now) + 1000).toISOString();
+    return json(202, { queued: asked.length, at: state.now });
   }
   if (method === "POST" && seg[0] === "trash" && seg[2] === "restore") {
     if (!state.trash.some((m) => m.id === seg[1])) return json(404, { error: "not_found" });
@@ -574,6 +596,7 @@ beforeEach(() => {
       },
     ],
     users: [{ subject: "subject-me", name: "Synthetic Me", sessions: 1, tokens: 0, you: true }],
+    unknownTokens: 0,
     signInRequired: false,
     listsFail: false,
     rateLimited: false,
@@ -621,9 +644,10 @@ beforeEach(() => {
   issued.length = 0;
   held.clear();
   failing.clear();
-  emptyIncomplete = false;
+  emptying = false;
   slicerDown = false;
   parked = null;
+  parkedTrash = null;
   vi.stubGlobal("fetch", vi.fn(fakeApi));
   dialogs = {
     confirm: vi.spyOn(window, "confirm").mockImplementation(() => true),
@@ -653,6 +677,25 @@ async function settle(): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
   }
+}
+
+/** Lets 3 seconds pass, so a poll fires, and lets what it reads render. */
+async function pollOnce(): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(EMPTYING_POLL_MS);
+  });
+  await settle();
+}
+
+/**
+ * The background job ends: the models it deleted leave the trash, and
+ * stuck of the marked ones stay (still marked, as the server leaves them).
+ */
+function finishEmptying(stuck = 0): void {
+  const marked = state.trash.filter((m) => m.purgeStarted);
+  const kept = marked.slice(0, stuck);
+  state.trash = state.trash.filter((m) => !m.purgeStarted || kept.includes(m));
+  emptying = false;
 }
 
 async function show(path: string, page: ReactNode): Promise<void> {
@@ -1589,6 +1632,7 @@ describe("the settings page", () => {
     expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
       subject: "subject-gone",
       revokeTokens: false,
+      revokeUnknownTokens: false,
     });
     expect(dialog()).toBeNull();
     expect(signOutStatus()).toContain(
@@ -1671,6 +1715,7 @@ describe("the settings page", () => {
     expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
       subject: "subject-gone",
       revokeTokens: true,
+      revokeUnknownTokens: false,
     });
     expect(signOutStatus()).toContain("revoked 1 API token");
     // The token list is read again, so the revoked token is gone from it.
@@ -1693,6 +1738,7 @@ describe("the settings page", () => {
     expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
       subject: "subject-twin-b",
       revokeTokens: false,
+      revokeUnknownTokens: false,
     });
   });
 
@@ -1715,9 +1761,200 @@ describe("the settings page", () => {
     expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
       subject: "subject-me",
       revokeTokens: false,
+      revokeUnknownTokens: false,
     });
     expect(signOutStatus()).toContain("You are signed out everywhere");
     expect(link("Sign in").getAttribute("href")).toBe("/auth/login");
+  });
+
+  test("Sign out everywhere offers the second box only when tokens have no recorded maker", async () => {
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Me\u2069 (user id subject-me) (you) everywhere"));
+    expect(dialog()?.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
+    expect(dialog()?.textContent).not.toContain("made by an unknown user");
+  });
+
+  test("Sign out everywhere shows the second box unticked, labelled with the count, and unticked again on reopening", async () => {
+    state.unknownTokens = 2;
+    await show("/settings", <SettingsPage />);
+    const open = "Sign out \u2068Synthetic Me\u2069 (user id subject-me) (you) everywhere";
+    await click(button(open));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    expect(boxes).toHaveLength(2);
+    const second = boxes[1] as HTMLInputElement;
+    expect(second.checked).toBe(false);
+    expect(boxes[0]?.id).not.toBe(second.id);
+    const label = (dialog() as HTMLElement).querySelector(`label[for="${second.id}"]`);
+    expect(label?.textContent).toBe(
+      "Also revoke the 2 API tokens made by an unknown user (made before Platehouse 0.1.1; any member may have made them, so a shared script may stop working)",
+    );
+    await click(second);
+    expect(second.checked).toBe(true);
+    await click(button("Cancel", dialog() as HTMLElement));
+    await click(button(open));
+    const again = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    expect(again[1]?.checked).toBe(false);
+  });
+
+  test("Sign out everywhere sends revokeUnknownTokens false when the second box is not ticked", async () => {
+    state.unknownTokens = 1;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: false,
+      revokeUnknownTokens: false,
+    });
+  });
+
+  test("Sign out everywhere sends revokeUnknownTokens true when the second box is ticked", async () => {
+    state.unknownTokens = 1;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    await click(boxes[1] as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: false,
+      revokeUnknownTokens: true,
+    });
+  });
+
+  test("Sign out everywhere names both counts for someone else and reads the token list again for unknown tokens alone", async () => {
+    state.unknownTokens = 1;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    expect(text()).toContain("Office desktop");
+    const tokenReads = callsTo("GET", "/app/api/tokens").length;
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    await click(boxes[1] as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(signOutStatus()).toBe(
+      "Ended 1 session for \u2068Synthetic Gone\u2069 (user id subject-gone) and revoked 1 API token made by an unknown user.",
+    );
+    expect(callsTo("GET", "/app/api/tokens").length).toBeGreaterThan(tokenReads);
+    expect(text()).not.toContain("Office desktop");
+  });
+
+  test("Sign out everywhere with both boxes ticked sends both, and names both counts", async () => {
+    state.unknownTokens = 2;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 1,
+      you: false,
+    });
+    state.tokens.push({
+      id: "t-gone",
+      name: "Gone script",
+      prefix: "ph_gone12",
+      createdAt: "2026-11-01T10:00:00.000Z",
+      lastUsedAt: null,
+      createdBy: { subject: "subject-gone", name: "Synthetic Gone" },
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    await click(boxes[0] as HTMLInputElement);
+    await click(boxes[1] as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: true,
+      revokeUnknownTokens: true,
+    });
+    expect(signOutStatus()).toBe(
+      "Ended 1 session for \u2068Synthetic Gone\u2069 (user id subject-gone) and revoked 1 API token they made and 2 API tokens made by an unknown user.",
+    );
+  });
+
+  test("Sign out everywhere refused for someone else with the second box ticked keeps the general wording", async () => {
+    state.signInRequired = true;
+    state.unknownTokens = 1;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    await click(boxes[1] as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: false,
+      revokeUnknownTokens: true,
+    });
+    const alert = document.querySelector("[data-sign-out-refused]");
+    expect(alert?.textContent).toContain(
+      "To sign someone else out everywhere, sign in again first. Platehouse checks that you are still allowed in when you sign in.",
+    );
+    expect(alert?.textContent).not.toContain("made by an unknown user");
+    expect(link("Sign in again").getAttribute("href")).toBe("/auth/login?next=/settings");
+    expect(signOutStatus()).toBe("");
+  });
+
+  test("Sign out everywhere refused for yourself with the second box ticked asks to sign in again", async () => {
+    state.signInRequired = true;
+    state.unknownTokens = 1;
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Me\u2069 (user id subject-me) (you) everywhere"));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    await click(boxes[1] as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-me",
+      revokeTokens: false,
+      revokeUnknownTokens: true,
+    });
+    const alert = document.querySelector("[data-sign-out-refused]");
+    expect(alert?.textContent).toContain(
+      "To revoke tokens made by an unknown user, sign in again first.",
+    );
+    expect(link("Sign in again").getAttribute("href")).toBe("/auth/login?next=/settings");
+    expect(signOutStatus()).toBe("");
+    expect(text()).toContain("Office desktop");
   });
 
   test("the settings page holds the trash", async () => {
@@ -1728,6 +1965,10 @@ describe("the settings page", () => {
 });
 
 describe("the trash", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   test("each model shows its purge date, and restore brings it back", async () => {
     await show("/trash", <TrashPage />);
     expect(document.querySelector("h1")?.textContent).toBe("Trash");
@@ -1852,23 +2093,27 @@ describe("the trash", () => {
     await click(button("Empty trash", dialog() as HTMLElement));
     expect(callsTo("POST", "/app/api/trash/empty")).toHaveLength(1);
     expect(dialog()).toBeNull();
-    expect(text()).toContain("The trash is empty.");
     expect(dialogs.confirm).not.toHaveBeenCalled();
   });
 
-  test("after an Empty trash that worked, focus is on the result, not the page body", async () => {
+  test("after confirming Empty trash, the dialog closes and focus is on the status line, which says it is emptying", async () => {
     await show("/trash", <TrashPage />);
     await click(button("Empty trash"));
     await click(button("Empty trash", dialog() as HTMLElement));
     expect(dialog()).toBeNull();
     const status = document.querySelector<HTMLElement>('[role="status"]');
-    expect(status?.textContent).toContain("Deleted 2 models for good.");
+    expect(status?.textContent).toBe(
+      "Emptying the trash. Models are deleted one at a time and leave this list as they go.",
+    );
     expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement).toBe(status);
+    // The models stay listed, marked as being deleted.
+    expect(text()).toContain("Old benchy");
+    expect(text()).toContain("Broken clip");
+    expect(text().split("It is being deleted now and cannot be restored.")).toHaveLength(3);
   });
 
-  test("an Empty trash in flight cannot be cancelled, so a partial result is still shown", async () => {
-    emptyIncomplete = true;
+  test("an Empty trash in flight cannot be cancelled", async () => {
     await show("/trash", <TrashPage />);
     const release = hold("POST /app/api/trash/empty");
     await click(button("Empty trash"));
@@ -1881,11 +2126,6 @@ describe("the trash", () => {
     expect(dialog()).not.toBeNull();
 
     await release();
-    const ask = dialog();
-    expect(ask).not.toBeNull();
-    expect(ask?.textContent).toContain("1 model could not be deleted");
-    // Once the answer is in, Cancel works again.
-    await click(button("Cancel", ask as HTMLElement));
     expect(dialog()).toBeNull();
   });
 
@@ -1902,6 +2142,7 @@ describe("the trash", () => {
   });
 
   test("empty trash deletes only the models trashed before the page read the list, and says how many", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     await show("/trash", <TrashPage />);
     // Another tab or browser trashes a model after the page read the list.
     state.now = "2026-11-12T12:00:05.000Z";
@@ -1925,13 +2166,17 @@ describe("the trash", () => {
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
       { cutoff: "2026-11-12T09:00:00.000Z" },
     ]);
+    // The job leaves the model nobody confirmed in the trash, still restorable.
+    expect(text()).toContain("Unseen bracket");
+    finishEmptying();
+    await pollOnce();
     expect(text()).toContain("Deleted 2 models for good.");
-    // The list is read again, so the model nobody confirmed shows, still restorable.
     expect(text()).toContain("Unseen bracket");
     expect(text()).not.toContain("Old benchy");
   });
 
   test("after a restore, Empty trash still sends when the list was read", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     await show("/trash", <TrashPage />);
     await click(button("Restore Old benchy"));
     await click(button("Empty trash"));
@@ -1940,10 +2185,13 @@ describe("the trash", () => {
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
       { cutoff: "2026-11-12T09:00:00.000Z" },
     ]);
+    finishEmptying();
+    await pollOnce();
     expect(text()).toContain("Deleted 1 model for good.");
   });
 
   test("a large trash sends the same small body", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     state.trash = Array.from({ length: 3000 }, (_, i) => ({
       id: `0190f7a2-0000-7000-8000-${String(i).padStart(12, "0")}`,
       name: `Model ${i}`,
@@ -1962,6 +2210,8 @@ describe("the trash", () => {
     expect(sent).toEqual([{ cutoff: "2026-11-12T09:00:00.000Z" }]);
     // Far under the server's 64 KiB body limit, however long the list.
     expect(JSON.stringify(sent[0]).length).toBeLessThan(100);
+    finishEmptying();
+    await pollOnce();
     expect(text()).toContain("Deleted 3000 models for good.");
   });
 
@@ -1971,25 +2221,203 @@ describe("the trash", () => {
     await click(button("Empty trash"));
     await click(button("Empty trash", dialog() as HTMLElement));
     expect(callsTo("GET", "/app/api/trash")).toHaveLength(2);
-    expect(text()).toContain("The trash is empty.");
   });
 
-  test("an Empty trash that only partly worked says so and shows what is left", async () => {
-    emptyIncomplete = true;
-    await show("/trash", <TrashPage />);
-    await click(button("Empty trash"));
-    await click(button("Empty trash", dialog() as HTMLElement));
-    const ask = dialog();
-    expect(ask).not.toBeNull();
-    expect(ask?.textContent).toContain(
-      "Deleted 1 model for good. 1 model could not be deleted and stays in the trash; the next purge tries again.",
+  describe("following the job", () => {
+    const EMPTYING =
+      "Emptying the trash. Models are deleted one at a time and leave this list as they go.";
+    const setVisibility = (value: "visible" | "hidden") => {
+      Object.defineProperty(document, "visibilityState", { value, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+    const statusLine = () => document.querySelector<HTMLElement>('[role="status"]');
+    const reads = () => callsTo("GET", "/app/api/trash").length;
+    async function confirmEmpty() {
+      await click(button("Empty trash"));
+      await click(button("Empty trash", dialog() as HTMLElement));
+    }
+    /** Records the status line's text each time it changes, as React renders it. */
+    function recordStatus(): { seen: string[]; stop: () => void } {
+      const seen: string[] = [statusLine()?.textContent ?? ""];
+      const observer = new MutationObserver(() => {
+        const now = statusLine()?.textContent ?? "";
+        if (seen.at(-1) !== now) seen.push(now);
+      });
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      return { seen, stop: () => observer.disconnect() };
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+    });
+    afterEach(() => {
+      setVisibility("visible");
+      vi.useRealTimers();
+    });
+
+    test("it reads the listing again every 3 seconds while emptying, and stops when it is not", async () => {
+      await show("/trash", <TrashPage />);
+      await confirmEmpty();
+      const afterConfirm = reads();
+      await pollOnce();
+      expect(reads()).toBe(afterConfirm + 1);
+      await pollOnce();
+      expect(reads()).toBe(afterConfirm + 2);
+      finishEmptying();
+      await pollOnce();
+      const done = reads();
+      expect(done).toBe(afterConfirm + 3);
+      await pollOnce();
+      await pollOnce();
+      expect(reads()).toBe(done);
+    });
+
+    test("it does not read while the tab is hidden, and reads once when it is shown", async () => {
+      await show("/trash", <TrashPage />);
+      await confirmEmpty();
+      await act(async () => {
+        setVisibility("hidden");
+      });
+      const hiddenAt = reads();
+      await pollOnce();
+      await pollOnce();
+      expect(reads()).toBe(hiddenAt);
+      await act(async () => {
+        setVisibility("visible");
+      });
+      await settle();
+      expect(reads()).toBe(hiddenAt + 1);
+    });
+
+    test("the final line says how many were deleted, written once, after the emptying line", async () => {
+      await show("/trash", <TrashPage />);
+      const recorded = recordStatus();
+      await confirmEmpty();
+      await pollOnce();
+      await pollOnce();
+      finishEmptying();
+      await pollOnce();
+      await pollOnce();
+      recorded.stop();
+      expect(recorded.seen).toEqual(["", EMPTYING, "Deleted 2 models for good."]);
+      expect(text()).toContain("The trash is empty.");
+    });
+
+    test("with one model left, the final line says so", async () => {
+      await show("/trash", <TrashPage />);
+      await confirmEmpty();
+      finishEmptying(1);
+      await pollOnce();
+      expect(statusLine()?.textContent).toBe(
+        "Deleted 1 model for good. 1 model could not be deleted and stays in the trash; the next purge tries again.",
+      );
+      expect(text()).toContain("Old benchy");
+      expect(text()).not.toContain("Broken clip");
+    });
+
+    test("a page opened while the job runs shows it without taking focus, and ends with the right counts", async () => {
+      state.trash = state.trash.map((m) => ({ ...m, purgeStarted: true }));
+      emptying = true;
+      await show("/trash", <TrashPage />);
+      const recorded = recordStatus();
+      expect(statusLine()?.textContent).toBe(EMPTYING);
+      expect(document.activeElement).toBe(document.body);
+      await pollOnce();
+      expect(reads()).toBe(2);
+      finishEmptying(1);
+      await pollOnce();
+      recorded.stop();
+      expect(recorded.seen).toEqual([
+        EMPTYING,
+        "Deleted 1 model for good. 1 model could not be deleted and stays in the trash; the next purge tries again.",
+      ]);
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    test("a listing read before Empty trash answered, arriving after it, does not end the job", async () => {
+      state.trash = trashOf(101);
+      await show("/trash", <TrashPage />);
+      const recorded = recordStatus();
+      // A restore reads the page again; that listing, read before Empty
+      // trash marks anything, says no job is running and is held back.
+      parkedTrash = [];
+      await click(button("Restore Model 0"));
+      expect(parkedTrash).toHaveLength(1);
+      await confirmEmpty();
+      // The read that follows Empty trash's answer is held back too.
+      expect(parkedTrash).toHaveLength(2);
+      await act(async () => parkedTrash?.[0]?.());
+      await settle();
+      expect(statusLine()?.textContent).toBe(EMPTYING);
+      await act(async () => parkedTrash?.[1]?.());
+      await settle();
+      parkedTrash = null;
+      expect(statusLine()?.textContent).toBe(EMPTYING);
+      finishEmptying();
+      await pollOnce();
+      recorded.stop();
+      expect(recorded.seen.filter((line) => line.startsWith("Deleted"))).toEqual([
+        "Deleted 100 models for good.",
+      ]);
+      expect(statusLine()?.textContent).toBe("Deleted 100 models for good.");
+    });
+
+    test("when the read right after Empty trash fails, a later read still ends the job", async () => {
+      await show("/trash", <TrashPage />);
+      failing.add("GET /app/api/trash");
+      await confirmEmpty();
+      expect(statusLine()?.textContent).toBe(EMPTYING);
+      failing.delete("GET /app/api/trash");
+      const failedAt = reads();
+      await pollOnce();
+      expect(reads()).toBe(failedAt + 1);
+      expect(statusLine()?.textContent).toBe(EMPTYING);
+      finishEmptying();
+      await pollOnce();
+      expect(statusLine()?.textContent).toBe("Deleted 2 models for good.");
+    });
+
+    test("when Empty trash marked nothing, it says so, follows no job and reads the list once", async () => {
+      await show("/trash", <TrashPage />);
+      const recorded = recordStatus();
+      // Another tab restores everything after the page read the list.
+      state.trash = [];
+      await confirmEmpty();
+      const afterConfirm = reads();
+      await pollOnce();
+      await pollOnce();
+      recorded.stop();
+      expect(recorded.seen).toEqual([
+        "",
+        "Nothing was deleted: the models listed had already left the trash.",
+      ]);
+      expect(document.activeElement).toBe(statusLine());
+      expect(text()).toContain("The trash is empty.");
+      expect(reads()).toBe(afterConfirm);
+      expect(callsTo("GET", "/app/api/trash")).toHaveLength(2);
+    });
+
+    test("a page opened with no job running says nothing", async () => {
+      await show("/trash", <TrashPage />);
+      await pollOnce();
+      expect(statusLine()?.textContent).toBe("");
+      expect(reads()).toBe(1);
+    });
+  });
+
+  test("a Restore button says why it is unavailable while its model is being deleted", async () => {
+    state.trash = state.trash.map((m) =>
+      m.id === "m-trashed-1" ? { ...m, purgeStarted: true } : m,
     );
-    expect(ask?.textContent).not.toContain("Something went wrong");
-    // The list is read again: the purged model is gone, the stuck one stays.
-    expect(callsTo("GET", "/app/api/trash")).toHaveLength(2);
-    await click(button("Cancel", ask as HTMLElement));
-    expect(text()).not.toContain("Old benchy");
-    expect(text()).toContain("Broken clip");
+    await show("/trash", <TrashPage />);
+    const describedBy = (b: HTMLElement) => {
+      const id = b.getAttribute("aria-describedby");
+      return id === null ? null : document.getElementById(id)?.textContent;
+    };
+    const marked = button("Restore Old benchy");
+    expect(marked.getAttribute("aria-disabled")).toBe("true");
+    expect(describedBy(marked)).toBe("It is being deleted now and cannot be restored.");
+    expect(button("Restore Broken clip").hasAttribute("aria-describedby")).toBe(false);
   });
 
   test("the dialog keeps focus inside it", async () => {
@@ -2020,7 +2448,7 @@ describe("the trash", () => {
   });
 
   test("after a failed change, the error is announced, Tab cycles and Escape closes", async () => {
-    emptyIncomplete = true;
+    failing.add("POST /app/api/trash/empty");
     await show("/trash", <TrashPage />);
     const release = hold("POST /app/api/trash/empty");
     const empty = button("Empty trash");
@@ -2034,7 +2462,7 @@ describe("the trash", () => {
     await release();
 
     const alert = ask.querySelector('[role="alert"]');
-    expect(alert?.textContent).toContain("1 model could not be deleted");
+    expect(alert?.textContent).toBe("This is unavailable right now. Try again in a moment.");
     expect(confirm.getAttribute("aria-disabled")).toBe("false");
     expect(focused()).toBe(confirm);
     await press(focused(), "Tab", { shiftKey: true });

@@ -33,6 +33,7 @@ import {
   memorySessionStore,
   memoryTokenList,
   memoryTokenStore,
+  memoryUnknownTokens,
   memoryUserList,
   runLogin,
   setCookie,
@@ -63,6 +64,7 @@ beforeEach(async () => {
       tokens: { tokens, list: memoryTokenList(tokenStore) },
       users: {
         list: memoryUserList(auth.store, tokenStore),
+        unknownTokens: memoryUnknownTokens(tokenStore),
         sessions: auth.sessions,
       },
     }),
@@ -423,7 +425,7 @@ describe("Sign out everywhere", () => {
       revokeTokens: false,
     });
     expect(res.status, res.text).toBe(200);
-    expect(res.json()).toEqual({ sessionsEnded: 2, tokensRevoked: 0 });
+    expect(res.json()).toEqual({ sessionsEnded: 2, tokensRevoked: 0, unknownTokensRevoked: 0 });
 
     for (const cookie of [theirs1, theirs2]) {
       expect((await call("GET", "/app/api/tokens", cookie)).status).toBe(401);
@@ -439,7 +441,7 @@ describe("Sign out everywhere", () => {
     const theirs = await signIn("subject-gone", "Synthetic Gone");
     const laptop = await makeToken(theirs, "Their laptop");
     const desktop = await makeToken(theirs, "Their desktop");
-    // A token from before creators were recorded is never revoked by this.
+    // A token from before creators were recorded is not revoked by revokeTokens alone.
     const old = await tokens.createToken("Old script");
 
     const res = await call("POST", "/app/api/users/sign-out", me, {
@@ -447,7 +449,7 @@ describe("Sign out everywhere", () => {
       revokeTokens: true,
     });
     expect(res.status, res.text).toBe(200);
-    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 2 });
+    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 2, unknownTokensRevoked: 0 });
     expect(await v1Status(laptop.token)).toBe(401);
     expect(await v1Status(desktop.token)).toBe(401);
     expect(await v1Status(mine.token)).toBe(200);
@@ -487,7 +489,7 @@ describe("Sign out everywhere", () => {
       revokeTokens: true,
     });
     expect(res.status, res.text).toBe(200);
-    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 1 });
+    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 1, unknownTokensRevoked: 0 });
     expect((await call("GET", "/app/api/tokens", theirs)).status).toBe(401);
     expect(await v1Status(made.token)).toBe(401);
   });
@@ -527,7 +529,7 @@ describe("Sign out everywhere", () => {
       revokeTokens: true,
     });
     expect(res.status, res.text).toBe(200);
-    expect(res.json()).toEqual({ sessionsEnded: 0, tokensRevoked: 0 });
+    expect(res.json()).toEqual({ sessionsEnded: 0, tokensRevoked: 0, unknownTokensRevoked: 0 });
   });
 
   test.each([
@@ -599,7 +601,7 @@ describe("acts on other people need a fresh sign-in", () => {
       revokeTokens: false,
     });
     expect(res.status, res.text).toBe(200);
-    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 0 });
+    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 0, unknownTokensRevoked: 0 });
   });
 
   test("an older session cannot revoke a token another user made, and nothing is revoked", async () => {
@@ -643,7 +645,7 @@ describe("acts on other people need a fresh sign-in", () => {
       revokeTokens: true,
     });
     expect(res.status, res.text).toBe(200);
-    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 1 });
+    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 1, unknownTokensRevoked: 0 });
     expect(await v1Status(mine.token)).toBe(401);
   });
 
@@ -671,7 +673,7 @@ describe("acts on other people need a fresh sign-in", () => {
       revokeTokens: true,
     });
     expect(out.status, out.text).toBe(200);
-    expect(out.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 1 });
+    expect(out.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 1, unknownTokensRevoked: 0 });
     expect(await v1Status(second.token)).toBe(401);
   });
 
@@ -679,5 +681,131 @@ describe("acts on other people need a fresh sign-in", () => {
     const me = await signIn("subject-old");
     ageSession(me, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
     expect((await call("DELETE", "/app/api/tokens/no-such-token", me)).status).toBe(404);
+  });
+});
+
+describe("Sign out everywhere and tokens with no recorded maker", () => {
+  const REFUSED = {
+    error: "sign_in_required",
+    message: SIGN_IN_REQUIRED_MESSAGE,
+    code: "sign_in_required",
+    signIn: "/auth/login?next=/settings",
+  };
+
+  test("a fresh session signing someone else out with revokeUnknownTokens revokes the maker-less token, the target's tokens and sessions, and no one else's", async () => {
+    const me = await signIn("subject-admin", "Synthetic Admin");
+    const theirs = await signIn("subject-gone", "Synthetic Gone");
+    const theirsMade = await makeToken(theirs, "Their script");
+    const third = await signIn("subject-third", "Synthetic Third");
+    const thirdMade = await makeToken(third, "Third's script");
+    const old = await tokens.createToken("Old script");
+    expect(await v1Status(old.token)).toBe(200);
+
+    const res = await call("POST", "/app/api/users/sign-out", me, {
+      subject: "subject-gone",
+      revokeTokens: true,
+      revokeUnknownTokens: true,
+    });
+    expect(res.status, res.text).toBe(200);
+    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 1, unknownTokensRevoked: 1 });
+    expect(await v1Status(old.token)).toBe(401);
+    expect(await v1Status(theirsMade.token)).toBe(401);
+    expect((await call("GET", "/app/api/tokens", theirs)).status).toBe(401);
+    expect(await v1Status(thirdMade.token)).toBe(200);
+    expect((await call("GET", "/app/api/tokens", third)).status).toBe(200);
+  });
+
+  test("without the flag the maker-less token still answers 200", async () => {
+    const me = await signIn("subject-admin", "Synthetic Admin");
+    const old = await tokens.createToken("Old script");
+    expect(await v1Status(old.token)).toBe(200);
+    const res = await call("POST", "/app/api/users/sign-out", me, {
+      subject: "subject-gone",
+      revokeTokens: true,
+    });
+    expect(res.status, res.text).toBe(200);
+    expect(res.json()).toEqual({ sessionsEnded: 0, tokensRevoked: 0, unknownTokensRevoked: 0 });
+    expect(await v1Status(old.token)).toBe(200);
+  });
+
+  test("a stale session signing itself out with the flag is 403, revokes nothing, and the next call is not 429", async () => {
+    const me = await signIn("subject-old");
+    const old = await tokens.createToken("Old script");
+    expect(await v1Status(old.token)).toBe(200);
+    ageSession(me, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
+
+    for (let i = 0; i < 12; i++) {
+      const res = await call("POST", "/app/api/users/sign-out", me, {
+        subject: "subject-old",
+        revokeTokens: false,
+        revokeUnknownTokens: true,
+      });
+      expect(res.status, `refusal ${i + 1}: ${res.text}`).toBe(403);
+      expect(res.json()).toEqual(REFUSED);
+    }
+    expect(await v1Status(old.token)).toBe(200);
+    expect(t.store.rows.has(sessionRowId(me))).toBe(true);
+    // The refusals were not counted: a stale self sign-out without the flag still works.
+    const next = await call("POST", "/app/api/users/sign-out", me, {
+      subject: "subject-old",
+      revokeTokens: false,
+    });
+    expect(next.status, next.text).toBe(200);
+  });
+
+  test("a fresh self sign-out with the flag revokes them and ends your sessions", async () => {
+    const me = await signIn("subject-self", "Synthetic Self");
+    const old = await tokens.createToken("Old script");
+    expect(await v1Status(old.token)).toBe(200);
+    const res = await call("POST", "/app/api/users/sign-out", me, {
+      subject: "subject-self",
+      revokeTokens: false,
+      revokeUnknownTokens: true,
+    });
+    expect(res.status, res.text).toBe(200);
+    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 0, unknownTokensRevoked: 1 });
+    expect(await v1Status(old.token)).toBe(401);
+    expect((await call("GET", "/app/api/users", me)).status).toBe(401);
+  });
+
+  test("a second call answers unknownTokensRevoked 0", async () => {
+    const me = await signIn("subject-admin", "Synthetic Admin");
+    const old = await tokens.createToken("Old script");
+    expect(await v1Status(old.token)).toBe(200);
+    const body = { subject: "subject-gone", revokeTokens: false, revokeUnknownTokens: true };
+    const first = await call("POST", "/app/api/users/sign-out", me, body);
+    expect(first.json()).toEqual({ sessionsEnded: 0, tokensRevoked: 0, unknownTokensRevoked: 1 });
+    expect(await v1Status(old.token)).toBe(401);
+    const second = await call("POST", "/app/api/users/sign-out", me, body);
+    expect(second.status, second.text).toBe(200);
+    expect(second.json()).toEqual({ sessionsEnded: 0, tokensRevoked: 0, unknownTokensRevoked: 0 });
+  });
+
+  test("GET /app/api/users counts the maker-less tokens, before and after", async () => {
+    const me = await signIn("subject-admin", "Synthetic Admin");
+    const old = await tokens.createToken("Old script");
+    expect(await v1Status(old.token)).toBe(200);
+    const before = await call("GET", "/app/api/users", me);
+    expect((before.json() as { unknownTokens: number }).unknownTokens).toBe(1);
+    await call("POST", "/app/api/users/sign-out", me, {
+      subject: "subject-gone",
+      revokeTokens: false,
+      revokeUnknownTokens: true,
+    });
+    const after = await call("GET", "/app/api/users", me);
+    expect((after.json() as { unknownTokens: number }).unknownTokens).toBe(0);
+  });
+
+  test("the log line carries the three counts and no subject", async () => {
+    const me = await signIn("subject-admin-logged", "Synthetic Admin");
+    await call("POST", "/app/api/users/sign-out", me, {
+      subject: "subject-victim-logged",
+      revokeTokens: false,
+      revokeUnknownTokens: true,
+    });
+    const logged = lines.join("\n");
+    expect(logged).toContain("unknownTokensRevoked");
+    expect(logged).not.toContain("subject-victim-logged");
+    expect(logged).not.toContain("subject-admin-logged");
   });
 });

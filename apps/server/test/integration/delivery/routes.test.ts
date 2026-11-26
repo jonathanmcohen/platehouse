@@ -18,7 +18,10 @@
 // stream that runs past, falls short of or fails before the recorded size
 // reaches the client as an aborted response, never a clean end (PR #156
 // security review). A stream that fails before its first byte is a 503 (or
-// 500) with none of the file's content headers (PR #156 review).
+// 500) with none of the file's content headers (PR #156 review). A single
+// byte Range is a 206 on all three routes that send bytes, a range past the
+// end a 416 with no file header and no store read, and a request refused
+// for its session or link is refused the same way with a Range.
 //
 // No container: sessions are in memory and the issuer is the local mock.
 // The DB and bucket tests are in delivery.test.ts. Every byte is synthetic.
@@ -33,8 +36,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import {
   contentDisposition,
   FILE_UNAVAILABLE_MESSAGE,
-  type FileContent,
   type FileHead,
+  readStored,
 } from "../../../src/api/v1.js";
 import { buildApp } from "../../../src/app.js";
 import { patternClass, type RouteClass } from "../../../src/auth/gate.js";
@@ -42,6 +45,7 @@ import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import type { BlobKind } from "../../../src/db/types.js";
 import {
   BLOB_CACHE_CONTROL,
+  blobEtag,
   type DeliveryDeps,
   FILE_CACHE_CONTROL,
   type LinkFile,
@@ -49,7 +53,8 @@ import {
   REVALIDATE_CACHE_CONTROL,
 } from "../../../src/delivery/download.js";
 import { LINK_LIFETIME_SECONDS, type SlicerLink } from "../../../src/delivery/links.js";
-import { reportObjectSize, StoreUnavailable } from "../../../src/storage/s3.js";
+import type { PickRange } from "../../../src/delivery/range.js";
+import { type BlobStore, reportObjectSize, StoreUnavailable } from "../../../src/storage/s3.js";
 import { createUploads } from "../../../src/uploads/tus.js";
 import {
   concretePath,
@@ -77,7 +82,12 @@ interface StubItem {
   kind: LinkFile["kind"];
   contentType: string;
   bytes: Buffer;
+  /** The file's ETag: its current blob's id, quoted, as the API's library sets it. */
+  etag: string;
 }
+
+/** The ETag of the STREAMED file. */
+const STREAMED_ETAG = '"0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8f03"';
 
 const files = new Map<string, StubItem>([
   [
@@ -88,6 +98,7 @@ const files = new Map<string, StubItem>([
       kind: "3mf",
       contentType: "model/3mf",
       bytes: Buffer.from(`file A ${randomBytes(8).toString("hex")}`),
+      etag: '"0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8f01"',
     },
   ],
   [
@@ -98,6 +109,7 @@ const files = new Map<string, StubItem>([
       kind: "3mf",
       contentType: "model/3mf",
       bytes: Buffer.from(`file B ${randomBytes(8).toString("hex")}`),
+      etag: '"0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8f02"',
     },
   ],
 ]);
@@ -152,19 +164,58 @@ let gate: PassThrough | undefined;
  */
 let streamed: (() => Readable) | undefined;
 
-function head(item: StubItem | { contentType: string; bytes: Buffer }, name: string): FileHead {
-  return { name, contentType: item.contentType, size: item.bytes.length };
+function fileHead(item: StubItem): FileHead {
+  return {
+    name: linkFileName(item),
+    contentType: item.contentType,
+    size: item.bytes.length,
+    etag: item.etag,
+  };
+}
+
+function blobHead(id: string, item: { contentType: string; bytes: Buffer; kind: BlobKind }) {
+  const etag = blobEtag(id, item.kind);
+  const found: FileHead = { name: id, contentType: item.contentType, size: item.bytes.length };
+  return etag === undefined ? found : { ...found, etag };
 }
 
 /**
- * A stub stream as the real store hands it out: with the object's size as
- * the store reported it (storedSize while a test sets it, else the bytes').
+ * A stub stream as the real store hands it out: with the object's total
+ * size as the store reported it (storedSize while a test sets it, else the
+ * whole object's), for a range as for the whole object.
  */
-function stored(bytes: Buffer): Readable {
-  const stream = reportObjectSize(Readable.from([bytes]), storedSize ?? bytes.length);
+function stored(bytes: Buffer, total: number): Readable {
+  const stream = reportObjectSize(Readable.from([bytes]), storedSize ?? total);
   lastStream = stream;
   return stream;
 }
+
+/**
+ * The store the stubs read an object through (readStored, as the real
+ * libraries do): the whole object, or the slice a range asks for, each read
+ * counted in opened. The STREAMED object is the test's own stream, whole
+ * whatever the range, and reports no object size, as a store that sends no
+ * Content-Length would, so only the byte count guards it.
+ */
+function stubStore(bytes: Buffer | "streamed"): Pick<BlobStore, "getBlobStream" | "getBlobRange"> {
+  function open(start: number, end: number): Readable {
+    if (storeFails) throw storeFails;
+    opened += 1;
+    if (bytes === "streamed") return gate ?? (streamed as () => Readable)();
+    return stored(bytes.subarray(start, end), bytes.length);
+  }
+  return {
+    getBlobStream: async () => open(0, bytes === "streamed" ? 0 : bytes.length),
+    getBlobRange: async (_key, start, end) => open(start, end),
+  };
+}
+
+const STREAMED_FILE: FileHead = {
+  name: "Streamed.3mf",
+  contentType: "model/3mf",
+  size: 16,
+  etag: STREAMED_ETAG,
+};
 
 // The stub names a file as the API's library does since issue #164: with
 // linkFileName, the stored name with its real extension, so every route
@@ -176,23 +227,17 @@ const deliveryFiles: DeliveryDeps["files"] = {
     const item = files.get(id);
     if (item === undefined) return undefined;
     if (storeFails) throw storeFails;
-    return head(item, linkFileName(item));
+    return fileHead(item);
   },
-  async openFile(id): Promise<FileContent | undefined> {
+  async openFile(id, pickRange?: PickRange) {
     lookups.openFile += 1;
     if (dbFails) throw dbFails;
-    // The STREAMED stream reports no object size, as a store that sends no
-    // Content-Length would, so only the byte count guards it.
     if (id === STREAMED && (gate || streamed)) {
-      opened += 1;
-      const stream = gate ?? (streamed as () => Readable)();
-      return { name: "Streamed.3mf", contentType: "model/3mf", size: 16, stream };
+      return readStored(stubStore("streamed"), id, STREAMED_FILE, pickRange);
     }
     const item = files.get(id);
     if (item === undefined) return undefined;
-    if (storeFails) throw storeFails;
-    opened += 1;
-    return { ...head(item, linkFileName(item)), stream: stored(item.bytes) };
+    return readStored(stubStore(item.bytes), id, fileHead(item), pickRange);
   },
 };
 
@@ -220,20 +265,17 @@ const deliveryLibrary: DeliveryDeps["library"] = {
     if (item === undefined) return undefined;
     if (storeFails) throw storeFails;
     blobHeads += 1;
-    return head(item, id);
+    return blobHead(id, item);
   },
-  async openBlob(id) {
+  async openBlob(id, pickRange?: PickRange) {
     if (dbFails) throw dbFails;
     if (id === STREAMED_BLOB && (gate || streamed)) {
-      opened += 1;
-      const stream = gate ?? (streamed as () => Readable)();
-      return { name: id, contentType: "image/png", size: 16, stream };
+      const found = { contentType: "image/png", bytes: Buffer.alloc(16), kind: "source" as const };
+      return readStored(stubStore("streamed"), id, blobHead(id, found), pickRange);
     }
     const item = blobs.get(id);
     if (item === undefined) return undefined;
-    if (storeFails) throw storeFails;
-    opened += 1;
-    return { ...head(item, id), stream: stored(item.bytes) };
+    return readStored(stubStore(item.bytes), id, blobHead(id, item), pickRange);
   },
 };
 
@@ -1053,6 +1095,16 @@ describe("GET /files/:id/download and GET /blobs/:id", () => {
       expect({ opened, blobHeads }).toEqual(before);
     });
 
+    test("a matching If-None-Match is 304 even with a Range, with no Content-Range and no store read", async () => {
+      const before = { opened, blobHeads };
+      const res = await get(BLOB_SRC, { "if-none-match": `"${BLOB_SRC}"`, range: "bytes=0-3" });
+      expect(res.statusCode).toBe(304);
+      expect(res.headers.etag).toBe(`"${BLOB_SRC}"`);
+      expect(res.headers["content-range"]).toBeUndefined();
+      expect(res.rawPayload.length).toBe(0);
+      expect({ opened, blobHeads }).toEqual(before);
+    });
+
     test.each([
       ["a weak tag", `W/"${BLOB_SRC}"`],
       ["a star", "*"],
@@ -1173,6 +1225,255 @@ describe("GET /files/:id/download and GET /blobs/:id", () => {
       expect(res.statusCode, url).toBeGreaterThanOrEqual(500);
       expect(res.body, url).not.toContain("10.9.8.7");
     }
+  });
+});
+
+describe("Range", () => {
+  // One byte range per request (delivery/range.ts), on the three routes that
+  // send a file or a picture. A 206 carries the 200's headers plus
+  // Content-Range and the range's Content-Length; a 416 is decided from the
+  // record alone and carries none of the file's headers; anything the
+  // parser cannot serve is the whole file with a 200.
+  const cookies = () => ({ [SESSION_COOKIE]: sessionCookie });
+
+  interface Target {
+    /** The URL to ask; a link is minted afresh. */
+    url(): Promise<string>;
+    session: boolean;
+    bytes: Buffer;
+    etag: string;
+    attachment: boolean;
+  }
+
+  const fileA = files.get(FILE_A) as StubItem;
+  const targets: Record<string, Target> = {
+    download: {
+      url: async () => `/files/${FILE_A}/download`,
+      session: true,
+      bytes: fileA.bytes,
+      etag: fileA.etag,
+      attachment: true,
+    },
+    "source blob": {
+      url: async () => `/blobs/${BLOB_SRC}`,
+      session: true,
+      bytes: blobs.get(BLOB_SRC)?.bytes ?? Buffer.alloc(0),
+      etag: `"${BLOB_SRC}"`,
+      attachment: false,
+    },
+    "slicer link": {
+      url: async () => pathOf((await linkFor(FILE_A)).url),
+      session: false,
+      bytes: fileA.bytes,
+      etag: fileA.etag,
+      attachment: true,
+    },
+  };
+  const names = Object.keys(targets);
+
+  async function ask(
+    name: string,
+    headers: Record<string, string> = {},
+    method: "GET" | "HEAD" = "GET",
+  ) {
+    const target = targets[name] as Target;
+    return app.inject({
+      method,
+      url: await target.url(),
+      headers,
+      cookies: target.session ? cookies() : {},
+    });
+  }
+
+  /** The headers a 206 must share with the 200. */
+  const SHARED = ["content-type", "cache-control", "x-content-type-options", "content-disposition"];
+
+  test("the 200 carries Accept-Ranges and the ETag on every route", async () => {
+    for (const name of names) {
+      const target = targets[name] as Target;
+      for (const method of ["GET", "HEAD"] as const) {
+        const res = await ask(name, {}, method);
+        expect(res.statusCode, `${method} ${name}`).toBe(200);
+        expect(res.headers["accept-ranges"], `${method} ${name}`).toBe("bytes");
+        expect(res.headers.etag, `${method} ${name}`).toBe(target.etag);
+        expect(res.headers["content-range"], `${method} ${name}`).toBeUndefined();
+      }
+    }
+  });
+
+  test.each(names)("%s: bytes=0-9 is 206 with the first ten bytes", async (name) => {
+    const target = targets[name] as Target;
+    const whole = await ask(name);
+    const res = await ask(name, { range: "bytes=0-9" });
+    expect(res.statusCode).toBe(206);
+    expect(res.rawPayload.equals(target.bytes.subarray(0, 10))).toBe(true);
+    expect(res.headers["content-range"]).toBe(`bytes 0-9/${target.bytes.length}`);
+    expect(res.headers["content-length"]).toBe("10");
+    expect(res.headers["accept-ranges"]).toBe("bytes");
+    expect(res.headers.etag).toBe(target.etag);
+    for (const header of SHARED) expect(res.headers[header], header).toBe(whole.headers[header]);
+    expect(res.headers["content-disposition"] !== undefined).toBe(target.attachment);
+  });
+
+  test.each(names)("%s: a suffix, an open end and a last byte past the end", async (name) => {
+    const target = targets[name] as Target;
+    const n = target.bytes.length;
+    for (const [range, start, end] of [
+      ["bytes=-5", n - 5, n - 1],
+      ["bytes=5-", 5, n - 1],
+      ["bytes=5-99999", 5, n - 1],
+    ] as const) {
+      const res = await ask(name, { range });
+      expect(res.statusCode, range).toBe(206);
+      expect(res.rawPayload.equals(target.bytes.subarray(start, end + 1)), range).toBe(true);
+      expect(res.headers["content-range"], range).toBe(`bytes ${start}-${end}/${n}`);
+      expect(res.headers["content-length"], range).toBe(String(end - start + 1));
+    }
+  });
+
+  test.each(names)("%s: a range from the size on is 416, no file header, no read", async (name) => {
+    const target = targets[name] as Target;
+    const n = target.bytes.length;
+    const url = await target.url();
+    const before = opened;
+    const res = await app.inject({
+      method: "GET",
+      url,
+      headers: { range: `bytes=${n}-` },
+      cookies: target.session ? cookies() : {},
+    });
+    expect(res.statusCode).toBe(416);
+    expect(res.headers["content-range"]).toBe(`bytes */${n}`);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.rawPayload.length).toBe(0);
+    for (const header of ["content-type", "content-disposition", "accept-ranges", "etag"]) {
+      expect(res.headers[header], header).toBeUndefined();
+    }
+    expect(opened).toBe(before);
+  });
+
+  test.each(names)(
+    "%s: several ranges, another unit or a backwards range is the whole file",
+    async (name) => {
+      const target = targets[name] as Target;
+      for (const range of ["bytes=0-1,5-6", "items=0-1", "bytes=9-2"]) {
+        const res = await ask(name, { range });
+        expect(res.statusCode, range).toBe(200);
+        expect(res.rawPayload.equals(target.bytes), range).toBe(true);
+        expect(res.headers["content-length"], range).toBe(String(target.bytes.length));
+        expect(res.headers["accept-ranges"], range).toBe("bytes");
+        expect(res.headers["content-range"], range).toBeUndefined();
+      }
+    },
+  );
+
+  test.each(names)(
+    "%s: If-Range with the ETag is 206; anything else the whole file",
+    async (name) => {
+      const target = targets[name] as Target;
+      const matched = await ask(name, { range: "bytes=0-9", "if-range": target.etag });
+      expect(matched.statusCode).toBe(206);
+      expect(matched.rawPayload.equals(target.bytes.subarray(0, 10))).toBe(true);
+      for (const ifRange of [`W/${target.etag}`, `"${FILE_B}"`, "Wed, 21 Oct 2015 07:28:00 GMT"]) {
+        const res = await ask(name, { range: "bytes=0-9", "if-range": ifRange });
+        expect(res.statusCode, ifRange).toBe(200);
+        expect(res.rawPayload.equals(target.bytes), ifRange).toBe(true);
+        expect(res.headers["content-range"], ifRange).toBeUndefined();
+      }
+    },
+  );
+
+  test.each(names)(
+    "%s: a HEAD ignores Range: 200 with the whole length and no body",
+    async (name) => {
+      const target = targets[name] as Target;
+      const before = opened;
+      const res = await ask(name, { range: "bytes=0-9" }, "HEAD");
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-length"]).toBe(String(target.bytes.length));
+      expect(res.headers["accept-ranges"]).toBe("bytes");
+      expect(res.headers.etag).toBe(target.etag);
+      expect(res.headers["content-range"]).toBeUndefined();
+      expect(res.rawPayload.length).toBe(0);
+      expect(opened).toBe(before);
+    },
+  );
+
+  test("a thumbnail range is 206 with the immutable header and no ETag; any If-Range is 200", async () => {
+    const bytes = blobs.get(BLOB_T)?.bytes ?? Buffer.alloc(0);
+    const get = (headers: Record<string, string>) =>
+      app.inject({ method: "GET", url: `/blobs/${BLOB_T}`, cookies: cookies(), headers });
+    const res = await get({ range: "bytes=0-9" });
+    expect(res.statusCode).toBe(206);
+    expect(res.rawPayload.equals(bytes.subarray(0, 10))).toBe(true);
+    expect(res.headers["content-range"]).toBe(`bytes 0-9/${bytes.length}`);
+    expect(res.headers["cache-control"]).toBe(BLOB_CACHE_CONTROL);
+    expect(res.headers["accept-ranges"]).toBe("bytes");
+    expect(res.headers.etag).toBeUndefined();
+    for (const ifRange of [`"${BLOB_T}"`, "Wed, 21 Oct 2015 07:28:00 GMT"]) {
+      const full = await get({ range: "bytes=0-9", "if-range": ifRange });
+      expect(full.statusCode, ifRange).toBe(200);
+      expect(full.rawPayload.equals(bytes), ifRange).toBe(true);
+    }
+  });
+
+  test("with no session, a Range is answered as without one: 401 or the login redirect", async () => {
+    const before = opened;
+    const looked = { ...lookups };
+    for (const url of [`/files/${FILE_A}/download`, `/blobs/${BLOB_SRC}`]) {
+      for (const range of ["bytes=0-9", "bytes=99999-"]) {
+        const api = await app.inject({
+          method: "GET",
+          url,
+          headers: { accept: "application/json", range },
+        });
+        expect(api.statusCode, `${url} ${range}`).toBe(401);
+        expect(api.headers["content-range"], `${url} ${range}`).toBeUndefined();
+        expect(api.headers["accept-ranges"], `${url} ${range}`).toBeUndefined();
+        const page = await app.inject({
+          method: "GET",
+          url,
+          headers: { accept: "text/html", range },
+        });
+        expect(page.statusCode, `${url} ${range}`).toBe(302);
+        expect(page.headers["content-range"], `${url} ${range}`).toBeUndefined();
+      }
+    }
+    expect(opened).toBe(before);
+    expectNoLookups(looked);
+  });
+
+  test("an expired or altered link with a Range is 403, empty, never 206 or 416", async () => {
+    const link = pathOf((await linkFor(FILE_A)).url);
+    const [, , token, name] = link.split("/");
+    const altered = Buffer.from(token ?? "", "base64url");
+    altered[30] = (altered[30] ?? 0) ^ 0x80;
+    const start = t.clock.now;
+    const before = opened;
+    const looked = { ...lookups };
+    try {
+      for (const range of ["bytes=0-9", "bytes=99999-"]) {
+        const bad = await app.inject({
+          method: "GET",
+          url: `/s/${altered.toString("base64url")}/${name}`,
+          headers: { range },
+        });
+        expect(bad.statusCode, range).toBe(403);
+        expect(bad.body, range).toBe("");
+        expect(bad.headers["content-range"], range).toBeUndefined();
+      }
+      t.clock.advance(LINK_LIFETIME_SECONDS * 1000 + 1000);
+      for (const range of ["bytes=0-9", "bytes=99999-"]) {
+        const expired = await app.inject({ method: "GET", url: link, headers: { range } });
+        expect(expired.statusCode, range).toBe(403);
+        expect(expired.body, range).toBe("");
+        expect(expired.headers["content-range"], range).toBeUndefined();
+      }
+    } finally {
+      t.clock.now = start;
+    }
+    expect(opened).toBe(before);
+    expectNoLookups(looked);
   });
 });
 
@@ -1355,6 +1656,41 @@ describe("a stream that is not exactly the recorded size reaches the client abor
     }
   });
 
+  test.each([
+    ["runs past the range", "rest-and-more", "first-"],
+    ["ends short of the range", "ab", "first-ab"],
+  ])("a range whose stream %s is aborted, never a clean 206", async (_label, rest, received) => {
+    // bytes=0-9 of the 16-byte record: the stream is held to the range's 10
+    // bytes, not the record's 16.
+    for (const [url, headers] of await urls()) {
+      const stream = new PassThrough();
+      gate = stream;
+      stream.write("first-");
+      const res = await fetch(`${base}${url}`, { headers: { ...headers, range: "bytes=0-9" } });
+      expect(res.status, url).toBe(206);
+      expect(res.headers.get("content-length"), url).toBe("10");
+      expect(res.headers.get("content-range"), url).toBe("bytes 0-9/16");
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("no body");
+      const chunks: Buffer[] = [];
+      const first = await reader.read();
+      chunks.push(Buffer.from(first.value ?? []));
+      stream.end(rest);
+      let error: unknown;
+      try {
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          chunks.push(Buffer.from(next.value));
+        }
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error, url).toBeDefined();
+      expect(Buffer.concat(chunks).toString(), url).toBe(received);
+    }
+  });
+
   test("a stream of exactly the recorded size ends cleanly with every byte", async () => {
     for (const [url, headers] of await urls()) {
       const got = await fetchWhile(url, headers, (s) => s.end("rest"));
@@ -1402,25 +1738,48 @@ describe("a stream that fails before its first byte is answered with no attachme
     ["the first chunk is already past the record", () => Readable.from([Buffer.alloc(20, 0x61)])],
   ])("%s: 503, no Content-Disposition", async (_label, open) => {
     for (const [url, session] of await urls()) {
-      streamed = open;
-      const res = await app.inject({ method: "GET", url, cookies: session ? cookies() : {} });
-      expect(res.statusCode, url).toBe(503);
-      expect(res.json(), url).toEqual({ error: "unavailable", message: FILE_UNAVAILABLE_MESSAGE });
-      expect(res.headers["content-disposition"], url).toBeUndefined();
-      expect(res.headers.etag, url).toBeUndefined();
-      expect(res.headers["cache-control"], url).toBe("no-store");
+      for (const headers of [{}, { range: "bytes=0-9" }]) {
+        const label = `${url} ${JSON.stringify(headers)}`;
+        streamed = open;
+        const res = await app.inject({
+          method: "GET",
+          url,
+          headers,
+          cookies: session ? cookies() : {},
+        });
+        expect(res.statusCode, label).toBe(503);
+        expect(res.json(), label).toEqual({
+          error: "unavailable",
+          message: FILE_UNAVAILABLE_MESSAGE,
+        });
+        expect(res.headers["content-disposition"], label).toBeUndefined();
+        expect(res.headers.etag, label).toBeUndefined();
+        expect(res.headers["content-range"], label).toBeUndefined();
+        expect(res.headers["accept-ranges"], label).toBeUndefined();
+        expect(res.headers["cache-control"], label).toBe("no-store");
+      }
     }
   });
 
   test("any other failure before the first byte: 500, no Content-Disposition", async () => {
     for (const [url, session] of await urls()) {
-      streamed = failsAtOnce(new Error("synthetic stream failure"));
-      const res = await app.inject({ method: "GET", url, cookies: session ? cookies() : {} });
-      expect(res.statusCode, url).toBe(500);
-      expect(res.json(), url).toEqual({ error: "internal" });
-      expect(res.headers["content-disposition"], url).toBeUndefined();
-      expect(res.headers.etag, url).toBeUndefined();
-      expect(res.headers["cache-control"], url).toBe("no-store");
+      for (const headers of [{}, { range: "bytes=0-9" }]) {
+        const label = `${url} ${JSON.stringify(headers)}`;
+        streamed = failsAtOnce(new Error("synthetic stream failure"));
+        const res = await app.inject({
+          method: "GET",
+          url,
+          headers,
+          cookies: session ? cookies() : {},
+        });
+        expect(res.statusCode, label).toBe(500);
+        expect(res.json(), label).toEqual({ error: "internal" });
+        expect(res.headers["content-disposition"], label).toBeUndefined();
+        expect(res.headers.etag, label).toBeUndefined();
+        expect(res.headers["content-range"], label).toBeUndefined();
+        expect(res.headers["accept-ranges"], label).toBeUndefined();
+        expect(res.headers["cache-control"], label).toBe("no-store");
+      }
     }
   });
 });

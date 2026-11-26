@@ -16,7 +16,8 @@ export interface SeenRequest {
 export interface Reply {
   status: number;
   headers?: Record<string, string>;
-  body?: string;
+  /** Text is sent as UTF-8; a Buffer is sent as it is, for an object's bytes. */
+  body?: string | Buffer;
 }
 
 export type Handler = (req: SeenRequest) => Reply;
@@ -139,4 +140,67 @@ export function s3Error(status: number, code: string, message = "synthetic error
 
 export function xml(body: string): Reply {
   return { status: 200, body: `<?xml version="1.0" encoding="UTF-8"?>${body}` };
+}
+
+// Answers ranged GETs as S3 does for an object holding exactly these bytes: a
+// range that runs past the last byte is cut short at it (so the Content-Range
+// names a shorter range and the object's real length), and a range that starts
+// past it is a 416 InvalidRange. An object stored shorter than its record
+// looks like this to a reader that asks for the recorded size.
+export function storedObject(bytes: Buffer): Handler {
+  return (req) => {
+    const match = /^bytes=(\d+)-(\d+)$/.exec(String(req.headers.range ?? ""));
+    if (!match)
+      return { status: 200, headers: { "content-type": "application/octet-stream" }, body: bytes };
+    const start = Number(match[1]);
+    if (start >= bytes.length) return s3Error(416, "InvalidRange");
+    const last = Math.min(Number(match[2]), bytes.length - 1);
+    return {
+      status: 206,
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-range": `bytes ${start}-${last}/${bytes.length}`,
+      },
+      body: bytes.subarray(start, last + 1),
+    };
+  };
+}
+
+// Answers every request with this status and these headers, declares a body
+// of `total` bytes, sends the first `sent` of them and holds the rest back, so
+// the connection stays open until the client gives the body up. closed
+// resolves when it does: a reader that refuses an answer must destroy its
+// body, or the connection would be held until the socket timed out.
+export async function startHeldBodyS3(reply: {
+  status: number;
+  headers: Record<string, string>;
+  total: number;
+  sent: number;
+}): Promise<{ endpoint: string; closed: Promise<void>; close(): Promise<void> }> {
+  let onClosed = () => {};
+  const closed = new Promise<void>((resolve) => {
+    onClosed = resolve;
+  });
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.socket?.once("close", () => onClosed());
+      res.writeHead(reply.status, {
+        "content-type": "application/octet-stream",
+        "content-length": String(reply.total),
+        ...reply.headers,
+      });
+      res.write(Buffer.alloc(reply.sent, 0x61));
+    });
+  });
+  const port = await listen(server);
+  return {
+    endpoint: `http://127.0.0.1:${port}`,
+    closed,
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
 }

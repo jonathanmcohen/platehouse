@@ -28,6 +28,7 @@ import { createBoss } from "../../../src/jobs/boss.js";
 import {
   localTimeZone,
   MAINTENANCE_TASKS,
+  ON_DEMAND_TASKS,
   POLL_ORCA_CRON,
   PURGE_EXPIRED_CRON,
   PURGE_SESSIONS_CRON,
@@ -213,6 +214,12 @@ describe("queues and workers", () => {
       const job = await settled(QUEUE.maintenance, { task });
       expect(job.state, `${task}: ${JSON.stringify(job.output ?? null)}`).toBe("completed");
     }
+  });
+
+  // Sent by Empty trash (the app API), never scheduled: the server registers its run.
+  test("an Empty trash job runs to completion", async () => {
+    const job = await settled(QUEUE.maintenance, { task: ON_DEMAND_TASKS.emptyTrash });
+    expect(job.state, JSON.stringify(job.output ?? null)).toBe("completed");
   });
 
   // #357: the first start of a version with a new converter queues the

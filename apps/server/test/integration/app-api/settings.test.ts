@@ -19,7 +19,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   createTokens,
   dbTokenStore,
@@ -45,7 +45,12 @@ import { FALLBACK_SLICES_PER_MINUTE, MIN_FINISHES_FOR_RATE } from "../../../src/
 import { createEstimates, type Estimates } from "../../../src/estimates/service.js";
 import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
-import { MAINTENANCE_TASKS, QUEUE, startQueues } from "../../../src/jobs/queues.js";
+import {
+  MAINTENANCE_TASKS,
+  ON_DEMAND_TASKS,
+  QUEUE,
+  startQueues,
+} from "../../../src/jobs/queues.js";
 import { createTrash, type PurgeStore } from "../../../src/library/trash.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { createUploads } from "../../../src/uploads/tus.js";
@@ -214,6 +219,15 @@ beforeAll(async () => {
     slicerDown: { waitMs: 2_000, pollMs: 100, requeues: 3 },
     log: () => {},
   });
+  purgeStore = env.store;
+  // One trash for the app's routes and the maintenance queue's Empty trash job.
+  const trash = createTrash({
+    db: env.db,
+    store: {
+      listPrefix: (p) => purgeStore.listPrefix(p),
+      deleteBlobs: (keys) => purgeStore.deleteBlobs(keys),
+    },
+  });
   await startQueues(boss, {
     ingestFile: (input) => env.ingest.ingestFile(input),
     purgeExpired: async () => ({ purged: [] }),
@@ -222,10 +236,10 @@ beforeAll(async () => {
     slicerJobs: estimates.slicerJobs,
     pollOrca: () => estimates.pollOrca(),
     onIngested: (result) => estimates.enqueueFile(result.fileId),
+    emptyTrash: (signal) => trash.purgeMarked(signal),
     pollingIntervalSeconds: 0.5,
   });
   tokens = createTokens({ store: dbTokenStore(env.db) });
-  purgeStore = env.store;
   tokenList = dbTokenList(env.db);
   auth = await testAuth({ store: dbSessionStore(env.db) });
   app = await buildApp({
@@ -253,16 +267,7 @@ beforeAll(async () => {
       settings: { settings: env.repos.settings, estimates },
       // The sign-in window is measured on the sessions' clock (issue #377).
       tokens: { tokens, list: () => tokenList(), now: () => auth.clock.now },
-      organise: {
-        db: env.db,
-        trash: createTrash({
-          db: env.db,
-          store: {
-            listPrefix: (p) => purgeStore.listPrefix(p),
-            deleteBlobs: (keys) => purgeStore.deleteBlobs(keys),
-          },
-        }),
-      },
+      organise: { db: env.db, trash, boss },
     },
     logger: { write: (line: string) => lines.push(line) },
     // A web folder that is never built, so a shell page answers NOT_BUILT
@@ -1170,6 +1175,28 @@ async function listedTrash(): Promise<{ ids: string[]; readAt: string }> {
   return { ids: body.models.map((m) => m.id), readAt: body.readAt };
 }
 
+/**
+ * Waits until the Empty trash job has deleted these models, and the check
+ * holds (pg-boss polls every 0.5 s and runs one maintenance job at a time).
+ */
+async function untilPurged(modelIds: string[], check: () => Promise<void> = async () => {}) {
+  await vi.waitFor(
+    async () => {
+      for (const id of modelIds) expect((await rowCounts(env.db, id)).models, id).toBe(0);
+      await check();
+    },
+    { timeout: 20_000, interval: 100 },
+  );
+}
+
+/** The state of the newest empty-trash job on the maintenance queue. */
+async function newestEmptyTrashJob(): Promise<string | undefined> {
+  const jobs = await boss.findJobs(QUEUE.maintenance, {
+    data: { task: ON_DEMAND_TASKS.emptyTrash },
+  });
+  return jobs.at(-1)?.state;
+}
+
 /** Sets a trashed model's trash time exactly, to the microsecond. */
 async function trashedAtExactly(modelId: string, at: string): Promise<void> {
   await sql`update models set trashed_at = ${at}::timestamptz where id = ${modelId}`.execute(
@@ -1235,17 +1262,19 @@ describe("the trash", () => {
     expect(ids).toEqual(expect.arrayContaining([a.model.id, b.model.id]));
 
     const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: readAt } });
-    expect(res.status, res.text).toBe(200);
-    expect((res.json() as { purged: number }).purged).toBe(ids.length);
+    expect(res.status, res.text).toBe(202);
+    expect(res.json()).toEqual({ queued: ids.length, at: expect.any(String) });
+
+    await untilPurged([a.model.id, b.model.id], async () => {
+      expect((await listedTrash()).ids).toEqual([]);
+    });
     for (const m of [a, b]) {
       expect(await env.store.listPrefix(`models/${m.model.id}/`)).toEqual([]);
-      expect((await rowCounts(env.db, m.model.id)).models).toBe(0);
     }
     expect((await rowCounts(env.db, live.model.id)).models).toBe(1);
-    expect((await listedTrash()).ids).toEqual([]);
   });
 
-  test("an empty trash that fails one model answers incomplete, and that model stays in the trash", async () => {
+  test("an Empty trash job that fails on the bucket leaves that model listed, and a later job finishes it", async () => {
     const failing = await seedStoredModel(env);
     const done = await seedStoredModel(env);
     for (const m of [failing, done]) await call("POST", `/app/api/models/${m.model.id}/trash`);
@@ -1264,15 +1293,13 @@ describe("the trash", () => {
       const res = await call("POST", "/app/api/trash/empty", {
         json: { cutoff: (await listedTrash()).readAt },
       });
-      // The shape the trash page reads (apps/web TrashList's incompleteFailure).
-      expect(res.status, res.text).toBe(500);
-      expect(res.json()).toEqual({
-        error: "incomplete",
-        purged: 1,
-        failed: 1,
-        message: "1 model could not be deleted and stays in the trash; the next purge tries again.",
+      expect(res.status, res.text).toBe(202);
+      expect(res.json()).toEqual({ queued: 2, at: expect.any(String) });
+
+      // pg-boss retries the job and then marks it failed; the other model is gone.
+      await untilPurged([done.model.id], async () => {
+        expect(await newestEmptyTrashJob()).toBe("failed");
       });
-      expect((await rowCounts(env.db, done.model.id)).models).toBe(0);
       expect(await env.store.listPrefix(`models/${done.model.id}/`)).toEqual([]);
       expect((await call("GET", "/app/api/trash")).json()).toEqual({
         models: [expect.objectContaining({ id: failing.model.id, purgeStarted: true })],
@@ -1281,19 +1308,70 @@ describe("the trash", () => {
         pageSize: 100,
         pageCount: 1,
         total: 1,
+        emptying: false,
+        purging: 1,
       });
     } finally {
       purgeStore = env.store;
     }
 
-    // With the bucket back, the next Empty trash finishes it.
+    // With the bucket back, a later job finishes it.
     const retry = await call("POST", "/app/api/trash/empty", {
       json: { cutoff: (await listedTrash()).readAt },
     });
-    expect(retry.status, retry.text).toBe(200);
-    expect((await rowCounts(env.db, failing.model.id)).models).toBe(0);
+    expect(retry.status, retry.text).toBe(202);
+    expect(retry.json()).toEqual({ queued: 1, at: expect.any(String) });
+    await untilPurged([failing.model.id], async () => {
+      expect((await listedTrash()).ids).toEqual([]);
+    });
     expect(await env.store.listPrefix(failingPrefix)).toEqual([]);
-    expect((await listedTrash()).ids).toEqual([]);
+  });
+
+  test("the trash says while Empty trash runs and how many models it is deleting", async () => {
+    const a = await seedStoredModel(env);
+    const b = await seedStoredModel(env);
+    for (const m of [a, b]) await call("POST", `/app/api/models/${m.model.id}/trash`);
+    const idle = (await call("GET", "/app/api/trash")).json();
+    expect(idle).toMatchObject({ emptying: false, purging: 0 });
+    // The job waits at its first delete until released, so the list is
+    // read while it runs.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    purgeStore = {
+      listPrefix: (p) => env.store.listPrefix(p),
+      async deleteBlobs(keys) {
+        await held;
+        return env.store.deleteBlobs(keys);
+      },
+    };
+    try {
+      const res = await call("POST", "/app/api/trash/empty", {
+        json: { cutoff: (await listedTrash()).readAt },
+      });
+      expect(res.status, res.text).toBe(202);
+      expect(res.json()).toEqual({ queued: 2, at: expect.any(String) });
+
+      const running = (await call("GET", "/app/api/trash")).json();
+      expect(running).toMatchObject({ emptying: true, purging: 2, total: 2 });
+      expect((running as { models: Array<{ purgeStarted: boolean }> }).models).toEqual([
+        expect.objectContaining({ purgeStarted: true }),
+        expect.objectContaining({ purgeStarted: true }),
+      ]);
+    } finally {
+      release();
+      purgeStore = env.store;
+    }
+
+    await untilPurged([a.model.id, b.model.id], async () => {
+      expect((await call("GET", "/app/api/trash")).json()).toMatchObject({
+        models: [],
+        emptying: false,
+        purging: 0,
+        total: 0,
+      });
+    });
   });
 
   test("empty trash leaves a model trashed after the page read the list", async () => {
@@ -1308,9 +1386,9 @@ describe("the trash", () => {
     await call("POST", `/app/api/models/${unseen.model.id}/trash`);
 
     const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: readAt } });
-    expect(res.status, res.text).toBe(200);
-    expect((res.json() as { purged: number }).purged).toBe(1);
-    expect((await rowCounts(env.db, shown.model.id)).models).toBe(0);
+    expect(res.status, res.text).toBe(202);
+    expect(res.json()).toEqual({ queued: 1, at: expect.any(String) });
+    await untilPurged([shown.model.id]);
     expect((await env.repos.models.get(unseen.model.id))?.trashedAt).not.toBeNull();
     expect(await env.store.listPrefix(`models/${unseen.model.id}/`)).not.toEqual([]);
     expect((await listedTrash()).ids).toEqual([unseen.model.id]);
@@ -1320,7 +1398,13 @@ describe("the trash", () => {
 
   /** Trashes n models with distinct, ordered trash times, oldest first: row i is trashed at minute i. */
   async function seedTrashOf(n: number): Promise<string[]> {
-    await call("POST", "/app/api/trash/empty", { json: { cutoff: (await listedTrash()).readAt } });
+    const emptied = await call("POST", "/app/api/trash/empty", {
+      json: { cutoff: (await listedTrash()).readAt },
+    });
+    expect(emptied.status, emptied.text).toBe(202);
+    await untilPurged([], async () => {
+      expect((await listedTrash()).ids).toEqual([]);
+    });
     const ids: string[] = [];
     for (let i = 0; i < n; i++) {
       const m = await seedStoredModel(env);
@@ -1374,7 +1458,7 @@ describe("the trash", () => {
   });
 
   test("empty trash with page 1's readAt leaves a model trashed after it, with the trash paged", async () => {
-    await seedTrashOf(3);
+    const seeded = await seedTrashOf(3);
     const first = (await call("GET", "/app/api/trash?limit=2")).json() as TrashPageBody;
     expect(first.pageCount).toBe(2);
     const unseen = await seedStoredModel(env);
@@ -1382,14 +1466,16 @@ describe("the trash", () => {
     await call("POST", `/app/api/models/${unseen.model.id}/trash`);
 
     const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: first.readAt } });
-    expect(res.status, res.text).toBe(200);
-    expect((res.json() as { purged: number }).purged).toBe(3);
-    expect((await listedTrash()).ids).toEqual([unseen.model.id]);
+    expect(res.status, res.text).toBe(202);
+    expect(res.json()).toEqual({ queued: 3, at: expect.any(String) });
+    await untilPurged(seeded, async () => {
+      expect((await listedTrash()).ids).toEqual([unseen.model.id]);
+    });
     expect((await call("POST", `/app/api/trash/${unseen.model.id}/restore`)).status).toBe(204);
   });
 
   test("empty trash with page 2's readAt leaves a model trashed after that read", async () => {
-    await seedTrashOf(3);
+    const seeded = await seedTrashOf(3);
     const second = (await call("GET", "/app/api/trash?page=2&limit=2")).json() as TrashPageBody;
     expect(second.page).toBe(2);
     const unseen = await seedStoredModel(env);
@@ -1397,9 +1483,11 @@ describe("the trash", () => {
     await call("POST", `/app/api/models/${unseen.model.id}/trash`);
 
     const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: second.readAt } });
-    expect(res.status, res.text).toBe(200);
-    expect((res.json() as { purged: number }).purged).toBe(3);
-    expect((await listedTrash()).ids).toEqual([unseen.model.id]);
+    expect(res.status, res.text).toBe(202);
+    expect(res.json()).toEqual({ queued: 3, at: expect.any(String) });
+    await untilPurged(seeded, async () => {
+      expect((await listedTrash()).ids).toEqual([unseen.model.id]);
+    });
     expect((await call("POST", `/app/api/trash/${unseen.model.id}/restore`)).status).toBe(204);
   });
 
@@ -1415,10 +1503,11 @@ describe("the trash", () => {
     const res = await call("POST", "/app/api/trash/empty", {
       json: { cutoff: "2026-11-10T10:00:00.123Z" },
     });
-    expect(res.status, res.text).toBe(200);
-    expect((res.json() as { purged: number }).purged).toBe(1);
-    expect((await rowCounts(env.db, inside.model.id)).models).toBe(0);
-    expect((await listedTrash()).ids).toEqual([after.model.id]);
+    expect(res.status, res.text).toBe(202);
+    expect(res.json()).toEqual({ queued: 1, at: expect.any(String) });
+    await untilPurged([inside.model.id], async () => {
+      expect((await listedTrash()).ids).toEqual([after.model.id]);
+    });
     expect((await call("POST", `/app/api/trash/${after.model.id}/restore`)).status).toBe(204);
   });
 

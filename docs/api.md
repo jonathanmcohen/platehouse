@@ -361,9 +361,9 @@ resumes the finished upload and stores nothing there.
 
 ### What each answer means
 
-Every answer the upload requests can give, in the same words as the
-[OpenAPI document](#the-openapi-document) and the API reference in Settings. tus's own answers
-are plain text; Platehouse's are JSON.
+Every answer the upload requests and the file download (`GET /files/{id}/content`) can give,
+in the same words as the [OpenAPI document](#the-openapi-document) and the API reference in
+Settings. tus's own answers are plain text; Platehouse's are JSON.
 
 | Request                    | Status | What it means                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | -------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -405,6 +405,14 @@ are plain text; Platehouse's are JSON.
 | `GET /uploads/{id}/result` | 414    | A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.                                                                                                                                                                                                                                                                                       |
 | `GET /uploads/{id}/result` | 500    | Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.                                                                                                                                                                                                                                                                                                                                        |
 | `GET /uploads/{id}/result` | 503    | The result cannot be read right now; try again shortly                                                                                                                                                                                                                                                                                                                                                                                               |
+| `GET /files/{id}/content`  | 200    | The file. Content-Type is the file's own (model/3mf, model/stl, model/step, or text/plain; charset=utf-8 for .scad).                                                                                                                                                                                                                                                                                                                                 |
+| `GET /files/{id}/content`  | 206    | Part of the file, for a Range request.                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `GET /files/{id}/content`  | 401    | No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.                                                                                                                                                                                                                                                                                                            |
+| `GET /files/{id}/content`  | 404    | No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API.                                                                                                                                                                                                                                                                                                                           |
+| `GET /files/{id}/content`  | 414    | A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.                                                                                                                                                                                                                                                                                       |
+| `GET /files/{id}/content`  | 416    | The range starts at or past the end of the file. Content-Range gives the size.                                                                                                                                                                                                                                                                                                                                                                       |
+| `GET /files/{id}/content`  | 500    | Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.                                                                                                                                                                                                                                                                                                                                        |
+| `GET /files/{id}/content`  | 503    | The bytes cannot be read from storage right now (message says so), or the token could not be checked. Try again shortly.                                                                                                                                                                                                                                                                                                                             |
 
 ## Downloads and slicer links
 
@@ -419,6 +427,36 @@ curl -fsS -OJ "$PLATEHOUSE/api/v1/files/0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70/con
 
 `-OJ` saves the file under the name Platehouse gives it. `-f` makes curl stop with an error on an
 error answer, such as a `404`, instead of saving that answer as the file.
+
+A cut download carries on from where it stopped: `-C -` makes curl send a `Range` header for the
+bytes the saved file is missing, and Platehouse answers `206` with that part. A file's bytes can be
+replaced between two requests, and then its `ETag` changes, so save the first answer's headers with
+`-D` and send its `ETag` back in `If-Range` when you carry on. curl cannot combine `-C` with `-J`,
+so give the name the first download saved with `-o`:
+
+```sh
+curl -fsS -D bracket.headers -o bracket.3mf \
+  "$PLATEHOUSE/api/v1/files/0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70/content" \
+  -H "Authorization: Bearer $PLATEHOUSE_TOKEN"
+grep -i '^etag' bracket.headers
+
+curl -fsS -C - -o bracket.3mf \
+  "$PLATEHOUSE/api/v1/files/0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70/content" \
+  -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
+  -H 'If-Range: "<the ETag from the first answer>"'
+```
+
+When the file has not changed, the answer is `206` and curl adds the missing part. When it has,
+the answer is the whole new file, `200`, and curl stops with exit code 33 rather than add it to the
+old part: delete the partial file and download it again. Without `If-Range`, the part curl adds
+could come from the new bytes, leaving a file that is half one version and half the other. To check
+a finished download, compare its SHA-256 with the `sha256` that `GET /files/{id}` gives for the
+file.
+
+One range is answered per request; several in one `Range` header get the whole file, `200`.
+`If-Range` takes the `ETag` only, not a date. A range that starts at or past the end of the file is
+`416`, and its `Content-Range` gives the size, as `bytes */<size>`; curl takes that answer to a
+`-C -` request as the file being complete already.
 
 The **Open in Bambu Studio** and **Open in OrcaSlicer** buttons on a model page work differently.
 A slicer opens a file from a URL and cannot send a token, so the web app makes a short-lived link

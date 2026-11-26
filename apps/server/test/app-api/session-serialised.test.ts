@@ -61,7 +61,7 @@ function session(agoMs: number): Session {
 
 interface Fakes {
   created: Array<[string, string, Date]>;
-  signedOut: Array<[string, boolean]>;
+  signedOut: Array<[string, boolean, boolean]>;
   createAnswer: CreatedToken | "stale";
 }
 
@@ -73,9 +73,13 @@ async function app(signedInAgoMs: number, fakes: Fakes) {
     },
     find: async (cookie) => (cookie === COOKIE ? session(signedInAgoMs) : undefined),
     end: async () => {},
-    signOutEverywhere: async (subject, revokeTokens) => {
-      fakes.signedOut.push([subject, revokeTokens]);
-      return { sessionsEnded: 2, tokensRevoked: revokeTokens ? 3 : 0 };
+    signOutEverywhere: async (subject, revokeTokens, revokeUnknown = false) => {
+      fakes.signedOut.push([subject, revokeTokens, revokeUnknown]);
+      return {
+        sessionsEnded: 2,
+        tokensRevoked: revokeTokens ? 3 : 0,
+        unknownTokensRevoked: revokeUnknown ? 5 : 0,
+      };
     },
   };
   await server.register(fastifyCookie);
@@ -106,6 +110,7 @@ async function app(signedInAgoMs: number, fakes: Fakes) {
   });
   await registerUsersApi(server, {
     list: async () => [],
+    unknownTokens: async () => 0,
     sessions,
     now: () => NOW,
   });
@@ -185,8 +190,8 @@ describe("POST /app/api/users/sign-out is one signOutEverywhere call (issue #414
       revokeTokens: true,
     });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json()).toEqual({ sessionsEnded: 2, tokensRevoked: 3 });
-    expect(f.signedOut).toEqual([["subject-other", true]]);
+    expect(res.json()).toEqual({ sessionsEnded: 2, tokensRevoked: 3, unknownTokensRevoked: 0 });
+    expect(f.signedOut).toEqual([["subject-other", true, false]]);
     await server.close();
   });
 
@@ -198,8 +203,81 @@ describe("POST /app/api/users/sign-out is one signOutEverywhere call (issue #414
       revokeTokens: false,
     });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json()).toEqual({ sessionsEnded: 2, tokensRevoked: 0 });
-    expect(f.signedOut).toEqual([["subject-maker", false]]);
+    expect(res.json()).toEqual({ sessionsEnded: 2, tokensRevoked: 0, unknownTokensRevoked: 0 });
+    expect(f.signedOut).toEqual([["subject-maker", false, false]]);
+    await server.close();
+  });
+
+  test("revokeUnknownTokens: true is passed on, and its count answered", async () => {
+    const f = fakes();
+    const server = await app(0, f);
+    const res = await post(server, "/app/api/users/sign-out", {
+      subject: "subject-other",
+      revokeTokens: false,
+      revokeUnknownTokens: true,
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toEqual({ sessionsEnded: 2, tokensRevoked: 0, unknownTokensRevoked: 5 });
+    expect(f.signedOut).toEqual([["subject-other", false, true]]);
+    await server.close();
+  });
+
+  test("a revokeUnknownTokens that is not a boolean is 400", async () => {
+    const f = fakes();
+    const server = await app(0, f);
+    const url = "/app/api/users/sign-out";
+    const base = { subject: "subject-other", revokeTokens: false };
+    expect((await post(server, url, { ...base, revokeUnknownTokens: "yes" })).statusCode).toBe(400);
+    expect((await post(server, url, { ...base, revokeUnknownTokens: {} })).statusCode).toBe(400);
+    expect(f.signedOut).toEqual([]);
+    await server.close();
+  });
+
+  // Fastify's validator coerces types by default ("true" and 1 to true, [true]
+  // to true); the two flags take a real boolean only.
+  test.each([
+    ['the string "true"', "true"],
+    ["the number 1", 1],
+    ["an array of true", [true]],
+  ])("a revokeUnknownTokens of %s is 400, and nothing ends", async (_what, value) => {
+    const f = fakes();
+    const server = await app(0, f);
+    const res = await post(server, "/app/api/users/sign-out", {
+      subject: "subject-other",
+      revokeTokens: false,
+      revokeUnknownTokens: value,
+    });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(f.signedOut).toEqual([]);
+    await server.close();
+  });
+
+  test.each([
+    ['the string "true"', "true"],
+    ["the number 1", 1],
+    ["an array of true", [true]],
+  ])("a revokeTokens of %s is 400, and nothing ends", async (_what, value) => {
+    const f = fakes();
+    const server = await app(0, f);
+    const res = await post(server, "/app/api/users/sign-out", {
+      subject: "subject-other",
+      revokeTokens: value,
+    });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(f.signedOut).toEqual([]);
+    await server.close();
+  });
+
+  test("a misspelt field does not turn the revoke on (Fastify strips fields the schema does not name)", async () => {
+    const f = fakes();
+    const server = await app(0, f);
+    const res = await post(server, "/app/api/users/sign-out", {
+      subject: "subject-other",
+      revokeTokens: false,
+      revokeUnknown: true,
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(f.signedOut).toEqual([["subject-other", false, false]]);
     await server.close();
   });
 
@@ -285,25 +363,37 @@ describe("createTokenForSession (issue #414)", () => {
 
 describe("Sessions.signOutEverywhere (issue #414)", () => {
   test("is the store's one call, with revokeTokens passed through", async () => {
-    const calls: Array<[string, boolean]> = [];
+    const calls: Array<[string, boolean, boolean]> = [];
     const fake: Pick<SessionStore, "signOutEverywhere"> = {
-      async signOutEverywhere(subject, revokeTokens) {
-        calls.push([subject, revokeTokens]);
-        return { sessionsEnded: 1, tokensRevoked: revokeTokens ? 4 : 0 };
+      async signOutEverywhere(subject, revokeTokens, revokeUnknown = false) {
+        calls.push([subject, revokeTokens, revokeUnknown]);
+        return {
+          sessionsEnded: 1,
+          tokensRevoked: revokeTokens ? 4 : 0,
+          unknownTokensRevoked: revokeUnknown ? 6 : 0,
+        };
       },
     };
     const sessions = createSessions({ store: fake as SessionStore });
     expect(await sessions.signOutEverywhere("subject-a", true)).toEqual({
       sessionsEnded: 1,
       tokensRevoked: 4,
+      unknownTokensRevoked: 0,
     });
     expect(await sessions.signOutEverywhere("subject-a", false)).toEqual({
       sessionsEnded: 1,
       tokensRevoked: 0,
+      unknownTokensRevoked: 0,
+    });
+    expect(await sessions.signOutEverywhere("subject-a", false, true)).toEqual({
+      sessionsEnded: 1,
+      tokensRevoked: 0,
+      unknownTokensRevoked: 6,
     });
     expect(calls).toEqual([
-      ["subject-a", true],
-      ["subject-a", false],
+      ["subject-a", true, false],
+      ["subject-a", false, false],
+      ["subject-a", false, true],
     ]);
   });
 });

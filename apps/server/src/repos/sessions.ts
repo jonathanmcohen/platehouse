@@ -7,10 +7,14 @@ import { tokensRepo } from "./tokens.js";
 // caller, never the cookie value itself; it is 43 characters, and the
 // schema refuses any other shape.
 
-/** What Sign out everywhere did: sessions deleted and tokens revoked. */
+/**
+ * What Sign out everywhere did: sessions deleted, tokens revoked that the
+ * subject made, and tokens revoked that have no recorded maker.
+ */
 export interface SignedOut {
   sessionsEnded: number;
   tokensRevoked: number;
+  unknownTokensRevoked: number;
 }
 
 export interface NewSession {
@@ -70,7 +74,8 @@ export function sessionsRepo(db: Kysely<DB>) {
 
     /**
      * Sign out everywhere, in one transaction: deletes every session of the
-     * subject, then, with revokeTokens, revokes every live token they made.
+     * subject, then, with revokeTokens, revokes every live token they made
+     * and, with revokeUnknown, every live token with no recorded maker.
      * The delete waits for a token creation holding one of those rows
      * (repos/tokens.ts createForSession) to commit, so the revoke after it
      * finds that token; a creation that reaches a row after the delete waits
@@ -82,14 +87,19 @@ export function sessionsRepo(db: Kysely<DB>) {
      * stricter level would not. It starts its own transaction, so db cannot
      * be one (Kysely refuses to nest them).
      */
-    async signOutEverywhere(subject: string, revokeTokens: boolean): Promise<SignedOut> {
+    async signOutEverywhere(
+      subject: string,
+      revokeTokens: boolean,
+      revokeUnknown = false,
+    ): Promise<SignedOut> {
       return db
         .transaction()
         .setIsolationLevel("read committed")
         .execute(async (trx) => {
           const sessionsEnded = await sessionsRepo(trx).deleteForSubject(subject);
           const tokensRevoked = revokeTokens ? await tokensRepo(trx).revokeForCreator(subject) : 0;
-          return { sessionsEnded, tokensRevoked };
+          const unknownTokensRevoked = revokeUnknown ? await tokensRepo(trx).revokeUnknown() : 0;
+          return { sessionsEnded, tokensRevoked, unknownTokensRevoked };
         });
     },
   };

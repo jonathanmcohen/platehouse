@@ -121,14 +121,32 @@ export function tokensRepo(db: Kysely<DB>) {
 
     /**
      * Revokes every live token this subject made; returns how many. A token
-     * whose maker is unknown is never touched. Sign out everywhere calls it
-     * in the same transaction as its session delete (repos/sessions.ts).
+     * whose maker is unknown is not touched; revokeUnknown does that. Sign
+     * out everywhere calls it in the same transaction as its session delete
+     * (repos/sessions.ts).
      */
     async revokeForCreator(subject: string): Promise<number> {
       const result = await db
         .updateTable("apiTokens")
         .set({ revokedAt: sql`now()` })
         .where("createdBySubject", "=", subject)
+        .where("revokedAt", "is", null)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows);
+    },
+
+    /**
+     * Revokes every live token with no recorded maker (made before
+     * Platehouse 0.1.1, when created_by_subject was added); returns how
+     * many. It matches on the missing maker alone, so it needs the caller's
+     * fresh sign-in check: those tokens may be anyone's. Sign out everywhere
+     * calls it in the same transaction as its session delete.
+     */
+    async revokeUnknown(): Promise<number> {
+      const result = await db
+        .updateTable("apiTokens")
+        .set({ revokedAt: sql`now()` })
+        .where("createdBySubject", "is", null)
         .where("revokedAt", "is", null)
         .executeTakeFirst();
       return Number(result.numUpdatedRows);

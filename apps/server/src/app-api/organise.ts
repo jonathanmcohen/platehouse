@@ -12,9 +12,9 @@
 //   PUT    /app/api/models/:id/tags?name=             tag {name} (DELETE: untag)
 //   PUT    /app/api/models/:id/collections?name=      add {name} (DELETE: take out)
 //   POST   /app/api/models/:id/trash                  move to the trash
-//   GET    /app/api/trash                             {models: [... purgeAt], readAt}
+//   GET    /app/api/trash                             {models: [... purgeAt], readAt, emptying, purging}
 //   POST   /app/api/trash/:id/restore                 204 | 404 | 409 purge began
-//   POST   /app/api/trash/empty  {cutoff}             {purged}
+//   POST   /app/api/trash/empty  {cutoff}             202 {queued, at}
 //   POST   /app/api/bulk/add-tags {ids, tags, view}   {changed, unchanged, failed, notInView, tags}
 //   POST   /app/api/bulk/remove-tag {ids, tag, view}  {changed, unchanged, failed, notInView, tag}
 //   POST   /app/api/bulk/add-to-collection {ids, collection, view}
@@ -46,7 +46,7 @@
 // Every change calls the library module (library/): renameModel and renameFile (the
 // display name only; the bucket key never changes), addTag and removeTag,
 // addToCollection and removeFromCollection (flat collections, made on first
-// use), trashModel, restoreModel and purgeExpired. Each refuses a model that
+// use), trashModel, restoreModel and requestPurge. Each refuses a model that
 // is unknown or in the trash, which is 404 here; taking off a tag or a
 // collection the model does not have is 404 too. The lists count live
 // models only, and the model rows are the library's search with one filter, a
@@ -76,39 +76,71 @@
 // whose purge has begun is listed with purgeStarted, and restore refuses it
 // (409), as restoreModel does.
 //
-// Empty trash purges only what the page listed. GET /app/api/trash answers
+// Empty trash marks only what the page listed. GET /app/api/trash answers
 // readAt, the database's time when it read the list (the clock that stamps
 // trashed_at, so a browser's clock never matters), and the page sends it back
-// as the cutoff. The route purges the models trashed at or before that
-// millisecond, through the library's purgeExpired (see emptyTrashBefore), so a
-// model another tab or browser trashed after the page read the list stays,
-// and can be restored. The body is one timestamp however long the trash is.
-// A cutoff that is not in readAt's form, or is later than the database's
-// clock, is refused with 400.
+// as the cutoff. The route marks every model trashed at or before that
+// millisecond in one statement (the library's requestPurge), queues an
+// empty-trash job on the maintenance queue, and answers 202 {queued, at} at
+// once: queued is the number it marked, at the database's time read after
+// the marks commit. The job purges them (the library's purgeMarked). The
+// page treats a listing as news of the job only when its readAt is at or
+// after at: a listing read before the commit can arrive after the 202, and
+// would say no job is running. A model another tab or browser trashed after
+// the page read the list is not marked, and can be restored. The body is one
+// timestamp however long the trash is. A cutoff that is not in readAt's
+// form, or is later than the database's clock, is refused with 400.
+//
+// The races, under Postgres's READ COMMITTED. A restore that holds a model's
+// row (restoreModel locks it FOR UPDATE) makes the marking statement wait;
+// once the restore commits, the statement reads the row again, finds it live
+// and leaves it, so the restore wins. A restore after the marking committed
+// finds the marker and is refused (409 purge_started). The job is sent in the
+// same transaction as the marking, so a mark never commits without its job,
+// and is skipped when an empty-trash job is already queued and not started:
+// that job lists the marked models when it starts, so it purges these too.
+// The check reads that job's row FOR SHARE in the same transaction. pg-boss
+// claims a job with FOR UPDATE SKIP LOCKED, so a worker passes over a job
+// this check holds until the marks commit, and its list then has them; a job
+// a worker claimed first makes the check wait, and once the claim commits
+// the job is active, so the check finds none queued and sends a new one.
+// Without the lock, a job claimed between the check and the commit could
+// list the models before these marks are visible, and leave them marked
+// with no job until the daily purge. The marking locks the models in id
+// order, as the bulk actions do, so two requests at once do not deadlock:
+// both mark the models trashed before the earlier cutoff, so one waits on
+// the other's row locks until it commits, and then finds its job. A request
+// that marks nothing sends none.
+//
+// While an empty-trash job is queued or running, GET /app/api/trash answers
+// emptying: true, and purging counts the marked models on every page, so the
+// Trash page can show them as being deleted until they are gone. A job that
+// fails leaves its models marked and listed; the next Empty trash, or the
+// daily purge, finishes them.
 //
 // What a cutoff cannot tell apart: a model whose trashing wrote its row
 // before the list was read but committed after, or one trashed later in
-// readAt's own millisecond, is purged though the page did not show it.
+// readAt's own millisecond, is marked though the page did not show it.
 // trashed_at is the time the row is written once its lock is held
 // (repos/models.ts; issue #193), so a trash that waits on the model's row
 // lock (an ingest holds it FOR UPDATE while it writes, derived and live
 // reads FOR SHARE) is stamped after the wait, and the first window is only
-// the time between the row update and the commit. purgeExpired also finishes every model
-// whose purge already began, whenever it was trashed; such a model cannot be
-// restored anyway, and the daily purge would finish it.
+// the time between the row update and the commit. A model whose purge
+// already began keeps its marker and is purged with the others, whenever it
+// was trashed; such a model cannot be restored anyway, and the daily purge
+// would finish it.
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
+import type { PgBoss } from "pg-boss";
 import type { DB, FileKind } from "../db/types.js";
+import { bossDb } from "../jobs/boss.js";
+import { ON_DEMAND_TASKS, QUEUE } from "../jobs/queues.js";
 import { createCollections } from "../library/collections.js";
 import { createRename } from "../library/rename.js";
 import { createSearch, InvalidCursor } from "../library/search.js";
 import { createTags } from "../library/tags.js";
-import {
-  type createTrash,
-  PurgeIncomplete,
-  PurgeStarted,
-  TRASH_RETENTION_DAYS,
-} from "../library/trash.js";
+import { type createTrash, PurgeStarted, TRASH_RETENTION_DAYS } from "../library/trash.js";
+import { BOSS_JOB } from "../repos/activity.js";
 import { bulkRepo, MAX_BULK_IDS, MAX_BULK_TAGS } from "../repos/bulk.js";
 import { collectionsRepo } from "../repos/collections.js";
 import { tagsRepo } from "../repos/tags.js";
@@ -122,7 +154,9 @@ const DAY_MS = 86_400_000;
 
 export interface OrganiseDeps {
   db: Kysely<DB>;
-  trash: Pick<ReturnType<typeof createTrash>, "trashModel" | "restoreModel" | "purgeExpired">;
+  trash: Pick<ReturnType<typeof createTrash>, "trashModel" | "restoreModel" | "requestPurge">;
+  /** Where Empty trash queues its job, in the marking's transaction. */
+  boss: Pick<PgBoss, "send">;
 }
 
 /** A model as the organising pages show it: its chips and its files. */
@@ -231,11 +265,6 @@ export const STALE_TRASH = "The trash list is out of date. Reload the page and t
 /** What a restore of a model whose purge has begun says (409 purge_started). */
 export const PURGE_STARTED_MESSAGE =
   "Deleting this model for good has already begun, so it cannot be restored.";
-
-/** What an Empty trash that left n models says (500 incomplete). */
-export function incompleteMessage(n: number): string {
-  return `${n} ${n === 1 ? "model" : "models"} could not be deleted and ${n === 1 ? "stays" : "stay"} in the trash; the next purge tries again.`;
-}
 
 type IdParams = { id: string };
 type CutoffBody = { cutoff: string };
@@ -394,7 +423,9 @@ const TRASH_QUERY = {
  * it read the page, taken in the same statement so the list and the time
  * agree. A page past the end is served as the last page. Empty trash's
  * cutoff is readAt whichever page it came from, so a model trashed after it
- * is never purged unseen, on any page.
+ * is never purged unseen, on any page. emptying: an empty-trash job is
+ * queued or running; purging: the trashed models with the purge marker, on
+ * every page.
  */
 async function trashListing(
   db: Kysely<DB>,
@@ -406,6 +437,8 @@ async function trashListing(
   pageSize: number;
   pageCount: number;
   total: number;
+  emptying: boolean;
+  purging: number;
 }> {
   // The count and the page are separate reads, so total can differ from the
   // page by a model trashed between them; safety comes from readAt, not total.
@@ -435,6 +468,16 @@ async function trashListing(
     .offset(window.start)
     .execute();
   const readAt = rows[0]?.readAt ?? (await databaseNow(db));
+  const { rows: progress } = await sql<{ emptying: boolean; purging: number }>`
+    select exists (
+             select 1 from ${BOSS_JOB}
+              where name = ${QUEUE.maintenance}
+                and data->>'task' = ${ON_DEMAND_TASKS.emptyTrash}
+                and state in ('created', 'retry', 'active')
+           ) as emptying,
+           (select count(*)::int from models
+             where trashed_at is not null and purge_started_at is not null) as purging
+  `.execute(db);
   const models = rows.map((r): TrashedModel => {
     const trashedAt = r.trashedAt as Date;
     return {
@@ -453,21 +496,9 @@ async function trashListing(
     pageSize,
     pageCount: window.pageCount,
     total,
+    emptying: progress[0]?.emptying ?? false,
+    purging: progress[0]?.purging ?? 0,
   };
-}
-
-/**
- * Empty trash up to a cutoff: purges every model trashed at or before the
- * cutoff's millisecond, with the library's purgeExpired, which purges the models
- * trashed before now - TRASH_RETENTION_DAYS. Handing it the cutoff plus the
- * retention plus 1 ms makes that "trashed before cutoff + 1 ms": trashed_at
- * keeps microseconds, so a model trashed at 12:00:00.123456 is inside a
- * cutoff of 12:00:00.123, as readAt (truncated to milliseconds) needs. Each
- * model is checked again under its row lock, so one restored and trashed
- * again since the cutoff is not purged.
- */
-function emptyTrashBefore(trash: OrganiseDeps["trash"], cutoff: Date) {
-  return trash.purgeExpired(new Date(cutoff.getTime() + TRASH_RETENTION_DAYS * DAY_MS + 1));
 }
 
 /** Registers the organising routes. */
@@ -677,33 +708,49 @@ export async function registerOrganiseApi(
       "/trash/empty",
       { schema: { body: CUTOFF_BODY } },
       async (request, reply) => {
-        const { db, trash } = need(deps);
+        const { db, trash, boss } = need(deps);
         const { cutoff } = request.body;
-        const at = Date.parse(cutoff);
+        const cutoffMs = Date.parse(cutoff);
         // Only readAt's own form: a date alone, an offset, or a day that
         // Date rolls over (February 30) is refused, not guessed at.
-        if (!ISO_MILLIS.test(cutoff) || Number.isNaN(at) || new Date(at).toISOString() !== cutoff) {
+        if (
+          !ISO_MILLIS.test(cutoff) ||
+          Number.isNaN(cutoffMs) ||
+          new Date(cutoffMs).toISOString() !== cutoff
+        ) {
           return refuse(reply, 400, "bad_request", STALE_TRASH, { code: "stale_trash" });
         }
-        if (at > (await databaseNow(db)).getTime()) {
+        if (cutoffMs > (await databaseNow(db)).getTime()) {
           return refuse(reply, 400, "bad_request", STALE_TRASH, { code: "stale_trash" });
         }
-        try {
-          const { purged } = await emptyTrashBefore(trash, new Date(at));
-          return { purged: purged.length };
-        } catch (error) {
-          if (error instanceof PurgeIncomplete) {
-            request.log.error({ err: error }, "app api: empty trash was not finished");
-            const n = error.failed.length;
-            return reply.code(500).send({
-              error: "incomplete",
-              purged: error.purged.length,
-              failed: n,
-              message: incompleteMessage(n),
-            });
+        // The marks and their job commit together. A job already queued
+        // and not started, held FOR SHARE until the commit so no worker can
+        // claim it before the marks are visible, lists the marked models
+        // when it starts, so it is not sent twice.
+        let queued = 0;
+        await db.transaction().execute(async (trx) => {
+          queued = await trash.requestPurge(new Date(cutoffMs), trx);
+          if (queued > 0) {
+            const { rows: waiting } = await sql<{ id: string }>`
+              select id from ${BOSS_JOB}
+               where name = ${QUEUE.maintenance}
+                 and state < 'active'
+                 and data @> ${JSON.stringify({ task: ON_DEMAND_TASKS.emptyTrash })}::jsonb
+               for share`.execute(trx);
+            if (waiting.length === 0) {
+              await boss.send(
+                QUEUE.maintenance,
+                { task: ON_DEMAND_TASKS.emptyTrash },
+                { db: bossDb(trx) },
+              );
+            }
           }
-          throw error;
-        }
+        });
+        // Read after the commit, and rounded up past its millisecond (the
+        // driver drops the microseconds), so a listing whose readAt is at or
+        // after it was read after the marks and their job were visible.
+        const at = new Date((await databaseNow(db)).getTime() + 1).toISOString();
+        return reply.code(202).send({ queued, at });
       },
     );
   });

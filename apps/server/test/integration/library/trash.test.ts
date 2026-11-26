@@ -5,9 +5,12 @@ import { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import Fastify from "fastify";
 import { sql } from "kysely";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import type { PgBoss } from "pg-boss";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { registerOrganiseApi } from "../../../src/app-api/organise.js";
 import { uuidv7 } from "../../../src/db/ids.js";
+import { createBoss } from "../../../src/jobs/boss.js";
+import { ON_DEMAND_TASKS, QUEUE, queueSettings } from "../../../src/jobs/queues.js";
 import { createCollections } from "../../../src/library/collections.js";
 import { createRename } from "../../../src/library/rename.js";
 import { createSearch } from "../../../src/library/search.js";
@@ -20,6 +23,8 @@ import {
   type PurgeStore,
   TRASH_RETENTION_DAYS,
 } from "../../../src/library/trash.js";
+import { BOSS_JOB } from "../../../src/repos/activity.js";
+import { modelsRepo } from "../../../src/repos/models.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import {
   type LibraryEnv,
@@ -32,12 +37,19 @@ import {
 } from "../support/library.js";
 
 let env: LibraryEnv;
+// pg-boss with the maintenance queue made and no worker, so an Empty trash
+// job stays 'created' and a test runs its work itself (runJob).
+let boss: PgBoss;
 
 beforeAll(async () => {
   env = await startLibraryEnv();
+  boss = createBoss({ databaseUrl: env.url });
+  await boss.start();
+  await boss.createQueue(QUEUE.maintenance, queueSettings().maintenance.queue);
 });
 
 afterAll(async () => {
+  await boss?.stop({ graceful: true, timeout: 20_000 });
   await env?.stop();
 });
 
@@ -68,35 +80,101 @@ function trashFor(store: PurgeStore = env.store) {
   return createTrash({ db: env.db, store });
 }
 
+/** The database's clock now, in readAt's form, past the millisecond a model trashed just before was stamped in. */
+async function databaseCutoff(): Promise<string> {
+  await sleep(5);
+  const { rows } = await sql<{ cutoff: string }>`
+    select to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as cutoff`.execute(
+    env.db,
+  );
+  const cutoff = rows[0]?.cutoff;
+  if (cutoff === undefined) throw new Error("select now() answered no row");
+  return cutoff;
+}
+
+/** The organising routes over this file's database and boss, with the given trash. */
+async function organiseApp(trash: ReturnType<typeof trashFor>) {
+  const app = Fastify({ logger: false });
+  await registerOrganiseApi(app, { db: env.db, trash, boss });
+  await app.ready();
+  return app;
+}
+
 /**
  * Empty trash as the page does it: POST /app/api/trash/empty with a cutoff
- * read from the database's clock, which purges every model trashed up to
- * then. The status is 200 with the number purged, or 500 "incomplete" with
- * the number purged and failed.
+ * read from the database's clock (or the one given), which marks every
+ * model trashed up to then and queues one empty-trash job. No worker runs in
+ * this file, so the job stays 'created'; runJob does its work with the same
+ * trash: purgeMarked, which rejects with PurgeIncomplete when a model fails.
  */
-async function emptyTrash(trash: ReturnType<typeof trashFor>): Promise<{
+async function emptyTrash(
+  trash: ReturnType<typeof trashFor>,
+  options: { cutoff?: string } = {},
+): Promise<{
   status: number;
-  body: { purged: number; failed?: number; error?: string };
+  body: { queued: number; at: string };
+  runJob: () => Promise<{ purged: string[] }>;
 }> {
-  const app = Fastify({ logger: false });
-  await registerOrganiseApi(app, { db: env.db, trash });
-  await app.ready();
+  const app = await organiseApp(trash);
   try {
-    // Past the millisecond a model trashed just before was stamped in.
-    await sleep(5);
-    const { rows } = await sql<{ cutoff: string }>`
-      select to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as cutoff`.execute(
-      env.db,
-    );
+    const cutoff = options.cutoff ?? (await databaseCutoff());
     const res = await app.inject({
       method: "POST",
       url: "/app/api/trash/empty",
-      payload: { cutoff: rows[0]?.cutoff },
+      payload: { cutoff },
     });
-    return { status: res.statusCode, body: res.json() };
+    return { status: res.statusCode, body: res.json(), runJob: () => trash.purgeMarked() };
   } finally {
     await app.close();
   }
+}
+
+/** POST /app/api/trash/:id/restore with a working store; its status. */
+async function restoreThroughApi(modelId: string): Promise<number> {
+  const app = await organiseApp(trashFor());
+  try {
+    const res = await app.inject({ method: "POST", url: `/app/api/trash/${modelId}/restore` });
+    return res.statusCode;
+  } finally {
+    await app.close();
+  }
+}
+
+/** The empty-trash jobs waiting in pg-boss's job table ('created'). */
+async function createdEmptyTrashJobs(): Promise<number> {
+  const { rows } = await sql<{ n: number }>`
+    select count(*)::int as n from ${BOSS_JOB}
+     where name = ${QUEUE.maintenance}
+       and data->>'task' = ${ON_DEMAND_TASKS.emptyTrash}
+       and state = 'created'`.execute(env.db);
+  return rows[0]?.n ?? 0;
+}
+
+/** The ids of the empty-trash jobs waiting in pg-boss ('created'), oldest first. */
+async function createdEmptyTrashJobIds(): Promise<string[]> {
+  const jobs = await boss.findJobs(QUEUE.maintenance, {
+    data: { task: ON_DEMAND_TASKS.emptyTrash },
+    queued: true,
+  });
+  return jobs.filter((j) => j.state === "created").map((j) => j.id);
+}
+
+/** Deletes the empty-trash jobs left waiting by earlier tests, so the next Empty trash sends one. */
+async function clearCreatedEmptyTrashJobs(): Promise<void> {
+  const ids = await createdEmptyTrashJobIds();
+  if (ids.length > 0) await boss.deleteJob(QUEUE.maintenance, ids);
+  expect(await createdEmptyTrashJobs()).toBe(0);
+}
+
+/** How many trashed models carry the purge marker, in the whole database. */
+async function markedCount(): Promise<number> {
+  const row = await env.db
+    .selectFrom("models")
+    .select(sql<number>`count(*)::int`.as("n"))
+    .where("trashedAt", "is not", null)
+    .where("purgeStartedAt", "is not", null)
+    .executeTakeFirstOrThrow();
+  return row.n;
 }
 
 describe("trashModel and restoreModel", () => {
@@ -210,9 +288,11 @@ describe("trashModel and restoreModel", () => {
     const { model, source, thumbnail } = await seedStoredModel(env);
     const trash = trashFor();
     expect(await trash.trashModel(model.id)).toBe(true);
+    await trashDaysAgo(env.db, model.id, 31);
     // The store is unreachable at the purge's first listPrefix, so not one
-    // object is deleted: one Empty trash click during an outage must not
-    // make the model unrestorable.
+    // object is deleted: a daily purge during an outage must not make the
+    // model unrestorable. (Empty trash marks its models when it is
+    // confirmed, so this is the daily purge's case.)
     let deletes = 0;
     const listFails: PurgeStore = {
       listPrefix: async () => {
@@ -224,11 +304,12 @@ describe("trashModel and restoreModel", () => {
       },
     };
 
-    const failed = await emptyTrash(trashFor(listFails));
+    const failed = await trashFor(listFails)
+      .purgeExpired(new Date())
+      .catch((e: unknown) => e);
 
-    expect(failed.status).toBe(500);
-    expect(failed.body.error).toBe("incomplete");
-    expect(failed.body.failed).toBeGreaterThanOrEqual(1);
+    expect(failed).toBeInstanceOf(PurgeIncomplete);
+    expect((failed as PurgeIncomplete).failed.map((f) => f.modelId)).toContain(model.id);
     expect(deletes).toBe(0);
     expect(await purgeStartedAt(model.id)).toBeNull();
     expect(await env.store.listPrefix(prefix(model.id))).toHaveLength(2);
@@ -244,6 +325,7 @@ describe("trashModel and restoreModel", () => {
     const { model, source, thumbnail } = await seedStoredModel(env);
     const trash = trashFor();
     expect(await trash.trashModel(model.id)).toBe(true);
+    await trashDaysAgo(env.db, model.id, 31);
     // The first DeleteObjects removes one object, then the connection drops.
     const dropsMidDelete: PurgeStore = {
       listPrefix: (p) => env.store.listPrefix(p),
@@ -253,9 +335,9 @@ describe("trashModel and restoreModel", () => {
       },
     };
 
-    expect((await emptyTrash(trashFor(dropsMidDelete))).body).toMatchObject({
-      error: "incomplete",
-    });
+    await expect(trashFor(dropsMidDelete).purgeExpired(new Date())).rejects.toBeInstanceOf(
+      PurgeIncomplete,
+    );
     expect(await purgeStartedAt(model.id)).toBeInstanceOf(Date);
     expect(await env.store.listPrefix(prefix(model.id))).toHaveLength(1);
 
@@ -272,7 +354,7 @@ describe("trashModel and restoreModel", () => {
     expect((await env.repos.blobs.get(thumbnail.id))?.state).toBe("stored");
 
     // The next purge finishes it.
-    expect((await emptyTrash(trash)).status).toBe(200);
+    expect((await trash.purgeExpired(new Date())).purged).toContain(model.id);
     expect(await rowCounts(env.db, model.id)).toMatchObject({ models: 0, blobs: 0 });
     expect(await env.store.listPrefix(prefix(model.id))).toEqual([]);
   });
@@ -408,9 +490,13 @@ describe("purgeExpired", () => {
     await trash.trashModel(a.model.id);
     await trash.trashModel(b.model.id);
 
-    // Another test's model may be left unpurgeable on purpose; these two are not.
+    // Other trashed models in the file may be marked too; these two are.
     const emptied = await emptyTrash(trash);
-    expect(emptied.body.purged).toBeGreaterThanOrEqual(2);
+    expect(emptied.status).toBe(202);
+    expect(emptied.body.queued).toBeGreaterThanOrEqual(2);
+    expect((await emptied.runJob()).purged).toEqual(
+      expect.arrayContaining([a.model.id, b.model.id]),
+    );
     expect(await rowCounts(env.db, a.model.id)).toMatchObject({ models: 0 });
     expect(await rowCounts(env.db, b.model.id)).toMatchObject({ models: 0 });
     expect(await labelStored(env.db, "tags", own)).toBe(false);
@@ -527,9 +613,9 @@ describe("purgeExpired", () => {
         throw new StoreUnavailable("DeleteObjects", "ECONNRESET");
       },
     };
-    expect((await emptyTrash(trashFor(dropsMidDelete))).body).toMatchObject({
-      error: "incomplete",
-    });
+    const emptied = await emptyTrash(trashFor(dropsMidDelete));
+    expect(emptied.status).toBe(202);
+    await expect(emptied.runJob()).rejects.toBeInstanceOf(PurgeIncomplete);
     expect(await purgeStartedAt(model.id)).toBeInstanceOf(Date);
     expect(await env.store.listPrefix(prefix(model.id))).toHaveLength(1);
     // An unmarked model trashed today, which the daily run must leave alone.
@@ -700,7 +786,7 @@ describe("purgeExpired", () => {
 });
 
 describe("Empty trash (POST /app/api/trash/empty)", () => {
-  test("empty trash purges everything trashed", async () => {
+  test("empty trash marks everything trashed and queues one job, which purges it", async () => {
     const justNow = await seedStoredModel(env);
     const lastWeek = await seedStoredModel(env);
     const live = await seedStoredModel(env);
@@ -711,8 +797,21 @@ describe("Empty trash (POST /app/api/trash/empty)", () => {
 
     const result = await emptyTrash(trash);
 
-    expect(result.status).toBe(200);
-    expect(result.body.purged).toBeGreaterThanOrEqual(2);
+    // The answer comes at once: the models are marked, not yet deleted.
+    expect(result.status).toBe(202);
+    expect(result.body.queued).toBeGreaterThanOrEqual(2);
+    for (const m of [justNow, lastWeek]) {
+      expect(await purgeStartedAt(m.model.id)).toBeInstanceOf(Date);
+      expect(await rowCounts(env.db, m.model.id)).toMatchObject({ models: 1, blobs: 2 });
+      expect(await env.store.listPrefix(prefix(m.model.id))).toHaveLength(2);
+    }
+    // No worker runs in this file, so the one job queued stays 'created'.
+    expect(await createdEmptyTrashJobs()).toBe(1);
+
+    expect((await result.runJob()).purged).toEqual(
+      expect.arrayContaining([justNow.model.id, lastWeek.model.id]),
+    );
+
     for (const gone of [justNow, lastWeek]) {
       expect(await env.store.listPrefix(prefix(gone.model.id))).toEqual([]);
       expect(await rowCounts(env.db, gone.model.id)).toEqual({
@@ -725,14 +824,333 @@ describe("Empty trash (POST /app/api/trash/empty)", () => {
     }
     expect(await env.store.listPrefix(prefix(live.model.id))).toHaveLength(2);
     expect(await rowCounts(env.db, live.model.id)).toMatchObject({ models: 1, blobs: 2 });
+    expect(await purgeStartedAt(live.model.id)).toBeNull();
 
-    // Nothing is left in the trash.
+    // Nothing is left in the trash, so a second Empty trash marks nothing.
     const left = await env.db
       .selectFrom("models")
       .select("id")
       .where("trashedAt", "is not", null)
       .execute();
     expect(left).toEqual([]);
-    expect(await emptyTrash(trash)).toEqual({ status: 200, body: { purged: 0 } });
+    const again = await emptyTrash(trash);
+    expect({ status: again.status, body: again.body }).toEqual({
+      status: 202,
+      body: { queued: 0, at: expect.any(String) },
+    });
+    expect(await createdEmptyTrashJobs()).toBe(1);
+  });
+
+  test("a model trashed after the cutoff is not marked, and can be restored", async () => {
+    const shown = await seedStoredModel(env);
+    const unseen = await seedStoredModel(env);
+    const trash = trashFor();
+    await trash.trashModel(shown.model.id);
+    const cutoff = await databaseCutoff();
+    await sleep(5);
+    await trash.trashModel(unseen.model.id);
+
+    const result = await emptyTrash(trash, { cutoff });
+
+    expect(result.status).toBe(202);
+    expect(await purgeStartedAt(shown.model.id)).toBeInstanceOf(Date);
+    expect(await purgeStartedAt(unseen.model.id)).toBeNull();
+    expect(await restoreThroughApi(unseen.model.id)).toBe(204);
+    expect((await env.repos.models.get(unseen.model.id))?.trashedAt).toBeNull();
+
+    await result.runJob();
+    expect(await rowCounts(env.db, shown.model.id)).toMatchObject({ models: 0 });
+    expect(await rowCounts(env.db, unseen.model.id)).toMatchObject({ models: 1, blobs: 2 });
+    expect(await env.store.listPrefix(prefix(unseen.model.id))).toHaveLength(2);
+  });
+
+  test("a restore that holds the row wins: the model is live and unmarked, and the job leaves it", async () => {
+    const { model } = await seedStoredModel(env);
+    const trash = trashFor();
+    await trash.trashModel(model.id);
+    let posted: ReturnType<typeof emptyTrash> | undefined;
+
+    // Hold the row the way restoreModel does, send Empty trash, then restore
+    // through the same transaction and commit.
+    await env.db.transaction().execute(async (trx) => {
+      await trx
+        .selectFrom("models")
+        .select("id")
+        .where("id", "=", model.id)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      posted = emptyTrash(trash);
+      await sleep(200);
+      // The marking statement is waiting on this row's lock.
+      await vi.waitFor(
+        async () => {
+          const { rows } = await sql<{ n: number }>`
+            select count(*)::int as n from pg_stat_activity
+             where datname = current_database()
+               and wait_event_type = 'Lock'
+               and query ilike '%update models set purge_started_at%'`.execute(env.db);
+          expect(rows[0]?.n).toBeGreaterThan(0);
+        },
+        { timeout: 10_000, interval: 50 },
+      );
+      expect(await modelsRepo(trx).restore(model.id)).toBe(true);
+    });
+    const result = await (posted as ReturnType<typeof emptyTrash>);
+
+    // Assert on the model, not on queued: other models may be in the trash.
+    expect(result.status).toBe(202);
+    expect((await env.repos.models.get(model.id))?.trashedAt).toBeNull();
+    expect(await purgeStartedAt(model.id)).toBeNull();
+    await result.runJob();
+    expect(await rowCounts(env.db, model.id)).toMatchObject({ models: 1, blobs: 2 });
+    expect(await env.store.listPrefix(prefix(model.id))).toHaveLength(2);
+  });
+
+  test("a restore after Empty trash was confirmed is refused with PurgeStarted", async () => {
+    const { model } = await seedStoredModel(env);
+    const trash = trashFor();
+    await trash.trashModel(model.id);
+
+    const result = await emptyTrash(trash);
+    expect(result.status).toBe(202);
+
+    const error = await trash.restoreModel(model.id).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PurgeStarted);
+    expect((error as PurgeStarted).modelId).toBe(model.id);
+    expect(await restoreThroughApi(model.id)).toBe(409);
+    expect(
+      (await env.repos.models.get(model.id, { includeTrashed: true }))?.trashedAt,
+    ).not.toBeNull();
+
+    // The job finishes it.
+    expect((await result.runJob()).purged).toContain(model.id);
+    expect(await rowCounts(env.db, model.id)).toMatchObject({ models: 0 });
+  });
+
+  test("two Empty trash requests with the same cutoff answer the same, and one job is queued", async () => {
+    const { model } = await seedStoredModel(env);
+    const trash = trashFor();
+    await trash.trashModel(model.id);
+    const cutoff = await databaseCutoff();
+    // No job waiting, so one of the two at once must send it, and only one may.
+    await clearCreatedEmptyTrashJobs();
+
+    const [first, second] = await Promise.all([
+      emptyTrash(trash, { cutoff }),
+      emptyTrash(trash, { cutoff }),
+    ]);
+
+    expect([first.status, second.status]).toEqual([202, 202]);
+    expect(first.body.queued).toBeGreaterThanOrEqual(1);
+    expect(second.body.queued).toBe(first.body.queued);
+    // At most one queued job: no worker runs here, so it is still 'created'.
+    expect(await createdEmptyTrashJobs()).toBe(1);
+
+    // And one after the other.
+    const third = await emptyTrash(trash, { cutoff });
+    expect(third.body.queued).toBe(first.body.queued);
+    expect(await createdEmptyTrashJobs()).toBe(1);
+
+    expect((await first.runJob()).purged).toContain(model.id);
+  });
+
+  test("a job a worker claims while Empty trash checks it is not relied on: a new job is sent", async () => {
+    const first = await seedStoredModel(env);
+    const second = await seedStoredModel(env);
+    const trash = trashFor();
+    await clearCreatedEmptyTrashJobs();
+    await trash.trashModel(first.model.id);
+    expect((await emptyTrash(trash)).status).toBe(202);
+    const [claimed] = await createdEmptyTrashJobIds();
+    if (claimed === undefined) throw new Error("Empty trash queued no job");
+    await trash.trashModel(second.model.id);
+    let posted: ReturnType<typeof emptyTrash> | undefined;
+
+    // A worker claims the job as pg-boss's fetch does (its row locked and
+    // made active) while a second Empty trash checks for a queued job. The
+    // check waits for the claim; once it commits, the job is active, and a
+    // job that already listed the marked models cannot be relied on.
+    await env.db.transaction().execute(async (trx) => {
+      await sql`update ${BOSS_JOB} set state = 'active', started_on = now()
+                 where name = ${QUEUE.maintenance} and id = ${claimed}`.execute(trx);
+      posted = emptyTrash(trash);
+      await vi.waitFor(
+        async () => {
+          const { rows } = await sql<{ n: number }>`
+            select count(*)::int as n from pg_stat_activity
+             where datname = current_database()
+               and wait_event_type = 'Lock'
+               and query ilike '%for share%'`.execute(env.db);
+          expect(rows[0]?.n).toBeGreaterThan(0);
+        },
+        { timeout: 10_000, interval: 50 },
+      );
+    });
+    const result = await (posted as ReturnType<typeof emptyTrash>);
+
+    expect(result.status).toBe(202);
+    expect(result.body.queued).toBeGreaterThanOrEqual(2);
+    const waiting = await createdEmptyTrashJobIds();
+    expect(waiting).toHaveLength(1);
+    expect(waiting).not.toContain(claimed);
+
+    // Tidy up: the claimed job ends, and the new one's work is done here.
+    await boss.complete(QUEUE.maintenance, claimed);
+    expect((await result.runJob()).purged).toEqual(
+      expect.arrayContaining([first.model.id, second.model.id]),
+    );
+  });
+
+  test("a job that fails on the store keeps the models marked, and a later run finishes them", async () => {
+    const a = await seedStoredModel(env);
+    const b = await seedStoredModel(env);
+    const trash = trashFor();
+    for (const m of [a, b]) await trash.trashModel(m.model.id);
+
+    const result = await emptyTrash(trashFor(storeDown));
+    expect(result.status).toBe(202);
+    await expect(result.runJob()).rejects.toBeInstanceOf(PurgeIncomplete);
+
+    for (const m of [a, b]) {
+      expect(await purgeStartedAt(m.model.id)).toBeInstanceOf(Date);
+      expect(
+        (await env.repos.models.get(m.model.id, { includeTrashed: true }))?.trashedAt,
+      ).not.toBeNull();
+      expect(await rowCounts(env.db, m.model.id)).toMatchObject({ models: 1, blobs: 2 });
+    }
+
+    // With the store back, the next run finishes them.
+    expect((await trash.purgeMarked()).purged).toEqual(
+      expect.arrayContaining([a.model.id, b.model.id]),
+    );
+    for (const m of [a, b]) {
+      expect(await rowCounts(env.db, m.model.id)).toMatchObject({ models: 0, blobs: 0 });
+      expect(await env.store.listPrefix(prefix(m.model.id))).toEqual([]);
+    }
+  });
+
+  test("an aborted run stops between models, and the next run purges the rest", async () => {
+    const a = await seedStoredModel(env);
+    const b = await seedStoredModel(env);
+    const trash = trashFor();
+    for (const m of [a, b]) await trash.trashModel(m.model.id);
+    const result = await emptyTrash(trash);
+    expect(result.status).toBe(202);
+    const marked = await markedCount();
+    expect(marked).toBeGreaterThanOrEqual(2);
+
+    // The job is stopped (the server stopping) while the first model's
+    // objects are deleted: that model is finished, and no other is begun.
+    const stop = new AbortController();
+    const aborting: PurgeStore = {
+      listPrefix: (p) => env.store.listPrefix(p),
+      async deleteBlobs(keys) {
+        await env.store.deleteBlobs(keys);
+        stop.abort();
+      },
+    };
+
+    await expect(trashFor(aborting).purgeMarked(stop.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(await markedCount()).toBe(marked - 1);
+
+    expect((await trash.purgeMarked()).purged).toHaveLength(marked - 1);
+    expect(await markedCount()).toBe(0);
+    for (const m of [a, b]) {
+      expect(await rowCounts(env.db, m.model.id)).toMatchObject({ models: 0, blobs: 0 });
+    }
+  });
+
+  test("the cutoff includes its whole millisecond and nothing after it", async () => {
+    const inside = await seedStoredModel(env);
+    const after = await seedStoredModel(env);
+    const trash = trashFor();
+    for (const m of [inside, after]) await trash.trashModel(m.model.id);
+    const cutoff = await databaseCutoff();
+    // trashed_at keeps microseconds; the cutoff has milliseconds, as readAt does.
+    await sql`update models set trashed_at = ${cutoff}::timestamptz + interval '500 microseconds'
+               where id = ${inside.model.id}`.execute(env.db);
+    await sql`update models set trashed_at = ${cutoff}::timestamptz + interval '1 millisecond'
+               where id = ${after.model.id}`.execute(env.db);
+
+    const result = await emptyTrash(trash, { cutoff });
+
+    expect(result.status).toBe(202);
+    expect(await purgeStartedAt(inside.model.id)).toBeInstanceOf(Date);
+    expect(await purgeStartedAt(after.model.id)).toBeNull();
+    await result.runJob();
+    expect(await rowCounts(env.db, inside.model.id)).toMatchObject({ models: 0 });
+    expect(await trash.restoreModel(after.model.id)).toBe(true);
+  });
+
+  test("the answer says when the marks committed, and a listing read since then shows the job", async () => {
+    const { model } = await seedStoredModel(env);
+    const trash = trashFor();
+    await trash.trashModel(model.id);
+    await clearCreatedEmptyTrashJobs();
+    const cutoff = await databaseCutoff();
+
+    const result = await emptyTrash(trash, { cutoff });
+
+    expect(result.status).toBe(202);
+    expect(result.body.at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    // The database's time after the commit, past the marking's own time.
+    const markedAt = await purgeStartedAt(model.id);
+    expect(markedAt).toBeInstanceOf(Date);
+    expect(Date.parse(result.body.at)).toBeGreaterThan((markedAt as Date).getTime());
+    expect(Date.parse(result.body.at)).toBeGreaterThan(Date.parse(cutoff));
+
+    // at is rounded up past its millisecond, so a listing read in that same
+    // millisecond is not yet one the page trusts; read one later.
+    await sleep(5);
+    const app = await organiseApp(trash);
+    try {
+      const listing = (await app.inject({ method: "GET", url: "/app/api/trash" })).json() as {
+        readAt: string;
+        emptying: boolean;
+      };
+      expect(Date.parse(listing.readAt)).toBeGreaterThanOrEqual(Date.parse(result.body.at));
+      expect(listing.emptying).toBe(true);
+    } finally {
+      await app.close();
+    }
+    expect((await result.runJob()).purged).toContain(model.id);
+  });
+
+  test("the job leaves a trashed model whose marker is gone by the time it locks the row", async () => {
+    const first = await seedStoredModel(env);
+    const second = await seedStoredModel(env);
+    const trash = trashFor();
+    for (const m of [first, second]) await trash.trashModel(m.model.id);
+    // first is purged before second: the job takes the oldest first.
+    await trashDaysAgo(env.db, first.model.id, 2);
+    await trashDaysAgo(env.db, second.model.id, 1);
+    expect((await emptyTrash(trash)).status).toBe(202);
+
+    // While first is purged, second's marker is cleared, as nothing in the
+    // app does: the job listed second as marked, but must not purge it now.
+    const clearing: PurgeStore = {
+      async listPrefix(p) {
+        if (p === prefix(first.model.id)) {
+          await env.db
+            .updateTable("models")
+            .set({ purgeStartedAt: null })
+            .where("id", "=", second.model.id)
+            .execute();
+        }
+        return env.store.listPrefix(p);
+      },
+      deleteBlobs: (keys) => env.store.deleteBlobs(keys),
+    };
+    const { purged } = await trashFor(clearing).purgeMarked();
+
+    expect(purged).toContain(first.model.id);
+    expect(purged).not.toContain(second.model.id);
+    expect(await rowCounts(env.db, second.model.id)).toMatchObject({ models: 1, blobs: 2 });
+    expect(await env.store.listPrefix(prefix(second.model.id))).toHaveLength(2);
+    expect(await purgeStartedAt(second.model.id)).toBeNull();
+    // Unmarked, it can be restored.
+    expect(await trash.restoreModel(second.model.id)).toBe(true);
   });
 });

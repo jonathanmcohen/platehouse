@@ -17,6 +17,7 @@ const full: ServerQueueDeps = {
   backfillPreviews: async () => undefined,
   reconvertDescriptions: async () => undefined,
   reconvertPending: async () => false,
+  emptyTrash: async () => undefined,
 };
 
 describe("ServerQueueDeps", () => {
@@ -45,5 +46,12 @@ describe("ServerQueueDeps", () => {
     // @ts-expect-error -- the re-conversion would never be queued
     const noCheck: ServerQueueDeps = { ...rest, reconvertDescriptions };
     expect([noRun, noCheck].every((d) => d !== undefined)).toBe(true);
+  });
+
+  test("requires Empty trash, which the app API queues", () => {
+    const { emptyTrash: _emptyTrash, ...rest } = full;
+    // @ts-expect-error -- an Empty trash job would fail with nothing to run it
+    const noEmpty: ServerQueueDeps = rest;
+    expect(noEmpty).toBeDefined();
   });
 });

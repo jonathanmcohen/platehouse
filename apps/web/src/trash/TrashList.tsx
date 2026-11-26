@@ -1,26 +1,32 @@
-// The trash, on its own page
-// and on the settings page. Each trashed model shows the day after which
-// the daily purge deletes it for good (30 days after it was trashed) and a
-// Restore button, which brings it back with its files, tags and
-// collections. Empty trash deletes the models the page lists at once, after a
-// themed confirmation that says how many, never the browser's own dialog. It
-// sends the time the server read the list (readAt), not the models' ids, so
-// its body stays small however long the trash is, and the server purges only
-// the models trashed at or before that time: a model another tab or browser
-// trashed after the list was read is not deleted unseen, and shows when the
-// list is read again. A model whose purge has begun cannot be restored, and
-// says so. After any Empty trash, done or not,
-// the list is read again, so a model deleted for good never stays on screen.
-// When only some models could be deleted, the dialog says how many were and
-// gives the server's sentence for the rest. After an Empty trash that worked,
-// focus goes to the sentence saying what was deleted rather than back to the
-// button, which has nothing left to do. No button here takes the disabled
-// attribute, which would push a focused button's focus to the page body:
-// Empty trash with nothing in the trash, a Restore that is running and the
-// Restore of a model whose purge has begun are marked aria-disabled and
-// ignore a press. When a restored model leaves the list, focus goes to the
-// next model's Restore, else the previous one's, else the status line
-// (useRowFocus in ../settings/focus).
+// The trash, on its own page and on the settings page. Each trashed model
+// shows the day after which the daily purge deletes it for good (30 days
+// after it was trashed) and a Restore button, which brings it back with its
+// files, tags and collections. Empty trash asks after a themed confirmation
+// that says how many, never the browser's own dialog. It sends the time the
+// server read the list (readAt), not the models' ids, so its body stays small
+// however long the trash is, and the server marks only the models trashed at
+// or before that time: a model another tab or browser trashed after the list
+// was read is not deleted unseen. The server answers at once (202, how many
+// it marked and its time after the marks committed) and deletes the models
+// in a background job. A model that is marked cannot be restored, and says
+// so. While the page follows the job it reads the listing again every few
+// seconds, but not in a hidden tab, and the status line is written twice:
+// once when the job is seen ("Emptying the trash"), once when it ends, with
+// how many were deleted and, when some could not be, how many stay for the
+// next purge. Only a listing read at or after the server's time in the 202
+// can end the job: one read before it can arrive after the answer, and
+// would say no job is running. The page goes on reading while it follows
+// the job, even when the read right after the answer fails. When Empty trash
+// marked nothing (everything listed had left the trash meanwhile) the page
+// says so, follows no job and reads the list once. A page opened mid-job
+// writes the same two lines, without taking focus. After a click, focus goes
+// to the status line rather than back to the button, which has nothing left
+// to do. No button here takes the disabled attribute, which would push a
+// focused button's focus to the page body: Empty trash with nothing in the
+// trash, a Restore that is running and the Restore of a model whose purge
+// has begun are marked aria-disabled and ignore a press. When a restored
+// model leaves the list, focus goes to the next model's Restore, else the
+// previous one's, else the status line (useRowFocus in ../settings/focus).
 // The server pages the trash, 100 models to a page, newest first. The page
 // lives in the address (?page= on /trash, ?trashPage= in Settings, beside its
 // own ?view=), and the library's Pager shows when there is more than one.
@@ -31,17 +37,17 @@
 // focus would fall to the page body: it goes to the status line instead,
 // which then says "Page N of M". Restoring the last model of the last page
 // keeps its row until the read again answers, so the trash never shows as
-// empty for a moment. Empty trash's count is the whole
-// trash, not the page on screen, because the cutoff covers every page.
+// empty for a moment. Empty trash's count is the whole trash, not the page on
+// screen, because the cutoff covers every page.
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
-import { serverTextWith } from "../i18n/serverText";
 import { Pager } from "../library/Pager";
 import { pageFrom } from "../library/paging";
-import { AppApiError, appApi, segment, useAppApi, useErrorText } from "../settings/api";
+import { appApi, segment, useAppApi, useErrorText } from "../settings/api";
 import { ConfirmDialog } from "../settings/Dialog";
 import { useRowFocus } from "../settings/focus";
+import { useWhileVisible } from "../visibility";
 
 export interface TrashedModel {
   id: string;
@@ -56,35 +62,6 @@ function deletedSentence(purged: number, i18n: Pick<I18n, "t"> = ENGLISH_I18N): 
   return i18n.t("trash.deleted", { count: purged });
 }
 
-/**
- * The sentence for an Empty trash that deleted some models but not all: the
- * server answers 500 with error "incomplete", the count it purged and a
- * sentence for the page (apps/server/src/app-api/organise.ts). Any other
- * failure is left as it is.
- */
-function incompleteFailure(
-  failure: unknown,
-  i18n: Pick<I18n, "t" | "locale"> = ENGLISH_I18N,
-): unknown {
-  if (!(failure instanceof AppApiError)) return failure;
-  const body = failure.body as {
-    error?: unknown;
-    purged?: unknown;
-    failed?: unknown;
-    message?: unknown;
-  } | null;
-  if (body?.error !== "incomplete" || typeof body.message !== "string") return failure;
-  const done = typeof body.purged === "number" && body.purged > 0;
-  // The server's own sentence on an English page; in another language, its
-  // count in the catalog's words (an older answer, with no count, as it is).
-  const failed = body.failed;
-  const rest = serverTextWith(i18n, body.message, () =>
-    typeof failed === "number" ? i18n.t("trash.incomplete", { count: failed }) : undefined,
-  );
-  const sentence = done ? `${deletedSentence(body.purged as number, i18n)} ${rest}` : rest;
-  return new AppApiError(failure.status, sentence, failure.body);
-}
-
 /** GET /app/api/trash: the trash, and the server's time when it read it. */
 interface TrashListing {
   models: TrashedModel[];
@@ -94,7 +71,14 @@ interface TrashListing {
   pageCount: number;
   /** Every model in the trash, whichever page it is on. */
   total: number;
+  /** Whether an Empty trash job is queued, retrying or running. */
+  emptying: boolean;
+  /** Trashed models already marked for deletion, on every page. */
+  purging: number;
 }
+
+/** How often the listing is read again while an Empty trash job runs. */
+export const EMPTYING_POLL_MS = 3000;
 
 /**
  * pageParam names the address parameter that holds the page: "page" on the
@@ -139,9 +123,32 @@ export function TrashList({ pageParam = "page" }: { pageParam?: string }) {
   // Each time new data arrives (not on a render that still holds the data of
   // the page just left).
   const arrived = trash.data;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once per arrival of data; asked, t and the address are read as they are then.
+  /**
+   * The Empty trash job this page is following: how many models were marked
+   * when it began and, after this page's own Empty trash, the server's time
+   * after the marks committed (since), before which a listing cannot end
+   * the job. Null when none is followed.
+   */
+  const [following, setFollowing] = useState<{ start: number; since: string | null } | null>(null);
+  // Runs once per arrival of data; asked, following, t and the address are
+  // read as they are then.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once per arrival of data.
   useEffect(() => {
     if (arrived === undefined) return;
+    if (arrived.emptying && following === null) {
+      // A page opened mid-job (or another tab's click): say so, and leave focus be.
+      setFollowing({ start: arrived.purging, since: null });
+      setStatus(t("trash.emptying"));
+    } else if (
+      !arrived.emptying &&
+      following !== null &&
+      (following.since === null || Date.parse(arrived.readAt) >= Date.parse(following.since))
+    ) {
+      const left = arrived.purging;
+      const deleted = deletedSentence(Math.max(0, following.start - left), i18n);
+      setFollowing(null);
+      setStatus(left > 0 ? `${deleted} ${t("trash.incomplete", { count: left })}` : deleted);
+    }
     if (pagerFollowed.current) {
       pagerFollowed.current = false;
       setStatus(t("trash.pageOf", { page: arrived.page, count: arrived.pageCount }));
@@ -150,6 +157,20 @@ export function TrashList({ pageParam = "page" }: { pageParam?: string }) {
     // A page past the end was served as the last page: the address follows it.
     if (arrived.page < asked) navigate(hrefFor(arrived.page), { replace: true });
   }, [arrived]);
+
+  // While the job runs or the page follows it, read the listing again. Not
+  // while the tab is hidden: one read when it is shown again, then on.
+  const polling = trash.data?.emptying === true || following !== null;
+  const reload = trash.reload;
+  useWhileVisible(
+    (resumed) => {
+      if (!polling) return () => {};
+      if (resumed) reload();
+      const timer = setInterval(reload, EMPTYING_POLL_MS);
+      return () => clearInterval(timer);
+    },
+    [polling, reload],
+  );
 
   function marking(id: string, on: boolean) {
     setRestoring((prev) => {
@@ -192,21 +213,21 @@ export function TrashList({ pageParam = "page" }: { pageParam?: string }) {
   async function emptyTrash() {
     if (asking === null) return;
     setStatus("");
-    try {
-      const answer = await appApi<{ purged: number }>("POST", "/trash/empty", {
-        cutoff: asking.cutoff,
-      });
-      trash.set((prev) => ({ ...prev, models: [], total: 0 }));
-      // The result goes where focus goes; Empty trash has nothing left to do.
-      emptyReturn.current = statusLine.current;
-      setAsking(null);
-      setStatus(deletedSentence(answer.purged, i18n));
-    } catch (failure) {
-      // The dialog shows this; the list below is read again either way.
-      throw incompleteFailure(failure, i18n);
-    } finally {
-      trash.reload();
+    const answer = await appApi<{ queued: number; at: string }>("POST", "/trash/empty", {
+      cutoff: asking.cutoff,
+    });
+    // The status line takes focus: Empty trash has nothing left to do.
+    emptyReturn.current = statusLine.current;
+    setAsking(null);
+    if (answer.queued === 0) {
+      // Nothing was marked, so no job was queued: nothing to follow.
+      setStatus(t("trash.nothingDeleted"));
+    } else {
+      // The server has marked the models and queued the job; the page follows it.
+      setFollowing({ start: answer.queued, since: answer.at });
+      setStatus(t("trash.emptying"));
     }
+    trash.reload();
   }
 
   return (
@@ -256,6 +277,7 @@ export function TrashList({ pageParam = "page" }: { pageParam?: string }) {
                   className="studio-button ph-small"
                   aria-label={t("trash.restoreLabel", { name: model.name })}
                   aria-disabled={model.purgeStarted || restoring.has(model.id)}
+                  aria-describedby={model.purgeStarted ? `trash-purging-${model.id}` : undefined}
                   onClick={() => restore(model)}
                 >
                   {t("trash.restore")}
@@ -263,13 +285,15 @@ export function TrashList({ pageParam = "page" }: { pageParam?: string }) {
               </div>
               <span className="studio-muted">
                 {model.creator === null ? null : `${t("trash.by", { creator: model.creator })} `}
-                {model.purgeStarted
-                  ? t("trash.purging")
-                  : rich(
-                      "trash.purgeAfter",
-                      { date: i18n.fmt.date(model.purgeAt) },
-                      { time: (children) => <time dateTime={model.purgeAt}>{children}</time> },
-                    )}
+                {model.purgeStarted ? (
+                  <span id={`trash-purging-${model.id}`}>{t("trash.purging")}</span>
+                ) : (
+                  rich(
+                    "trash.purgeAfter",
+                    { date: i18n.fmt.date(model.purgeAt) },
+                    { time: (children) => <time dateTime={model.purgeAt}>{children}</time> },
+                  )
+                )}
               </span>
             </li>
           ))}

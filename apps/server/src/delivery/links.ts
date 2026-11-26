@@ -18,6 +18,14 @@
 //   file that is gone or in the trash: 403 with an empty body and no bytes.
 //   The token's MAC and expiry are checked before anything is looked up, so
 //   a forged link never reaches the database or the store.
+// - A link answers a single byte range as the download does (download.ts):
+//   206 with Content-Range, 416 for a range that starts at or past the end,
+//   the whole file for anything else, and Range ignored on a HEAD. The ETag
+//   is the file's current blob's id, quoted, and If-Range must match it
+//   exactly. Range is read only once the token's MAC and expiry pass and the
+//   file is found live, so an expired, altered or forged link is the same
+//   empty 403 with or without one, never a 206 or a 416 that would tell a
+//   file's size. No error answer carries the file's headers.
 // - The token is read from the path as sent (linkPath), not from the
 //   router's decoded parameter, so only the literal 48-character token
 //   matches: a percent-escaped form of it is refused, and so is a path with
@@ -47,7 +55,7 @@
 //   session and that Origin is PUBLIC_ORIGIN before it runs.
 import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
-import type { FileContent, FileHead } from "../api/v1.js";
+import type { FileContent, FileHead, RangeNotSatisfiable } from "../api/v1.js";
 import {
   checkObjectSize,
   type DeliveryDeps,
@@ -57,6 +65,7 @@ import {
   sendContent,
   unavailable,
 } from "./download.js";
+import { rangePicker } from "./range.js";
 
 // linkFileName lives in api/v1.ts, which reads every file the delivery
 // routes send (issue #164); links still export it.
@@ -227,10 +236,14 @@ export async function registerLinks(
       // Content-Disposition name comes with its content (linkFileName).
       const file = await deps.library.linkFile(fileId);
       if (file === undefined) return refuseLink(reply);
+      // Only now, the token good and the file live, is the Range read, so a
+      // refused link never learns a file's size from a 416.
       const head = request.method === "HEAD";
-      let content: FileHead | FileContent | undefined;
+      let content: FileHead | FileContent | RangeNotSatisfiable | undefined;
       try {
-        content = head ? await deps.files.fileHead(fileId) : await deps.files.openFile(fileId);
+        content = head
+          ? await deps.files.fileHead(fileId)
+          : await deps.files.openFile(fileId, rangePicker(request.headers, request.method));
         if (content !== undefined) checkObjectSize(content);
       } catch (error) {
         const answered = unavailable(error, request, reply);

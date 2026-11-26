@@ -138,6 +138,14 @@ export const MAINTENANCE_TASKS = {
 } as const;
 
 /**
+ * Maintenance-queue tasks a request sends, each a job { task }. They are never
+ * scheduled, so they are not in MAINTENANCE_TASKS, whose every entry has a
+ * schedule and an Activity label. Empty trash (app-api/organise.ts) sends
+ * emptyTrash once it has marked the models to purge.
+ */
+export const ON_DEMAND_TASKS = { emptyTrash: "empty-trash" } as const;
+
+/**
  * The upgrade queue's one-time steps: the description re-conversion (#357,
  * library/reconvert.ts) and then the licence fill (#445,
  * library/licence-fill.ts), as one task that runs them in that order and is
@@ -271,6 +279,14 @@ export interface QueueDeps {
   ingestFile(input: IngestInput): Promise<IngestResult>;
   /** The trash's purgeExpired (library/trash.ts). */
   purgeExpired(now: Date): Promise<unknown>;
+  /**
+   * Empty trash's job (ON_DEMAND_TASKS.emptyTrash): the trash's purgeMarked
+   * (library/trash.ts), which purges the models Empty trash marked. Its
+   * signal aborts when the server stops (shutdown) or pg-boss ends the job,
+   * and the run stops before its next model. Optional here so the tests that
+   * start the queues for other work need not pass it; the server passes it.
+   */
+  emptyTrash?(signal: AbortSignal): Promise<unknown>;
   /** The orphan sweep (ingest/orphans.ts's sweepOrphans). */
   sweepOrphans(now: Date): Promise<unknown>;
   /**
@@ -318,7 +334,8 @@ export interface QueueDeps {
   reconvertPending?(): Promise<boolean>;
   /**
    * Aborted by the server as soon as its stop() begins, before pg-boss is
-   * stopped, so work in hand ends at once (the description re-conversion).
+   * stopped, so work in hand ends at once (the description re-conversion
+   * and Empty trash's job).
    */
   shutdown?: AbortSignal;
   /**
@@ -357,6 +374,7 @@ export type ServerQueueDeps = QueueDeps &
       | "reconvertDescriptions"
       | "reconvertPending"
       | "backfillPreviews"
+      | "emptyTrash"
     >
   >;
 
@@ -611,6 +629,15 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
           await deps.backfillPreviews(new Date());
           await deps.requeueSandboxOff?.(new Date());
           return;
+        case ON_DEMAND_TASKS.emptyTrash: {
+          if (!deps.emptyTrash) throw new Error("No Empty trash is registered");
+          // The two signals reconvertJob reads: the server's stop and the job's own.
+          const signal = AbortSignal.any(
+            deps.shutdown ? [deps.shutdown, job.signal] : [job.signal],
+          );
+          await deps.emptyTrash(signal);
+          return;
+        }
         default:
           throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);
       }

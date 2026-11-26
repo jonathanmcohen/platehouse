@@ -11,8 +11,10 @@
 //   POST   /api/v1/models                          201 {model} | 409 exists
 //   GET    /api/v1/models/:id                      files, plates, estimates
 //   GET    /api/v1/files/:id                       one file's details
-//   GET    /api/v1/files/:id/content               the file's bytes (HEAD: its
-//                                                  headers, after a HeadObject)
+//   GET    /api/v1/files/:id/content               the file's bytes, or one Range
+//                                                  of them (206; 416 past the
+//                                                  end); HEAD: its headers,
+//                                                  after a HeadObject
 //   PUT    /api/v1/models/:id/tags/:tag            204 (DELETE: 204)
 //   PUT    /api/v1/collections/:name/models/:id    204 (DELETE: 204)
 //   POST   /api/v1/uploads (tus), HEAD and PATCH /api/v1/uploads/:id,
@@ -65,6 +67,8 @@
 //   checks the size the store reported before any header (checkObjectSize)
 //   and counts the bytes as they go (exactSize), and a HEAD compares the
 //   HeadObject's size (fileHead), so a HEAD answers 503 where the GET would.
+//   All three take a GET's Range through rangePicker, read with readStored
+//   and answer with writeContent, so their 200, 206 and 416 cannot drift.
 import { pipeline, Readable, Transform } from "node:stream";
 import { Metadata } from "@tus/server";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -72,6 +76,7 @@ import type { Kysely } from "kysely";
 import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB, FileKind, ModelFile, ParseStatus, Plate } from "../db/types.js";
+import { type ByteRange, type PickRange, rangePicker } from "../delivery/range.js";
 import type { DisplayContext, PlateNumbers } from "../estimates/display.js";
 import { SettingsInputError } from "../input-error.js";
 import { createCollections } from "../library/collections.js";
@@ -182,10 +187,55 @@ export interface FileHead {
   name: string;
   contentType: string;
   size: number;
+  /**
+   * A strong tag for the bytes, quoted: a file's is its current blob's id, a
+   * revalidated blob's its own id (delivery/download.ts blobEtag). If-Range
+   * is compared with it; a content with none never serves a conditional range.
+   */
+  etag?: string;
 }
 
+/** A GET's content: its stream, of the whole object or of range when there is one. */
 export interface FileContent extends FileHead {
   stream: Readable;
+  range?: ByteRange;
+}
+
+/** A Range that starts at or past the end of the record: a 416, with no store read. */
+export interface RangeNotSatisfiable {
+  unsatisfiable: true;
+  size: number;
+}
+
+export function isUnsatisfiable(
+  content: FileHead | FileContent | RangeNotSatisfiable,
+): content is RangeNotSatisfiable {
+  return "unsatisfiable" in content;
+}
+
+/** What the file routes answer in Cache-Control: the download, the slicer link and the API's. */
+export const FILE_CACHE_CONTROL = "private, no-store";
+
+/**
+ * A file's or blob's bytes, as the request's Range picks them from the
+ * record (head) alone: unsatisfiable before any store call; a range read
+ * with getBlobRange (the end exclusive there, inclusive in the range), whose
+ * stream reports the object's total size for checkObjectSize; or, with no
+ * range to serve, the whole object.
+ */
+export async function readStored(
+  store: Pick<BlobStore, "getBlobStream" | "getBlobRange">,
+  key: string,
+  head: FileHead,
+  pickRange?: PickRange,
+): Promise<FileContent | RangeNotSatisfiable> {
+  const choice = pickRange?.({ size: head.size, etag: head.etag });
+  if (choice === "unsatisfiable") return { unsatisfiable: true, size: head.size };
+  if (choice !== undefined) {
+    const stream = await store.getBlobRange(key, choice.start, choice.end + 1);
+    return { ...head, stream, range: choice };
+  }
+  return { ...head, stream: await store.getBlobStream(key) };
 }
 
 /** The extensions each file kind is stored under, the first the default. */
@@ -227,10 +277,13 @@ export function checkHeadSize(reported: number | undefined, recorded: number): v
 /**
  * Throws StoreError (GetObject, SizeMismatch), after closing the stream,
  * when the store reported an object size for the content's stream that is
- * not its recorded size, so the route answers 503 before any header. A
- * stream with no reported size passes; exactSize still counts its bytes.
+ * not its recorded size, so the route answers 503 before any header. For a
+ * range the reported size is the object's total (getBlobRange), so it is
+ * compared with the record the same way. A stream with no reported size
+ * passes; exactSize still counts its bytes. A head and an unsatisfiable
+ * range have no stream and pass.
  */
-export function checkObjectSize(content: FileHead | FileContent): void {
+export function checkObjectSize(content: FileHead | FileContent | RangeNotSatisfiable): void {
   if (!("stream" in content)) return;
   const reported = objectSize(content.stream);
   if (reported === undefined || reported === content.size) return;
@@ -286,7 +339,63 @@ function isContent(content: FileHead | FileContent): content is FileContent {
 }
 
 /** The headers a file's answer sets that describe the bytes, not the answer. */
-const CONTENT_HEADERS = ["content-type", "content-length", "content-disposition", "etag"] as const;
+const CONTENT_HEADERS = [
+  "content-type",
+  "content-length",
+  "content-disposition",
+  "etag",
+  "content-range",
+  "accept-ranges",
+] as const;
+
+/**
+ * Writes a file's or blob's answer, for every route that sends one.
+ *
+ * - Unsatisfiable: 416 with Content-Range "bytes *" and the size,
+ *   no-store and an empty body; none of the file's headers.
+ * - Otherwise: the ETag when there is one, Accept-Ranges, Content-Type,
+ *   nosniff, the route's Cache-Control and, for an attachment, the name
+ *   (contentDisposition). With a range: 206, its Content-Range and Length,
+ *   and the stream held to the range's length (exactSize). Without: the
+ *   record's Content-Length and the stream held to it, or for a HEAD an
+ *   empty stream, which keeps the Content-Length (an empty body would make
+ *   Fastify answer 0).
+ */
+export function writeContent(
+  reply: FastifyReply,
+  content: FileHead | FileContent | RangeNotSatisfiable,
+  opts: { attachment: boolean; cacheControl: string },
+): FastifyReply {
+  if (isUnsatisfiable(content)) {
+    return reply
+      .code(416)
+      .header("content-range", `bytes */${content.size}`)
+      .header("cache-control", "no-store")
+      .send();
+  }
+  if (content.etag !== undefined) reply.header("etag", content.etag);
+  reply
+    .header("accept-ranges", "bytes")
+    .header("content-type", content.contentType)
+    .header("x-content-type-options", "nosniff")
+    .header("cache-control", opts.cacheControl);
+  if (opts.attachment) reply.header("content-disposition", contentDisposition(content.name));
+  if (!isContent(content)) {
+    return reply.header("content-length", String(content.size)).send(Readable.from([]));
+  }
+  const { range } = content;
+  if (range === undefined) {
+    return reply
+      .header("content-length", String(content.size))
+      .send(exactSize(content.stream, content.size));
+  }
+  const length = range.end - range.start + 1;
+  return reply
+    .code(206)
+    .header("content-range", `bytes ${range.start}-${range.end}/${content.size}`)
+    .header("content-length", String(length))
+    .send(exactSize(content.stream, length));
+}
 
 /**
  * Takes a file's content headers off an error answer. A stream that fails
@@ -320,8 +429,17 @@ export interface ApiLibrary {
    * another size (StoreError, SizeMismatch).
    */
   fileHead(id: string): Promise<FileHead | undefined>;
-  /** The file's bytes; StoreUnavailable, BlobNotFound or StoreError when the store cannot give them. */
-  openFile(id: string): Promise<FileContent | undefined>;
+  /**
+   * The file's bytes, the part pickRange chooses from the record or all of
+   * them (readStored), or RangeNotSatisfiable with no store call;
+   * StoreUnavailable, BlobNotFound or StoreError when the store cannot give
+   * them, StoreError (RangeIgnored) when it did not honour the range, and
+   * StoreError (SizeMismatch) when the object is shorter than the range.
+   */
+  openFile(
+    id: string,
+    pickRange?: PickRange,
+  ): Promise<FileContent | RangeNotSatisfiable | undefined>;
   modelIsLive(id: string): Promise<boolean>;
   addTag(modelId: string, tag: string): Promise<boolean>;
   removeTag(modelId: string, tag: string): Promise<boolean>;
@@ -366,7 +484,7 @@ function sqlState(error: unknown): string | undefined {
 
 export function createApiLibrary(deps: {
   db: Kysely<DB>;
-  store: Pick<BlobStore, "getBlobStream" | "headBlob">;
+  store: Pick<BlobStore, "getBlobStream" | "getBlobRange" | "headBlob">;
   /**
    * The default printer of My printers, the Orca version and the printer
    * menu (readDisplayContext), read once per request.
@@ -493,14 +611,23 @@ export function createApiLibrary(deps: {
     return (await repos.models.get(file.modelId)) === undefined ? undefined : file;
   }
 
-  /** A live file, its blob's key and its content headers; BlobNotFound when the blob is not stored. */
+  /**
+   * A live file, its blob's key and its content headers, tagged with its
+   * current blob's id (a new upload of the file is a new blob, so a new
+   * tag); BlobNotFound when the blob is not stored.
+   */
   async function storedFile(id: string): Promise<{ head: FileHead; key: string } | undefined> {
     const file = await liveFile(id);
     if (file === undefined) return undefined;
     const blob = await repos.blobs.get(file.blobId);
     if (blob === undefined || blob.state !== "stored") throw new BlobNotFound("GetObject");
     return {
-      head: { name: linkFileName(file), contentType: blob.contentType, size: Number(file.size) },
+      head: {
+        name: linkFileName(file),
+        contentType: blob.contentType,
+        size: Number(file.size),
+        etag: `"${file.blobId}"`,
+      },
       key: blob.key,
     };
   }
@@ -587,11 +714,10 @@ export function createApiLibrary(deps: {
       return found.head;
     },
 
-    async openFile(id) {
+    async openFile(id, pickRange) {
       const found = await storedFile(id);
       if (found === undefined) return undefined;
-      const stream = await store.getBlobStream(found.key);
-      return { ...found.head, stream };
+      return readStored(store, found.key, found.head, pickRange);
     },
 
     async modelIsLive(id) {
@@ -1337,12 +1463,38 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
               "(with its real extension, such as .3mf) and Content-Length is its size. HEAD " +
               "answers the same headers with no body, after checking the bytes are in " +
               "storage. A file of a model in the trash is 404.\n\n" +
+              "An interrupted download can be resumed with a Range header: one byte range " +
+              "per request, answered 206 with that part. Several ranges in one Range header " +
+              "are answered 200 with the whole file. If-Range takes the ETag only, not a " +
+              "date, and the range is used only while the file's bytes are unchanged. A " +
+              "range that starts at or past the end of the file is 416. HEAD ignores " +
+              "Range.\n\n" +
               "This is the scripted download. The Open in Bambu Studio and Open in " +
               "OrcaSlicer buttons on a model page use short-lived slicer links instead, made " +
               "by the web app for a signed-in person; a token cannot make one.",
             tags: ["Files"],
             operationId: "getFileContent",
             params: { type: "object", properties: { id: FILE_ID_PARAM }, required: ["id"] },
+            // Strings and nothing more: a header that failed validation would
+            // be a 400, and a Range the parser cannot use is answered 200 in full.
+            headers: {
+              type: "object",
+              properties: {
+                range: {
+                  type: "string",
+                  description:
+                    "One byte range, such as bytes=0-1048575. Multi-range is answered 200 in full.",
+                  examples: ["bytes=0-1048575"],
+                },
+                "if-range": {
+                  type: "string",
+                  description:
+                    "The ETag from an earlier answer. The range is used only while the file's " +
+                    "bytes are unchanged; otherwise the answer is 200 in full.",
+                  examples: [`"${EXAMPLE_IDS.blob}"`],
+                },
+              },
+            },
             response: {
               // The content form names the bytes' media type for this answer
               // alone; a stream is never serialized, so it changes no answer.
@@ -1356,12 +1508,46 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
                     description: "attachment, with the file's name",
                   },
                   "Content-Length": { type: "integer", description: "The file's size in bytes" },
+                  "Accept-Ranges": { type: "string", description: "bytes" },
+                  ETag: {
+                    type: "string",
+                    description: "The file's current bytes, as a strong tag for If-Range",
+                  },
                 },
                 content: {
                   "application/octet-stream": {
                     schema: { type: "string", format: "binary" },
                   },
                 },
+              },
+              206: {
+                description: "Part of the file, for a Range request.",
+                headers: {
+                  "Content-Range": { type: "string", description: "bytes start-end/size" },
+                  "Content-Length": { type: "integer", description: "The part's length in bytes" },
+                  "Content-Disposition": {
+                    type: "string",
+                    description: "attachment, with the file's name",
+                  },
+                  "Accept-Ranges": { type: "string", description: "bytes" },
+                  ETag: {
+                    type: "string",
+                    description: "The file's current bytes, as a strong tag for If-Range",
+                  },
+                },
+                content: {
+                  "application/octet-stream": {
+                    schema: { type: "string", format: "binary" },
+                  },
+                },
+              },
+              416: {
+                description:
+                  "The range starts at or past the end of the file. Content-Range gives the size.",
+                headers: {
+                  "Content-Range": { type: "string", description: "bytes */ and the file's size" },
+                },
+                type: "null",
               },
               404: NOT_FOUND_DOC,
               500: INTERNAL_DOC,
@@ -1386,12 +1572,19 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
           // the file's Content-Length (an empty body would make Fastify
           // answer 0). A GET's object must be its recorded size: checked
           // before any header, then counted as it streams (issue #164).
+          // A GET's Range is read only here, after the bearer hook and once
+          // the file is found live, and only through the parser, reader and
+          // writer the browser downloads use (rangePicker, readStored,
+          // writeContent): 206 for one range, 416 from the record alone,
+          // otherwise 200 in full. A HEAD ignores Range. The 503 and 404
+          // below carry none of the file's headers.
           const head = request.method === "HEAD";
-          let content: FileHead | FileContent | undefined;
+          const pick = rangePicker(request.headers, request.method);
+          let content: FileHead | FileContent | RangeNotSatisfiable | undefined;
           try {
             content = head
               ? await library.fileHead(request.params.id)
-              : await library.openFile(request.params.id);
+              : await library.openFile(request.params.id, pick);
             if (content !== undefined) checkObjectSize(content);
           } catch (error) {
             if (
@@ -1407,14 +1600,10 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
             throw error;
           }
           if (content === undefined) return reply.code(404).send(NOT_FOUND);
-          const found = content;
-          return reply
-            .header("content-type", found.contentType)
-            .header("content-length", String(found.size))
-            .header("content-disposition", contentDisposition(found.name))
-            .header("x-content-type-options", "nosniff")
-            .header("cache-control", "private, no-store")
-            .send(isContent(found) ? exactSize(found.stream, found.size) : Readable.from([]));
+          return writeContent(reply, content, {
+            attachment: true,
+            cacheControl: FILE_CACHE_CONTROL,
+          });
         },
       );
 

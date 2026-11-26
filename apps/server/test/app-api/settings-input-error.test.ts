@@ -18,8 +18,9 @@ async function appThrowing(error: Error) {
         throw error;
       },
       trashModel: async () => false,
-      purgeExpired: async () => ({ purged: [] }),
+      requestPurge: async () => 0,
     } as never,
+    boss: {} as never,
   });
   await server.ready();
   return server;

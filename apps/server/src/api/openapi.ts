@@ -93,6 +93,7 @@ export const EXAMPLE_IDS = Object.freeze({
   plate: "0193a5c2-7d58-7d20-9b22-3c4d5e6f7a81",
   estimate: "0193a5c2-8001-7e30-8c33-4d5e6f7a8b92",
   upload: "0193a5c2-8e11-7c42-a1b3-5d6e7f809a1b",
+  blob: "0193a5c2-8f20-7d53-b2c4-6e7f8091a2b3",
 });
 
 /** The answer every operation gives a request without a live token. */
@@ -807,28 +808,37 @@ function withPlateNumbers(value: unknown): unknown {
   );
 }
 
+/** The answers only a GET's Range gives, which a HEAD never does. */
+const RANGE_ANSWERS = new Set(["206", "416"]);
+
 /**
  * A HEAD that Fastify answers for a GET route: the GET's documentation, said
  * to be headers only, with every answer's body taken off and its headers
- * kept (Content-Length and Content-Disposition on a file's bytes,
- * WWW-Authenticate on the 401; issue #261). HEAD gets its own operationId
+ * kept (Content-Length, Content-Disposition, Accept-Ranges and ETag on a
+ * file's bytes, WWW-Authenticate on the 401; issue #261). A HEAD ignores
+ * Range, so the range answers (206, 416) and the request headers that ask
+ * for them (Range, If-Range) are left out. HEAD gets its own operationId
  * from @fastify/swagger (the GET's with -head).
  */
 function headOnly(get: FastifySchema): FastifySchema {
-  const doc = get as FastifySchema & {
+  // The whole request headers schema is dropped: the only GET route with one
+  // is the file content route, and it holds just Range and If-Range.
+  const { headers: _requestHeaders, ...doc } = get as FastifySchema & {
     summary?: string;
     description?: string;
     response?: Record<string, { description?: string; headers?: unknown }>;
   };
   const response = Object.fromEntries(
-    Object.entries(doc.response ?? {}).map(([code, answer]) => [
-      code,
-      {
-        description: answer.description ?? "",
-        ...(answer.headers === undefined ? {} : { headers: answer.headers }),
-        type: "null",
-      },
-    ]),
+    Object.entries(doc.response ?? {})
+      .filter(([code]) => !RANGE_ANSWERS.has(code))
+      .map(([code, answer]) => [
+        code,
+        {
+          description: answer.description ?? "",
+          ...(answer.headers === undefined ? {} : { headers: answer.headers }),
+          type: "null",
+        },
+      ]),
   );
   return {
     ...doc,

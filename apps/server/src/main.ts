@@ -80,7 +80,7 @@ import { createAppLibrary, readDisplayContext } from "./app-api/library.js";
 import { createAppModel } from "./app-api/model.js";
 import { recordVersioning } from "./app-api/settings.js";
 import { dbTokenList } from "./app-api/tokens.js";
-import { dbUserList } from "./app-api/users.js";
+import { dbUnknownTokenCount, dbUserList } from "./app-api/users.js";
 import { createOidc } from "./auth/oidc.js";
 import { loginCookieKey } from "./auth/routes.js";
 import { createSessions, dbSessionStore } from "./auth/sessions.js";
@@ -466,6 +466,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     const queueDeps = trackJobs(jobs, {
       ingestFile: uploads.ingestUpload((input) => ingest.ingestFile(input)),
       purgeExpired: (now: Date) => trash.purgeExpired(now),
+      emptyTrash: (signal: AbortSignal) => trash.purgeMarked(signal),
       sweepOrphans: (now: Date) => orphans.sweepOrphans(now),
       sweepUploads: (now: Date) => uploads.sweepStaleUploads(now),
       slicerJobs: { ...derivedJobHandlers(derived), ...estimates.slicerJobs },
@@ -580,8 +581,8 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       appApi: {
         settings: { settings: repos.settings, estimates },
         tokens: { tokens, list: dbTokenList(db) },
-        organise: { db, trash },
-        users: { list: dbUserList(db), sessions },
+        organise: { db, trash, boss: startedBoss },
+        users: { list: dbUserList(db), unknownTokens: dbUnknownTokenCount(db), sessions },
       } satisfies AppApiDeps,
       // The Activity page: read-only numbers, queues, slicer health and events.
       activity: createAppActivity({

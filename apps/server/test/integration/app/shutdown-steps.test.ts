@@ -270,6 +270,7 @@ describe("trackJobs", () => {
       purgeSessions: pending,
       reconvertDescriptions: pending,
       reconvertPending: pending,
+      emptyTrash: pending,
       timeZone: "UTC",
       pollingIntervalSeconds: 1,
     };
@@ -292,6 +293,7 @@ describe("trackJobs", () => {
       [
         "backfillPreviews",
         "checkRenders",
+        "emptyTrash",
         "ingestFile",
         "onIngested",
         "pollOrca",
