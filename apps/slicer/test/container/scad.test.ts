@@ -343,9 +343,12 @@ describe("OpenSCAD in the image", () => {
       "echo(len([for (i = [0:399]) for (j = [0:399]) for (k = [0:399]) if (i * j * k < 0) 1]));\ncube(1);";
     const render = post("/v1/scad/stl", heavy).then(statusOf, (e: unknown) => `fetch failed: ${e}`);
     const script = `
+      : > /work/oom-seen.txt
       for i in $(seq 600); do
         for d in /proc/[0-9]*; do
-          [ "$(cat "$d/comm" 2>/dev/null)" = openscad ] || continue
+          c=$(cat "$d/comm" 2>/dev/null) || continue
+          grep -qx "$c" /work/oom-seen.txt || echo "$c" >> /work/oom-seen.txt
+          [ "$c" = openscad ] || continue
           score=$(cat "$d/oom_score_adj" 2>/dev/null) || continue
           for n in /proc/[0-9]*; do
             # Node names its main thread "node-MainThread" in comm.
@@ -357,13 +360,16 @@ describe("OpenSCAD in the image", () => {
         done
         sleep 0.05
       done
-      echo "no openscad process seen; running: $(cat /proc/[0-9]*/comm 2>/dev/null | sort | uniq -c | tr '\\n' ' ')"
+      echo "no openscad process seen; names seen: $(tr '\\n' ' ' < /work/oom-seen.txt)"
       exit 1`;
     // slicer.exec blocks this process, so let the request go out first; the
     // server renders while the shell below looks.
     await new Promise((resolve) => setTimeout(resolve, 300));
     const seen = slicer.exec(["sh", "-c", script]);
-    expect(seen.stdout.trim()).toBe("openscad=1000 server=0");
-    expect(await render).toBe("200");
+    const rendered = await render;
+    expect(
+      { seen: seen.stdout.trim(), rendered, log: slicer.logs().slice(-1500) },
+      "the OOM scores, the render's answer and the server's log",
+    ).toMatchObject({ seen: "openscad=1000 server=0", rendered: "200" });
   });
 });
