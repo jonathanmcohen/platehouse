@@ -183,7 +183,11 @@ describe("the login pages", () => {
           },
           find: async () => undefined,
           end: async () => {},
-          signOutEverywhere: async () => ({ sessionsEnded: 0, tokensRevoked: 0 }),
+          signOutEverywhere: async () => ({
+            sessionsEnded: 0,
+            tokensRevoked: 0,
+            unknownTokensRevoked: 0,
+          }),
         },
         publicOrigin: "https://platehouse.test",
         absoluteUrl: (path) => `https://platehouse.test${path}`,

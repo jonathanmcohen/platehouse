@@ -28,6 +28,10 @@ All notable changes to Platehouse are recorded here. The format follows
 - A server whose web build is replaced while it runs (a rebuilt or bind-mounted build) serves the new pages without a restart.
 - Putting a file back under an imported file's name in the inbox checks that the file it copies is the one it found, so a file swapped in at that moment is not copied.
 
+### Security
+
+- Sign out everywhere can also revoke the API tokens made before Platehouse 0.1.1, whose maker is unknown, with a second box in its dialog. Ticking it needs a sign-in from the last 5 minutes, also when signing yourself out, because those tokens may be anyone's. Cutting someone off no longer needs a hand step for them.
+
 ## [0.1.1] - 2026-11-24
 
 **Before you upgrade**

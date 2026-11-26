@@ -15,6 +15,7 @@ import {
   PREVIOUS_CHECKSUMS,
 } from "../../../src/db/migrate.js";
 import type { DB } from "../../../src/db/types.js";
+import { tokensRepo } from "../../../src/repos/tokens.js";
 import { startTestPostgres, type TestPostgres } from "../support/db.js";
 
 // Every table the migrations in src/db/migrations create, plus the migrator's own record.
@@ -831,6 +832,39 @@ describe("0013 token creators", () => {
       await sql<Record<string, unknown>>`select * from sessions order by id`.execute(db)
     ).rows;
     expect(sessionsAfter).toEqual(sessionsBefore.map((row) => ({ ...row, displayName: null })));
+  });
+
+  test("a token from before 0013 has no maker and revokeUnknown revokes it", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    await sql`
+      insert into api_tokens (id, name, prefix, token_hash, revoked_at)
+      values ('0190a0b0-0000-7000-8000-000000000041', 'Live script', 'ph_ddddd',
+              decode(repeat('ab', 32), 'hex'), null),
+             ('0190a0b0-0000-7000-8000-000000000042', 'Revoked script', 'ph_eeeee',
+              decode(repeat('cd', 32), 'hex'), '2026-01-02 03:04:05+00')
+    `.execute(db);
+    await migrate(db);
+    await sql`
+      insert into api_tokens (id, name, prefix, token_hash, created_by_subject)
+      values ('0190a0b0-0000-7000-8000-000000000043', 'Known script', 'ph_fffff',
+              decode(repeat('ef', 32), 'hex'), 'subject-known')
+    `.execute(db);
+
+    expect(await tokensRepo(db).revokeUnknown()).toBe(1);
+
+    const revokedAt = async (id: string) =>
+      (
+        await sql<{
+          revokedAt: Date | null;
+        }>`select revoked_at from api_tokens where id = ${id}`.execute(db)
+      ).rows[0]?.revokedAt;
+    expect(await revokedAt("0190a0b0-0000-7000-8000-000000000041")).toBeInstanceOf(Date);
+    expect(await revokedAt("0190a0b0-0000-7000-8000-000000000042")).toEqual(
+      new Date("2026-01-02T03:04:05Z"),
+    );
+    expect(await revokedAt("0190a0b0-0000-7000-8000-000000000043")).toBeNull();
+    expect(await tokensRepo(db).revokeUnknown()).toBe(0);
   });
 
   test("the columns refuse an empty value, a subject over 255 characters, an over-long name, and a name with no subject", async () => {

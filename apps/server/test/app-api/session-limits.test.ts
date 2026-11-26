@@ -51,7 +51,7 @@ async function app() {
     end: async () => {},
     signOutEverywhere: async (subject) => {
       signedOut.push(subject);
-      return { sessionsEnded: 1, tokensRevoked: 0 };
+      return { sessionsEnded: 1, tokensRevoked: 0, unknownTokensRevoked: 0 };
     },
   };
   await server.register(fastifyCookie);
@@ -81,7 +81,12 @@ async function app() {
     ],
     now: () => now,
   });
-  await registerUsersApi(server, { list: async () => [], sessions, now: () => now });
+  await registerUsersApi(server, {
+    list: async () => [],
+    unknownTokens: async () => 0,
+    sessions,
+    now: () => now,
+  });
   await server.ready();
   return {
     server,
@@ -232,6 +237,21 @@ describe("POST /app/api/users/sign-out is limited per session (issue #424)", () 
       expect((await t.post(A, "/app/api/users/sign-out", self)).statusCode).toBe(200);
     }
     expect(t.signedOut).toEqual(Array(10).fill(A.subject));
+    await t.server.close();
+  });
+
+  test("a stale session signing itself out with revokeUnknownTokens is refused 403 and never counted", async () => {
+    const t = await app();
+    t.advance(TOKEN_SIGN_IN_WINDOW_MS + 1);
+    const selfWithUnknown = { subject: A.subject, revokeTokens: false, revokeUnknownTokens: true };
+    for (let i = 0; i < 10; i++) {
+      const res = await t.post(A, "/app/api/users/sign-out", selfWithUnknown);
+      expect(res.statusCode, `refusal ${i + 1}`).toBe(403);
+      expect(res.json()).toMatchObject({ error: "sign_in_required", code: "sign_in_required" });
+    }
+    const self = { subject: A.subject, revokeTokens: false };
+    expect((await t.post(A, "/app/api/users/sign-out", self)).statusCode).toBe(200);
+    expect(t.signedOut).toEqual([A.subject]);
     await t.server.close();
   });
 

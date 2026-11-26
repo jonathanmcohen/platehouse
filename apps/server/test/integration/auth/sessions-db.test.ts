@@ -12,7 +12,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { type Kysely, sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { type CreatedToken, createTokens, dbTokenStore } from "../../../src/api/tokens.js";
-import { dbUserList } from "../../../src/app-api/users.js";
+import { dbUnknownTokenCount, dbUserList } from "../../../src/app-api/users.js";
 import { TOKEN_SIGN_IN_WINDOW_MS } from "../../../src/auth/fresh.js";
 import {
   createSessions,
@@ -25,7 +25,7 @@ import {
 } from "../../../src/auth/sessions.js";
 import { migrate } from "../../../src/db/migrate.js";
 import type { DB } from "../../../src/db/types.js";
-import { sessionsRepo } from "../../../src/repos/sessions.js";
+import { type SignedOut, sessionsRepo } from "../../../src/repos/sessions.js";
 import { startTestPostgres, type TestPostgres } from "../support/db.js";
 import {
   type AuthTestApp,
@@ -167,6 +167,7 @@ describe("createSessions over the sessions table", () => {
     expect(await sessions.signOutEverywhere("subject-a", false)).toEqual({
       sessionsEnded: 2,
       tokensRevoked: 0,
+      unknownTokensRevoked: 0,
     });
     expect(await rowOf(a1.id)).toBeUndefined();
     expect(await rowOf(a2.id)).toBeUndefined();
@@ -175,6 +176,7 @@ describe("createSessions over the sessions table", () => {
     expect(await sessions.signOutEverywhere("subject-a", false)).toEqual({
       sessionsEnded: 0,
       tokensRevoked: 0,
+      unknownTokensRevoked: 0,
     });
   });
 
@@ -247,6 +249,7 @@ describe("dbUserList over the sessions and api_tokens tables (issue #322)", () =
     expect(await sessions.signOutEverywhere("subject-a", true)).toEqual({
       sessionsEnded: 0,
       tokensRevoked: 2,
+      unknownTokensRevoked: 0,
     });
     expect(await tokens.authenticate(`Bearer ${a.token}`)).toBeUndefined();
     expect(await tokens.authenticate(`Bearer ${a2.token}`)).toBeUndefined();
@@ -255,7 +258,55 @@ describe("dbUserList over the sessions and api_tokens tables (issue #322)", () =
     expect(await sessions.signOutEverywhere("subject-a", true)).toEqual({
       sessionsEnded: 0,
       tokensRevoked: 0,
+      unknownTokensRevoked: 0,
     });
+  });
+});
+
+describe("Sign out everywhere and tokens with no recorded maker", () => {
+  test("signOutEverywhere with revokeUnknown revokes the maker-less tokens in the same call, and they are counted before and after", async () => {
+    await db.deleteFrom("apiTokens").execute();
+    const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    const sessions = createSessions({ store: dbSessionStore(db) });
+    const countUnknown = dbUnknownTokenCount(db);
+    const old1 = await tokens.createToken("old 1");
+    const old2 = await tokens.createToken("old 2");
+    const revokedOld = await tokens.createToken("old revoked");
+    await tokens.revokeToken(revokedOld.id);
+    const known = await tokens.createToken("known", { subject: "subject-known", name: "K" });
+    const mine = await tokens.createToken("mine", { subject: "subject-a", name: "A" });
+    await sessions.start("subject-a");
+    expect(await countUnknown()).toBe(2);
+
+    expect(await sessions.signOutEverywhere("subject-a", true, true)).toEqual({
+      sessionsEnded: 1,
+      tokensRevoked: 1,
+      unknownTokensRevoked: 2,
+    });
+    expect(await countUnknown()).toBe(0);
+    expect(await tokens.authenticate(`Bearer ${old1.token}`)).toBeUndefined();
+    expect(await tokens.authenticate(`Bearer ${old2.token}`)).toBeUndefined();
+    expect(await tokens.authenticate(`Bearer ${mine.token}`)).toBeUndefined();
+    expect((await tokens.authenticate(`Bearer ${known.token}`))?.id).toBe(known.id);
+    expect(await sessions.signOutEverywhere("subject-a", true, true)).toEqual({
+      sessionsEnded: 0,
+      tokensRevoked: 0,
+      unknownTokensRevoked: 0,
+    });
+  });
+
+  test("without revokeUnknown the maker-less tokens stay live and counted", async () => {
+    await db.deleteFrom("apiTokens").execute();
+    const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    const sessions = createSessions({ store: dbSessionStore(db) });
+    const old = await tokens.createToken("old");
+    expect(await sessions.signOutEverywhere("subject-a", true)).toEqual({
+      sessionsEnded: 0,
+      tokensRevoked: 0,
+      unknownTokensRevoked: 0,
+    });
+    expect((await tokens.authenticate(`Bearer ${old.token}`))?.id).toBe(old.id);
+    expect(await dbUnknownTokenCount(db)()).toBe(1);
   });
 });
 
@@ -364,7 +415,7 @@ describe("token creation and Sign out everywhere wait for each other (issue #414
     const id = await signedIn(subject);
     const hold = await holdTokenTable();
     let creating: Promise<CreatedToken | "stale"> | undefined;
-    let signingOut: Promise<{ sessionsEnded: number; tokensRevoked: number }> | undefined;
+    let signingOut: Promise<SignedOut> | undefined;
     try {
       creating = tokens.createTokenForSession(id, "Raced script", new Date());
       // The creation has read and locked the session row; its insert waits.
@@ -383,7 +434,7 @@ describe("token creation and Sign out everywhere wait for each other (issue #414
       // In this order the creation went first, so it made the token and the
       // sign-out revoked it.
       expect(created).not.toBe("stale");
-      expect(out).toEqual({ sessionsEnded: 1, tokensRevoked: 1 });
+      expect(out).toEqual({ sessionsEnded: 1, tokensRevoked: 1, unknownTokensRevoked: 0 });
     } finally {
       hold.release();
       await hold.done.catch(() => {});
@@ -401,7 +452,7 @@ describe("token creation and Sign out everywhere wait for each other (issue #414
     const id = await signedIn(subject);
     const hold = await holdTokenTable();
     let creating: Promise<CreatedToken | "stale"> | undefined;
-    let signingOut: Promise<{ sessionsEnded: number; tokensRevoked: number }> | undefined;
+    let signingOut: Promise<SignedOut> | undefined;
     try {
       signingOut = sessions.signOutEverywhere(subject, true);
       // The sessions are deleted in its transaction; its revoke waits.
@@ -415,7 +466,7 @@ describe("token creation and Sign out everywhere wait for each other (issue #414
       const created = await creating;
       expect(await liveTokens(subject)).toBe(0);
       expect(created).toBe("stale");
-      expect(out).toEqual({ sessionsEnded: 1, tokensRevoked: 0 });
+      expect(out).toEqual({ sessionsEnded: 1, tokensRevoked: 0, unknownTokensRevoked: 0 });
       expect(await db.selectFrom("apiTokens").select("id").execute()).toEqual([]);
     } finally {
       hold.release();
@@ -526,7 +577,7 @@ describe("a login through the app with sessions in Postgres", () => {
     expect((await tokens.authenticate(`Bearer ${made.token}`))?.createdBySubject).toBe(sub);
     expect(
       await createSessions({ store: dbSessionStore(db) }).signOutEverywhere(sub, true),
-    ).toEqual({ sessionsEnded: 1, tokensRevoked: 1 });
+    ).toEqual({ sessionsEnded: 1, tokensRevoked: 1, unknownTokensRevoked: 0 });
   });
 
   test("a 256-character subject is refused at sign-in, and no session row is written", async () => {

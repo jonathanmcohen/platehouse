@@ -66,7 +66,11 @@ beforeEach(async () => {
     },
     find: async (cookie) => (cookie === COOKIE ? session : undefined),
     end: async () => {},
-    signOutEverywhere: async () => ({ sessionsEnded: 1, tokensRevoked: 0 }),
+    signOutEverywhere: async () => ({
+      sessionsEnded: 1,
+      tokensRevoked: 0,
+      unknownTokensRevoked: 0,
+    }),
   };
   uploads = await readyUploads(join(dir, "tmp"));
   app = await buildApp({

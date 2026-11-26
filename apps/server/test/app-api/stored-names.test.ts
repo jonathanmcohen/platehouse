@@ -33,7 +33,11 @@ async function server() {
           }
         : undefined,
     end: async () => {},
-    signOutEverywhere: async () => ({ sessionsEnded: 0, tokensRevoked: 0 }),
+    signOutEverywhere: async () => ({
+      sessionsEnded: 0,
+      tokensRevoked: 0,
+      unknownTokensRevoked: 0,
+    }),
   };
   await app.register(fastifyCookie);
   installGate(app, {
@@ -75,6 +79,7 @@ async function server() {
       { subject: "subject-b", name: OVERRIDDEN, sessions: 1, tokens: 1 },
       { subject: "subject-c", name: "\u202e\u200f", sessions: 1, tokens: 0 },
     ],
+    unknownTokens: async () => 0,
     sessions,
     now: () => START,
   });

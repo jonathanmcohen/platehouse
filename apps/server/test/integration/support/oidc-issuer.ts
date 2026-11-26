@@ -373,9 +373,9 @@ export function memorySessionStore(): MemoryStore {
       if (store.failWith) throw store.failWith;
       return rows.delete(id);
     },
-    async signOutEverywhere(subject, revokeTokens) {
+    async signOutEverywhere(subject, revokeTokens, revokeUnknown = false) {
       if (store.failWith) throw store.failWith;
-      if (revokeTokens && store.tokens === undefined) {
+      if ((revokeTokens || revokeUnknown) && store.tokens === undefined) {
         throw new Error("memorySessionStore: no token store to revoke from");
       }
       // One synchronous run, as the table's one transaction: nothing else
@@ -388,7 +388,8 @@ export function memorySessionStore(): MemoryStore {
         }
       }
       const tokensRevoked = revokeTokens ? (store.tokens?.revokeForCreator(subject) ?? 0) : 0;
-      return { sessionsEnded, tokensRevoked };
+      const unknownTokensRevoked = revokeUnknown ? (store.tokens?.revokeUnknown() ?? 0) : 0;
+      return { sessionsEnded, tokensRevoked, unknownTokensRevoked };
     },
     async touch(id, idleExpiresAt) {
       if (store.failWith) throw store.failWith;
@@ -406,6 +407,8 @@ export interface MemoryTokenStore extends TokenStore {
   lookups: number;
   /** Revokes every live token this subject made, at once; returns how many. */
   revokeForCreator(subject: string): number;
+  /** Revokes every live token with no recorded maker, at once; returns how many. */
+  revokeUnknown(): number;
 }
 
 /**
@@ -472,6 +475,16 @@ export function memoryTokenStore(sessions?: MemoryStore): MemoryTokenStore {
       }
       return revoked;
     },
+    revokeUnknown() {
+      let revoked = 0;
+      for (const [id, row] of rows) {
+        if (row.revokedAt === null && row.createdBySubject === null) {
+          rows.set(id, { ...row, revokedAt: new Date() });
+          revoked += 1;
+        }
+      }
+      return revoked;
+    },
     async touchLastUsed(id, at) {
       const row = rows.get(id);
       if (row !== undefined) rows.set(id, { ...row, lastUsedAt: at });
@@ -496,6 +509,17 @@ export function memoryTokenList(store: MemoryTokenStore): () => Promise<ListedTo
         createdBySubject,
         createdByName,
       }));
+}
+
+/** How many live tokens have no recorded maker, as dbUnknownTokenCount counts them. */
+export function memoryUnknownTokens(tokens: MemoryTokenStore): () => Promise<number> {
+  return async () => {
+    let count = 0;
+    for (const row of tokens.rows.values()) {
+      if (row.revokedAt === null && row.createdBySubject === null) count += 1;
+    }
+    return count;
+  };
 }
 
 /**

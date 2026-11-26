@@ -66,7 +66,11 @@ async function newApp(find?: Sessions["find"]): Promise<FastifyInstance> {
     },
     find: find ?? (async (cookie) => (cookie === COOKIE ? signedIn() : undefined)),
     end: async () => {},
-    signOutEverywhere: async () => ({ sessionsEnded: 1, tokensRevoked: 0 }),
+    signOutEverywhere: async () => ({
+      sessionsEnded: 1,
+      tokensRevoked: 0,
+      unknownTokensRevoked: 0,
+    }),
   };
   // The store has made its folder before the app is built (support/uploads.ts).
   const uploads = await readyUploads(join(dir, "tmp"));

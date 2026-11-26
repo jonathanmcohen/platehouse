@@ -67,11 +67,16 @@ export interface SessionStore {
   delete(id: string): Promise<boolean>;
   /**
    * Sign out everywhere, in one transaction: deletes every session of one
-   * subject, then, with revokeTokens, revokes every live API token they made.
+   * subject, then, with revokeTokens, revokes every live API token they made
+   * and, with revokeUnknown, every live API token with no recorded maker.
    * The delete waits for a token being made from one of those sessions
    * (api/tokens.ts createTokenForSession), so the revoke finds that token.
    */
-  signOutEverywhere(subject: string, revokeTokens: boolean): Promise<SignedOut>;
+  signOutEverywhere(
+    subject: string,
+    revokeTokens: boolean,
+    revokeUnknown?: boolean,
+  ): Promise<SignedOut>;
   /** Moves a session's idle expiry to idleExpiresAt. */
   touch(id: string, idleExpiresAt: Date): Promise<void>;
 }
@@ -83,7 +88,8 @@ export function dbSessionStore(db: Kysely<DB>): SessionStore {
     create: (input) => repo.create(input),
     get: (id, now) => repo.get(id, now),
     delete: (id) => repo.delete(id),
-    signOutEverywhere: (subject, revokeTokens) => repo.signOutEverywhere(subject, revokeTokens),
+    signOutEverywhere: (subject, revokeTokens, revokeUnknown) =>
+      repo.signOutEverywhere(subject, revokeTokens, revokeUnknown),
     async touch(id, idleExpiresAt) {
       await db.updateTable("sessions").set({ idleExpiresAt }).where("id", "=", id).execute();
     },
@@ -112,11 +118,17 @@ export interface Sessions {
   end(cookie: string | undefined): Promise<void>;
   /**
    * Sign out everywhere (issue #322): ends every session of one subject and,
-   * with revokeTokens, revokes every live API token they made, in one
+   * with revokeTokens, revokes every live API token they made and, with
+   * revokeUnknown, every live API token with no recorded maker, in one
    * transaction that a token being made at the same moment waits for, or
-   * that waits for it (issue #414). Returns how many of each.
+   * that waits for it (issue #414). Returns how many of each. The caller
+   * decides who may ask for revokeUnknown: it reaches tokens of any user.
    */
-  signOutEverywhere(subject: string, revokeTokens: boolean): Promise<SignedOut>;
+  signOutEverywhere(
+    subject: string,
+    revokeTokens: boolean,
+    revokeUnknown?: boolean,
+  ): Promise<SignedOut>;
 }
 
 /**
@@ -173,6 +185,7 @@ export function createSessions(deps: { store: SessionStore; now?: () => Date }):
       if (isSessionId(cookie)) await store.delete(sessionRowId(cookie));
     },
 
-    signOutEverywhere: (subject, revokeTokens) => store.signOutEverywhere(subject, revokeTokens),
+    signOutEverywhere: (subject, revokeTokens, revokeUnknown) =>
+      store.signOutEverywhere(subject, revokeTokens, revokeUnknown),
   };
 }
