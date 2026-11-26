@@ -156,6 +156,15 @@ curl -sS -o /dev/null -D - -H 'Accept-Encoding: gzip, br, zstd' 'https://plateho
 
 Expect `not compressed`.
 
+Optionally, check that a download can be resumed, by asking for its first 100 bytes:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' -r 0-99 'https://platehouse.example.com/s/...'
+```
+
+Expect `206`. A `200` means something between you and the app drops the `Range` header, so a cut
+download starts again from the beginning.
+
 ## 7. The proxy sees each visitor's real address
 
 If you use an allowlist, this one matters most. From a device outside your allowlisted networks,

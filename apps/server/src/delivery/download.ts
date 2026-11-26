@@ -12,21 +12,42 @@
 //                                       each view (ETag, 304)
 //   GET /s/<token>/<name>     link      the file of a slicer link (links.ts)
 //
+// - All three answer a single byte range (Range: bytes=..., delivery/
+//   range.ts), so a cut download resumes: 206 with Content-Range and the
+//   range's Content-Length, and otherwise the 200's headers. A range that
+//   starts at or past the end is 416 with Content-Range "bytes */" and the
+//   size, no-store and an empty body, decided from the database record
+//   alone, with no store call. Several ranges, another unit or a header the
+//   parser cannot read are the whole file with a 200; Range is never a 400
+//   or a 500. A HEAD ignores Range. Every 200 and 206 sends Accept-Ranges:
+//   bytes. If-Range is compared, strongly, with the ETag only: a file's and
+//   a slicer link's is its current blob's id, quoted, and a revalidated
+//   blob's its own id (blobEtag); a thumbnail or PNG render has none, so
+//   any If-Range gives it the whole picture. Range is read only after the
+//   session or the link's token has been checked and the file or blob found
+//   live, so a refused request never learns a size from a 416. On a blob
+//   the If-None-Match 304 comes first, as RFC 9110 orders it. The reader
+//   (readStored) and the header writer (writeContent) live in api/v1.ts,
+//   beside the file reader, so one parser, one reader and one writer serve
+//   every route that sends a file.
 // - A file is read through the Public API's library (api/v1.ts createApiLibrary:
 //   openFile and fileHead), so the download, the slicer link and the API's
 //   own content route find a live file, its stored blob and its headers the
 //   same way. A blob is read here (createDeliveryLibrary) by the same rules:
 //   its model must be live and its row stored.
 // - The bytes are the store's stream, piped as it arrives; nothing holds a
-//   whole file. Content-Length comes from the database, and the object must
-//   be exactly that size (PR #156 security review): Node does not hold a
-//   response to its Content-Length, so a longer object would put its extra
-//   bytes on the keep-alive socket, where a proxy reusing the connection
-//   reads them as the next answer, and a shorter one would leave the client
-//   waiting. So an object whose size, as the store reports it (objectSize),
-//   differs from the record is 503 before any header (checkObjectSize), and
-//   the bytes are counted as they go (exactSize): a stream that runs past
-//   the record or ends short of it destroys the response, so the client
+//   whole file. A range is read with a ranged GetObject (getBlobRange),
+//   refused as a 503 before any header when the store did not honour it.
+//   Content-Length comes from the database (for a range, the range's
+//   length), and the object must be exactly the recorded size (PR #156
+//   security review): Node does not hold a response to its Content-Length,
+//   so a longer object would put its extra bytes on the keep-alive socket,
+//   where a proxy reusing the connection reads them as the next answer, and
+//   a shorter one would leave the client waiting. So an object whose size, as the store reports it (objectSize;
+//   for a range, the total its Content-Range gives), differs from the
+//   record is 503 before any header (checkObjectSize), and the bytes are
+//   counted as they go (exactSize): a stream that runs past the record, or
+//   the range, or ends short of it destroys the response, so the client
 //   sees an aborted answer, never a clean end. res.strictContentLength is
 //   not used: on a short stream it throws from res.end() and ends the
 //   process. A HEAD never opens a GetObject: it confirms the object exists
@@ -41,7 +62,9 @@
 //   the answer is 503 "This file is unavailable right now", and nothing is
 //   written anywhere: no row, no status, so an outage never marks a file
 //   missing or damaged. Any other failure is logged and answered
-//   500 with no detail.
+//   500 with no detail. No error answer, 416 included, carries a header
+//   of the file's: no Content-Type of its own, Content-Disposition,
+//   Content-Range, Accept-Ranges or ETag (dropContentHeaders).
 // - A file goes out as an attachment with its name in an ASCII fallback and
 //   in filename*=UTF-8'' (api/v1.ts contentDisposition), so a name with
 //   spaces, accents, slashes, quotes or line breaks never breaks the header.
@@ -53,28 +76,31 @@
 //   is missing. Only a slicer link's URL name segment has unsafe characters
 //   replaced (linkSegment). Every answer carries X-Content-Type-Options:
 //   nosniff.
-import { Readable } from "node:stream";
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import {
   type ApiLibrary,
   checkHeadSize,
   checkObjectSize,
-  contentDisposition,
   dropContentHeaders,
-  exactSize,
+  FILE_CACHE_CONTROL,
   FILE_UNAVAILABLE_MESSAGE,
   type FileContent,
   type FileHead,
   linkFileName,
+  type RangeNotSatisfiable,
+  readStored,
+  writeContent,
 } from "../api/v1.js";
 import type { BlobKind, DB, FileKind } from "../db/types.js";
 import { createRepos } from "../repos/index.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
+import { type PickRange, rangePicker } from "./range.js";
 
-// linkFileName and checkObjectSize live in api/v1.ts, which reads every
-// file the delivery routes send; they are exported here as before.
-export { checkObjectSize, linkFileName };
+// linkFileName, checkObjectSize and FILE_CACHE_CONTROL live in api/v1.ts,
+// which reads and writes every file the delivery routes send; they are
+// exported here as before.
+export { checkObjectSize, FILE_CACHE_CONTROL, linkFileName };
 
 /**
  * What GET /blobs/:id answers in Cache-Control for a thumbnail or a PNG
@@ -100,6 +126,15 @@ export const REVALIDATE_CACHE_CONTROL = "private, no-cache";
 const LONG_CACHED_KINDS: ReadonlySet<BlobKind> = new Set(["thumbnail", "render_png"]);
 
 /**
+ * A blob's ETag, its quoted id, for every kind but the long-cached ones,
+ * which are never revalidated and send none. The blob route's 304 and its
+ * content (storedBlob) both read it, so the two never disagree.
+ */
+export function blobEtag(id: string, kind: BlobKind): string | undefined {
+  return LONG_CACHED_KINDS.has(kind) ? undefined : `"${id}"`;
+}
+
+/**
  * True when an If-None-Match header names the blob's tag: "*", or any tag
  * of its comma-separated list once a W/ prefix is dropped (weak comparison).
  */
@@ -110,9 +145,6 @@ export function matchesEtag(header: string | undefined, etag: string): boolean {
     return tag === "*" || tag === etag;
   });
 }
-
-/** What the file routes answer in Cache-Control. */
-export const FILE_CACHE_CONTROL = "private, no-store";
 
 /** A live file, as a slicer link names it. */
 export interface LinkFile {
@@ -134,14 +166,22 @@ export interface DeliveryLibrary {
   linkFile(id: string): Promise<LinkFile | undefined>;
   /**
    * A stored blob of a live model, confirmed with a HeadObject at its
-   * recorded size; undefined when unknown, malformed or its model is
-   * trashed. BlobNotFound when the row is not stored; StoreUnavailable or
-   * StoreError from the store, or StoreError (SizeMismatch) when the store
-   * reports another size.
+   * recorded size, with its ETag (blobEtag); undefined when unknown,
+   * malformed or its model is trashed. BlobNotFound when the row is not
+   * stored; StoreUnavailable or StoreError from the store, or StoreError
+   * (SizeMismatch) when the store reports another size.
    */
   blobHead(id: string): Promise<FileHead | undefined>;
-  /** A stored blob of a live model and its bytes; errors as blobHead. */
-  openBlob(id: string): Promise<FileContent | undefined>;
+  /**
+   * A stored blob of a live model and its bytes, the part pickRange chooses
+   * or all of them (readStored), or RangeNotSatisfiable with no store call;
+   * errors as blobHead, and StoreError (RangeIgnored) when the store did not
+   * honour the range.
+   */
+  openBlob(
+    id: string,
+    pickRange?: PickRange,
+  ): Promise<FileContent | RangeNotSatisfiable | undefined>;
 }
 
 export interface DeliveryDeps {
@@ -156,7 +196,7 @@ export interface DeliveryDeps {
 
 export function createDeliveryLibrary(deps: {
   db: Kysely<DB>;
-  store: Pick<BlobStore, "getBlobStream" | "headBlob">;
+  store: Pick<BlobStore, "getBlobStream" | "getBlobRange" | "headBlob">;
 }): DeliveryLibrary {
   const { store } = deps;
   const repos = createRepos(deps.db);
@@ -172,8 +212,14 @@ export function createDeliveryLibrary(deps: {
     const blob = await repos.blobs.get(id);
     if (blob === undefined || !(await liveModel(blob.modelId))) return undefined;
     if (blob.state !== "stored" || blob.size === null) throw new BlobNotFound("GetObject");
+    const head: FileHead = {
+      name: blob.id,
+      contentType: blob.contentType,
+      size: Number(blob.size),
+    };
+    const etag = blobEtag(blob.id, blob.kind);
     return {
-      head: { name: blob.id, contentType: blob.contentType, size: Number(blob.size) },
+      head: etag === undefined ? head : { ...head, etag },
       key: blob.key,
       kind: blob.kind,
     };
@@ -197,37 +243,31 @@ export function createDeliveryLibrary(deps: {
       return found.head;
     },
 
-    async openBlob(id) {
+    async openBlob(id, pickRange) {
       const found = await storedBlob(id);
       if (found === undefined) return undefined;
-      return { ...found.head, stream: await store.getBlobStream(found.key) };
+      return readStored(store, found.key, found.head, pickRange);
     },
   };
 }
 
 /**
- * Sends a file's or blob's headers and, for a GET, its stream, held to the
- * recorded size (exactSize). A HEAD gets an empty stream, which keeps the
- * Content-Length (an empty body would make Fastify answer 0). An attachment
- * is named with the content's name, a file's linkFileName (api/v1.ts).
+ * Sends a file's or blob's answer with api/v1.ts writeContent: a 416 for an
+ * unsatisfiable range, else its headers (its own ETag among them, when it
+ * has one) and, for a GET, its stream, the whole record or the range, held
+ * to that length (exactSize). Cache-Control is FILE_CACHE_CONTROL unless the
+ * route gives another. An attachment is named with the content's name, a
+ * file's linkFileName (api/v1.ts).
  */
 export function sendContent(
   reply: FastifyReply,
-  content: FileHead | FileContent,
-  opts: { attachment: boolean; cacheControl?: string; etag?: string },
+  content: FileHead | FileContent | RangeNotSatisfiable,
+  opts: { attachment: boolean; cacheControl?: string },
 ) {
-  if (opts.etag !== undefined) reply.header("etag", opts.etag);
-  reply
-    .header("content-type", content.contentType)
-    .header("content-length", String(content.size))
-    .header("x-content-type-options", "nosniff")
-    .header("cache-control", opts.cacheControl ?? FILE_CACHE_CONTROL);
-  if (opts.attachment) {
-    reply.header("content-disposition", contentDisposition(content.name));
-  }
-  return reply.send(
-    "stream" in content ? exactSize(content.stream, content.size) : Readable.from([]),
-  );
+  return writeContent(reply, content, {
+    attachment: opts.attachment,
+    cacheControl: opts.cacheControl ?? FILE_CACHE_CONTROL,
+  });
 }
 
 /** True for an error from the blob store: an outage, a missing object or a refusal. */
@@ -280,15 +320,29 @@ export async function registerDownloads(app: FastifyInstance, deps: DeliveryDeps
   await app.register(async (scope) => {
     scope.setErrorHandler(fileRouteErrors("delivery: a download failed"));
 
+    /**
+     * Reads the content, a HEAD's from head() and a GET's from open() with
+     * the request's Range (rangePicker, undefined for a HEAD or no Range),
+     * and sends it. Every check of the route has run before this, so a
+     * Range is only read for a request allowed the file.
+     */
     async function serve(
       request: FastifyRequest,
       reply: FastifyReply,
-      read: (head: boolean) => Promise<FileHead | FileContent | undefined>,
-      opts: { attachment: boolean; cacheControl: string; etag?: string },
+      read: {
+        head: () => Promise<FileHead | undefined>;
+        open: (
+          pick: PickRange | undefined,
+        ) => Promise<FileContent | RangeNotSatisfiable | undefined>;
+      },
+      opts: { attachment: boolean; cacheControl: string },
     ) {
-      let content: FileHead | FileContent | undefined;
+      let content: FileHead | FileContent | RangeNotSatisfiable | undefined;
       try {
-        content = await read(request.method === "HEAD");
+        content =
+          request.method === "HEAD"
+            ? await read.head()
+            : await read.open(rangePicker(request.headers, request.method));
         if (content !== undefined) checkObjectSize(content);
       } catch (error) {
         const answered = unavailable(error, request, reply);
@@ -310,7 +364,7 @@ export async function registerDownloads(app: FastifyInstance, deps: DeliveryDeps
       return serve(
         request,
         reply,
-        (head) => (head ? deps.files.fileHead(id) : deps.files.openFile(id)),
+        { head: () => deps.files.fileHead(id), open: (pick) => deps.files.openFile(id, pick) },
         { attachment: true, cacheControl: FILE_CACHE_CONTROL },
       );
     });
@@ -329,15 +383,17 @@ export async function registerDownloads(app: FastifyInstance, deps: DeliveryDeps
         throw error;
       }
       if (kind === undefined) return notFound(reply);
-      if (LONG_CACHED_KINDS.has(kind)) {
-        return serve(
-          request,
-          reply,
-          (head) => (head ? deps.library.blobHead(id) : deps.library.openBlob(id)),
-          { attachment: false, cacheControl: BLOB_CACHE_CONTROL },
-        );
+      const read = {
+        head: () => deps.library.blobHead(id),
+        open: (pick: PickRange | undefined) => deps.library.openBlob(id, pick),
+      };
+      const etag = blobEtag(id, kind);
+      if (etag === undefined) {
+        return serve(request, reply, read, { attachment: false, cacheControl: BLOB_CACHE_CONTROL });
       }
-      const etag = `"${id}"`;
+      // If-None-Match is answered before Range, as RFC 9110 orders the
+      // preconditions: a browser's own copy is still good, so no part of it
+      // is sent.
       if (matchesEtag(request.headers["if-none-match"], etag)) {
         return reply
           .code(304)
@@ -346,12 +402,10 @@ export async function registerDownloads(app: FastifyInstance, deps: DeliveryDeps
           .header("x-content-type-options", "nosniff")
           .send();
       }
-      return serve(
-        request,
-        reply,
-        (head) => (head ? deps.library.blobHead(id) : deps.library.openBlob(id)),
-        { attachment: false, cacheControl: REVALIDATE_CACHE_CONTROL, etag },
-      );
+      return serve(request, reply, read, {
+        attachment: false,
+        cacheControl: REVALIDATE_CACHE_CONTROL,
+      });
     });
   });
 }

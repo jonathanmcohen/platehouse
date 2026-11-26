@@ -178,8 +178,9 @@ beforeAll(async () => {
     stop: async () => {},
   };
   // The routes' store: the real one, or the dead one while storeDown is set.
-  const switching: Pick<BlobStore, "getBlobStream" | "headBlob"> = {
+  const switching: Pick<BlobStore, "getBlobStream" | "getBlobRange" | "headBlob"> = {
     getBlobStream: (key) => store().getBlobStream(key),
+    getBlobRange: (key, start, end) => store().getBlobRange(key, start, end),
     headBlob: (key) => store().headBlob(key),
   };
   t = await testAuth();
@@ -381,6 +382,161 @@ describe("downloads and blobs", () => {
       const res = await call("GET", path, { session: true });
       expect(res.status, path).toBe(404);
     }
+  });
+});
+
+describe("ranges", () => {
+  // One byte range per request, read from the bucket with a ranged
+  // GetObject: the download, a source blob and a slicer link of one file.
+  async function targets() {
+    const seeded = await seedStoredModel(env);
+    const link = await mint(seeded.file.id);
+    const row = await env.db
+      .selectFrom("files")
+      .select("blobId")
+      .where("id", "=", seeded.file.id)
+      .executeTakeFirstOrThrow();
+    const fileEtag = `"${row.blobId}"`;
+    return {
+      seeded,
+      fileEtag,
+      list: [
+        {
+          path: `/files/${seeded.file.id}/download`,
+          session: true,
+          etag: fileEtag,
+          attachment: true,
+        },
+        {
+          path: `/blobs/${seeded.source.id}`,
+          session: true,
+          etag: `"${seeded.source.id}"`,
+          attachment: false,
+        },
+        { path: pathOf(link.url), session: false, etag: fileEtag, attachment: true },
+      ],
+    };
+  }
+
+  test("a range is 206 with those bytes and the 200's headers", async () => {
+    const { seeded, list } = await targets();
+    const n = seeded.bytes.length;
+    expect(n).toBeGreaterThan(20);
+    for (const target of list) {
+      const whole = await call("GET", target.path, { session: target.session });
+      expect(whole.status, target.path).toBe(200);
+      expect(whole.headers.get("accept-ranges"), target.path).toBe("bytes");
+      expect(whole.headers.get("etag"), target.path).toBe(target.etag);
+      const res = await call("GET", target.path, {
+        session: target.session,
+        headers: { range: "bytes=0-9" },
+      });
+      expect(res.status, target.path).toBe(206);
+      expect(res.bytes.equals(seeded.bytes.subarray(0, 10)), target.path).toBe(true);
+      expect(res.headers.get("content-range"), target.path).toBe(`bytes 0-9/${n}`);
+      expect(res.headers.get("content-length"), target.path).toBe("10");
+      expect(res.headers.get("accept-ranges"), target.path).toBe("bytes");
+      expect(res.headers.get("etag"), target.path).toBe(target.etag);
+      for (const header of [
+        "content-type",
+        "cache-control",
+        "x-content-type-options",
+        "content-disposition",
+      ]) {
+        expect(res.headers.get(header), `${target.path} ${header}`).toBe(whole.headers.get(header));
+      }
+      expect(res.headers.get("content-disposition") !== null, target.path).toBe(target.attachment);
+    }
+  });
+
+  test("a suffix, an open end and a last byte past the end", async () => {
+    const { seeded, list } = await targets();
+    const n = seeded.bytes.length;
+    for (const target of list) {
+      for (const [range, start, end] of [
+        ["bytes=-5", n - 5, n - 1],
+        ["bytes=5-", 5, n - 1],
+        ["bytes=5-99999", 5, n - 1],
+      ] as const) {
+        const label = `${target.path} ${range}`;
+        const res = await call("GET", target.path, { session: target.session, headers: { range } });
+        expect(res.status, label).toBe(206);
+        expect(res.bytes.equals(seeded.bytes.subarray(start, end + 1)), label).toBe(true);
+        expect(res.headers.get("content-range"), label).toBe(`bytes ${start}-${end}/${n}`);
+      }
+    }
+  });
+
+  test("a range from the size on is 416 with no file header; several ranges are 200 in full", async () => {
+    const { seeded, list } = await targets();
+    const n = seeded.bytes.length;
+    for (const target of list) {
+      const refused = await call("GET", target.path, {
+        session: target.session,
+        headers: { range: `bytes=${n}-` },
+      });
+      expect(refused.status, target.path).toBe(416);
+      expect(refused.headers.get("content-range"), target.path).toBe(`bytes */${n}`);
+      expect(refused.headers.get("cache-control"), target.path).toBe("no-store");
+      expect(refused.bytes.length, target.path).toBe(0);
+      for (const header of ["content-disposition", "accept-ranges", "etag"]) {
+        expect(refused.headers.get(header), `${target.path} ${header}`).toBeNull();
+      }
+      const several = await call("GET", target.path, {
+        session: target.session,
+        headers: { range: "bytes=0-1,5-6" },
+      });
+      expect(several.status, target.path).toBe(200);
+      expect(several.bytes.equals(seeded.bytes), target.path).toBe(true);
+      expect(several.headers.get("content-range"), target.path).toBeNull();
+    }
+  });
+
+  test("If-Range with the ETag is 206, with another tag 200 in full; a HEAD ignores Range", async () => {
+    const { seeded, list } = await targets();
+    for (const target of list) {
+      const matched = await call("GET", target.path, {
+        session: target.session,
+        headers: { range: "bytes=0-9", "if-range": target.etag },
+      });
+      expect(matched.status, target.path).toBe(206);
+      expect(matched.bytes.equals(seeded.bytes.subarray(0, 10)), target.path).toBe(true);
+      const other = await call("GET", target.path, {
+        session: target.session,
+        headers: { range: "bytes=0-9", "if-range": `"${seeded.thumbnail.id}"` },
+      });
+      expect(other.status, target.path).toBe(200);
+      expect(other.bytes.equals(seeded.bytes), target.path).toBe(true);
+      const head = await call("HEAD", target.path, {
+        session: target.session,
+        headers: { range: "bytes=0-9" },
+      });
+      expect(head.status, target.path).toBe(200);
+      expect(head.headers.get("content-length"), target.path).toBe(String(seeded.bytes.length));
+      expect(head.headers.get("accept-ranges"), target.path).toBe("bytes");
+      expect(head.headers.get("etag"), target.path).toBe(target.etag);
+      expect(head.bytes.length, target.path).toBe(0);
+    }
+  });
+
+  test("the file's ETag is its blob's id, quoted, a UUID like the blobs'", async () => {
+    const { seeded, fileEtag } = await targets();
+    expect(fileEtag).toMatch(OWN_ETAG);
+    for (const method of ["GET", "HEAD"]) {
+      const res = await call(method, `/files/${seeded.file.id}/download`, { session: true });
+      expect(res.headers.get("etag"), method).toBe(fileEtag);
+    }
+  });
+
+  test("after a range request, a trashed model's file is 404", async () => {
+    const { seeded } = await targets();
+    const path = `/files/${seeded.file.id}/download`;
+    const before = await call("GET", path, { session: true, headers: { range: "bytes=0-9" } });
+    expect(before.status).toBe(206);
+    await env.repos.models.trash(seeded.model.id);
+    const after = await call("GET", path, { session: true, headers: { range: "bytes=0-9" } });
+    expect(after.status).toBe(404);
+    expect(after.headers.get("content-range")).toBeNull();
   });
 });
 

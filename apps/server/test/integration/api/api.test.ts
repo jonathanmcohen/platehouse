@@ -199,6 +199,11 @@ beforeAll(async () => {
         if (storeDown) return Promise.reject(new StoreUnavailable("GetObject", "ECONNREFUSED"));
         return env.store.getBlobStream(key);
       },
+      getBlobRange(key, start, end) {
+        getObjects += 1;
+        if (storeDown) return Promise.reject(new StoreUnavailable("GetObject", "ECONNREFUSED"));
+        return env.store.getBlobRange(key, start, end);
+      },
       headBlob(key) {
         headObjects += 1;
         if (storeDown) return Promise.reject(new StoreUnavailable("HeadObject", "ECONNREFUSED"));

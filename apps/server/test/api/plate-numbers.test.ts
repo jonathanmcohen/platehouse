@@ -131,6 +131,9 @@ const unusedStore = {
   getBlobStream: async () => {
     throw new Error("not used");
   },
+  getBlobRange: async () => {
+    throw new Error("not used");
+  },
   headBlob: async () => {
     throw new Error("not used");
   },
