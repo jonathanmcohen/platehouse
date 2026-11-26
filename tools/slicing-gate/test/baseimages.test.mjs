@@ -770,6 +770,19 @@ test("cli leftovers: exit 0 when clean, 1 listing the files when not", () =>
     assert.match(dirty.stderr, /docs\/notes\.md/);
   }));
 
+// The list of files is workflow-command text too: one ::error:: line, with
+// %, CR and LF encoded, so a tracked file's name cannot start a command.
+test("cli leftovers: the refusal is one ::error:: line, the file list encoded", () =>
+  inScratch((dir) => {
+    gitRepo(dir, { ...fakeTexts(), "docs/notes.md": `${hex("b")}\n`, "docs/50%.md": `${hex("b")}\n` });
+    const dirty = cli(dir, ["leftovers", hex("b")]);
+    assert.equal(dirty.status, 1);
+    assert.equal(dirty.stderr.trimEnd().split("\n").length, 1, dirty.stderr);
+    assert.ok(dirty.stderr.startsWith("::error::"), dirty.stderr);
+    assert.ok(dirty.stderr.includes("%0Adocs/50%25.md") || dirty.stderr.includes("docs/50%25.md%0A"), dirty.stderr);
+    assert.ok(dirty.stderr.includes("docs/notes.md"), dirty.stderr);
+  }));
+
 // -------------------------------------------------------------- the workflow
 
 const onBlock = (t) => t.slice(t.indexOf("\non:\n")).split(/\n(?=[a-z])/)[1];

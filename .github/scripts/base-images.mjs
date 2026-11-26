@@ -368,7 +368,7 @@ export function nodeSha(shasumsText, file) {
 }
 
 // Text as workflow-command text: %, CR and LF encoded, so a refusal stays one
-// ::error:: line. The command line's catch applies it, once, to every error.
+// ::error:: line. The command line applies it, once, to every ::error:: text.
 const commandText = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 
 // Status lines that refuse a list even beside a good signature: gpgv has no
@@ -559,7 +559,7 @@ function main([cmd, ...args]) {
       };
       for (const [k, v] of Object.entries(next)) {
         if (!v) {
-          process.stderr.write(`::error::the NEXT_ value for ${k} is not set\n`);
+          process.stderr.write(`::error::${commandText(`the NEXT_ value for ${k} is not set`)}\n`);
           process.exit(2);
         }
       }
@@ -573,7 +573,7 @@ function main([cmd, ...args]) {
       const found = leftovers(root, args);
       if (found.length > 0) {
         process.stderr.write(
-          `::error::these files name a base image or Node digest the rewrite moved, which only ${DIGEST_FILES.join(", ")} may: the weekly base-images run would leave them behind and stop before it pushes. Move the copy to the pin, or teach .github/scripts/base-images.mjs about it:\n${found.join("\n")}\n`,
+          `::error::${commandText(`these files name a base image or Node digest the rewrite moved, which only ${DIGEST_FILES.join(", ")} may: the weekly base-images run would leave them behind and stop before it pushes. Move the copy to the pin, or teach .github/scripts/base-images.mjs about it:\n${found.join("\n")}`)}\n`,
         );
         process.exit(1);
       }
