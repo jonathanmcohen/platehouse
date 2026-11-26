@@ -458,6 +458,8 @@ numbers names its printer in full in `printerName`, such as `Bambu Lab P1S, 0.4 
 STL or STEP file, `previewStatus` is the state of its preview picture (`pending`, `ok` or `failed`,
 or `null` while it has none yet) and `previewMessage` says why the picture failed; both are `null`
 for every other kind of file.
+For a .scad or STEP file, `derivedStatus` is the state of its OpenSCAD render or of its
+conversion to a mesh (`pending`, `ok` or `failed`); it is `null` for STL and 3MF files.
 
 ### Make a model, then add files
 

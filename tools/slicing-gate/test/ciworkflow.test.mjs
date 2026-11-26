@@ -974,11 +974,14 @@ for (const [file, want] of [
   [".github/workflows/release.yml", TESTS],
   [".github/workflows/slicer-image.yml", TESTS],
   [".github/workflows/rc-tag.yml", TESTS],
+  [".github/workflows/release-notes.yml", TESTS],
   [".github/scripts/rc-target.mjs", TESTS],
   [".github/workflows/apt-snapshot.yml", TESTS],
   [".github/scripts/apt-snapshot.mjs", TESTS],
   [".github/workflows/base-images.yml", TESTS],
   [".github/scripts/base-images.mjs", TESTS],
+  [".github/scripts/release-notes.mjs", TESTS],
+  [".github/release-notes-template.md", TESTS],
   ["pnpm-workspace.yaml", TESTS],
   ["e2e/compose.yml", TESTS],
   ["docker/app.Dockerfile", TESTS],
@@ -1216,11 +1219,14 @@ test("gate jobs decision: every file the gate tests read outside tools/slicing-g
     ".github/workflows/release.yml",
     ".github/workflows/slicer-image.yml",
     ".github/workflows/rc-tag.yml",
+    ".github/workflows/release-notes.yml",
     ".github/scripts/rc-target.mjs",
     ".github/workflows/apt-snapshot.yml",
     ".github/scripts/apt-snapshot.mjs",
     ".github/workflows/base-images.yml",
     ".github/scripts/base-images.mjs",
+    ".github/scripts/release-notes.mjs",
+    ".github/release-notes-template.md",
     "pnpm-workspace.yaml",
     "e2e/compose.yml",
     "docker/app.Dockerfile",
@@ -1524,7 +1530,9 @@ function workflowEnv(t) {
 // the step kept in $RUNNER_TEMP/logs and the named files from its directory.
 // runRcStep runs a step of rc-tag.yml the same way.
 const runSlicerStep = (job, stepName, opts) => runWorkflowStep(SLICER, job, stepName, opts);
-function runWorkflowStep(workflow, job, stepName, { env = {}, stubs = [], cwd, setup, files = [] } = {}) {
+// A workflow with no top-level env: block, as docs-pages.yml, opts out with
+// noWorkflowEnv; for every other workflow a missing env: block fails here.
+function runWorkflowStep(workflow, job, stepName, { env = {}, stubs = [], cwd, setup, files = [], noWorkflowEnv = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "workflow-step-"));
   try {
     const work = cwd ?? join(dir, "work");
@@ -1541,7 +1549,7 @@ function runWorkflowStep(workflow, job, stepName, { env = {}, stubs = [], cwd, s
       encoding: "utf8",
       env: {
         PATH: process.env.PATH,
-        ...workflowEnv(t),
+        ...(noWorkflowEnv ? {} : workflowEnv(t)),
         RUNNER_TEMP: dir,
         GITHUB_OUTPUT: out,
         GITHUB_STEP_SUMMARY: summary,
@@ -3012,6 +3020,32 @@ const runRcStep = (job, stepName, opts) => runWorkflowStep(RC_TAG, job, stepName
 const RC_APP = "ghcr.io/jonathanmcohen/platehouse";
 const RC_SLICER = "ghcr.io/jonathanmcohen/platehouse-slicer";
 
+// rc-tag.yml and release-notes.yml run after release and slicer-image, and
+// GitHub matches those by name, so a fork pull request's workflow named
+// release would start them too. Each job that holds a write permission goes on
+// only for a run by hand, or for a run of the real release.yml or
+// slicer-image.yml in this repository, started by a push, by hand or by the
+// schedule. A re-run keeps its event, so it passes as well.
+const FORK_GATE =
+  "github.event_name == 'workflow_dispatch' || (github.event.workflow_run.head_repository.full_name == github.repository && contains(fromJSON('[\"push\",\"workflow_dispatch\",\"schedule\"]'), github.event.workflow_run.event) && contains(fromJSON('[\".github/workflows/release.yml\",\".github/workflows/slicer-image.yml\"]'), github.event.workflow_run.path))";
+// The ids of a workflow's jobs.
+const jobIds = (t) => [...t.slice(t.indexOf("\njobs:\n")).matchAll(/\n {2}([\w-]+):\n/g)].map((m) => m[1]);
+
+for (const [name, file] of [
+  ["rc-tag", join(ROOT, ".github", "workflows", "rc-tag.yml")],
+  ["release-notes", join(ROOT, ".github", "workflows", "release-notes.yml")],
+]) {
+  test(`${name}: every job with a write permission runs only for a run by hand or a run of this repository's own release workflows`, () => {
+    const t = readFileSync(file, "utf8");
+    const writers = jobIds(t).filter((id) => /\n {4}permissions:\n(?: {6}\S.*\n)*? {6}[\w-]+: write\n/.test(jobBlock(t, id)));
+    assert.ok(writers.length > 0, "a job holds a write permission");
+    for (const id of writers) {
+      const job = jobBlock(t, id);
+      assert.ok(job.includes(`\n    if: ${FORK_GATE}\n`), `${id} carries the gate\n${job}`);
+    }
+  });
+}
+
 test("rc-tag: runs after every release or slicer-image run and by hand, one run at a time, never cancelled", () => {
   const t = rcText();
   const on = onBlock(t);
@@ -3030,8 +3064,9 @@ test("rc-tag: runs after every release or slicer-image run and by hand, one run 
   assert.match(job, /\n {4}timeout-minutes: 15\n/);
   assert.match(job, /\n {4}permissions:\n {6}contents: read\n {6}packages: write\n(?! {6}\S)/);
   for (const s of t.matchAll(/secrets\.(\w+)/g)) assert.equal(s[1], "GITHUB_TOKEN", "no secret but the job token");
-  // Never the triggering run's facts: no event payload, no head commit.
-  assert.doesNotMatch(t, /github\.event\b|workflow_run\.|head_sha|github\.sha/);
+  // Never the triggering run's facts: no event payload, no head commit. Only
+  // the fork gate reads where the run came from, to decide whether to run.
+  assert.doesNotMatch(t.replace(`\n    if: ${FORK_GATE}\n`, "\n"), /github\.event\b|workflow_run\.|head_sha|github\.sha/);
   assert.doesNotMatch(stepBlock(job, "Check out"), /\n {10}ref:/, "checks out main, never another commit");
   assert.doesNotMatch(t, /[^\x00-\x7F]/, "ASCII only");
 });
@@ -3316,4 +3351,722 @@ test("rc-tag point: a failure moving the app's rc, the first write, leaves the s
   assert.doesNotMatch(r.calls, new RegExp(`-t ${RC_SLICER}:rc `));
   assert.match(r.log, /::error::could not point ghcr\.io\/jonathanmcohen\/platehouse:rc at sha256:a{64}/);
   assert.match(r.log, /every rc tag it had moved is back where it was/);
+});
+
+// release-notes.yml (#496): once both images of a plain vX.Y.Z tag are out, a
+// draft GitHub Release. Its steps run in bash in a scratch directory holding
+// copies of the scripts and the template, with gh and docker stubbed.
+const RELEASE_NOTES = join(ROOT, ".github", "workflows", "release-notes.yml");
+const notesText = () => readFileSync(RELEASE_NOTES, "utf8");
+const runNotesStep = (job, step, opts) => runWorkflowStep(RELEASE_NOTES, job, step, opts);
+const NOTES_REPO = "jonathanmcohen/platehouse";
+const NOTES_APP = "ghcr.io/jonathanmcohen/platehouse";
+const NOTES_SLICER = "ghcr.io/jonathanmcohen/platehouse-slicer";
+const NOTES_APP_DIGEST = `sha256:${"1".repeat(64)}`;
+const NOTES_SLICER_DIGEST = `sha256:${"2".repeat(64)}`;
+const NOTES_OTHER_DIGEST = `sha256:${"3".repeat(64)}`;
+const withNotesFiles = (work) => {
+  mkdirSync(join(work, ".github", "scripts"), { recursive: true });
+  copyFileSync(join(ROOT, ".github", "scripts", "release-notes.mjs"), join(work, ".github", "scripts", "release-notes.mjs"));
+  copyFileSync(join(ROOT, ".github", "scripts", "rc-target.mjs"), join(work, ".github", "scripts", "rc-target.mjs"));
+  copyFileSync(join(ROOT, ".github", "scripts", "release-gate.mjs"), join(work, ".github", "scripts", "release-gate.mjs"));
+  copyFileSync(join(ROOT, ".github", "release-notes-template.md"), join(work, ".github", "release-notes-template.md"));
+};
+
+test("release-notes: runs after release and slicer-image and by hand, one tag at a time", () => {
+  const t = notesText();
+  assert.match(
+    onBlock(t),
+    /^on:\n {2}workflow_run:\n {4}workflows: \[release, slicer-image\]\n {4}types: \[completed\]\n {2}workflow_dispatch:\n {4}inputs:\n {6}tag:\n {8}description: .+\n {8}required: true\n {8}type: string\n$/,
+  );
+  assert.match(t, /^name: release-notes$/m);
+  // release-notes-<tag> for every run of this repository; a run from a fork
+  // (which the job's gate then skips) gets its own group, so a fork branch
+  // named like a tag never replaces the real run's pending one.
+  assert.ok(
+    t.includes(
+      "\nconcurrency:\n  group: release-notes-${{ github.event.workflow_run.head_branch || inputs.tag }}${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name != github.repository && format('-fork-{0}', github.event.workflow_run.head_repository.full_name) || '' }}\n  cancel-in-progress: false\n",
+    ),
+    t.slice(t.indexOf("\nconcurrency:"), t.indexOf("\nconcurrency:") + 400),
+  );
+  assert.match(t, /^permissions:\n {2}contents: read\n(?! {2}\S)/m);
+  assert.deepEqual(workflowEnv(t), { APP_IMAGE: NOTES_APP, SLICER_IMAGE: NOTES_SLICER });
+  assert.match(t, /\ndefaults:\n {2}run:\n {4}shell: bash\n/);
+  const jobs = [...t.slice(t.indexOf("\njobs:\n")).matchAll(/\n {2}([\w-]+):\n/g)].map((m) => m[1]);
+  assert.deepEqual(jobs, ["draft"]);
+  const job = jobBlock(t, "draft");
+  assert.match(job, /\n {4}name: Open a draft Release once both images are out\n/);
+  assert.match(job, /\n {4}runs-on: ubuntu-24\.04\n/);
+  assert.match(job, /\n {4}timeout-minutes: 15\n/);
+  assert.match(job, /\n {4}permissions:\n {6}contents: write\n {6}packages: read\n(?! {6}\S)/);
+  for (const s of t.matchAll(/secrets\.(\w+)/g)) assert.equal(s[1], "GITHUB_TOKEN", "no secret but the job token");
+  assert.doesNotMatch(stepBlock(job, "Check out"), /\n {10}ref:/, "checks out main, never another commit");
+  assert.doesNotMatch(t, /[^\x00-\x7F]/, "ASCII only");
+});
+
+test("release-notes: every action is pinned to the exact tag rc-tag.yml uses", () => {
+  const pins = (t) => {
+    const out = {};
+    for (const [, u] of t.matchAll(/uses: (\S+ # \S+)/g)) {
+      const [name, tag] = u.split("@");
+      (out[name] ??= new Set()).add(tag);
+    }
+    return out;
+  };
+  const ours = pins(notesText());
+  const rc = pins(rcText());
+  assert.deepEqual(Object.keys(ours).sort(), ["actions/checkout", "actions/setup-node", "docker/login-action", "docker/setup-buildx-action"]);
+  for (const [name, tags] of Object.entries(ours)) assert.deepEqual([...tags], [...rc[name]], name);
+  const job = jobBlock(notesText(), "draft");
+  assert.deepEqual(stepInputs(stepBlock(job, "Check out")).inputs, { "persist-credentials": "false", "sparse-checkout": ".github" });
+  assert.equal(stepInputs(stepBlock(job, "Set up Node")).inputs["node-version-file"], ".node-version");
+  assert.deepEqual(stepInputs(stepBlock(job, "Log in to GHCR")), stepInputs(stepBlock(jobBlock(rcText(), "rc"), "Log in to GHCR")));
+});
+
+test("release-notes: no run block or one-line run expands an expression", () => {
+  const steps = jobSteps(jobBlock(notesText(), "draft")).filter((s) => /\n {8}run: /.test(s));
+  assert.equal(steps.length, 4, "four steps run a script");
+  for (const step of steps) {
+    const script = step.slice(step.search(/\n {8}run: /));
+    assert.doesNotMatch(script, /\$\{\{/, step.split("\n")[0]);
+  }
+});
+
+// The draft is written only when the tag step said go, and only when both
+// images are out.
+test("release-notes: the images step runs only for a release tag, and the draft only when both images are out", () => {
+  const job = jobBlock(notesText(), "draft");
+  assert.ok(stepBlock(job, "Are both images out").includes("\n        if: ${{ steps.tag.outputs.go == 'true' }}\n"));
+  assert.ok(stepBlock(job, "Write the draft").includes("\n        if: ${{ steps.images.outputs.go == 'true' }}\n"));
+  for (const name of ["Run only from main", "Which tag"]) assert.doesNotMatch(stepBlock(job, name), /\n {8}if:/, name);
+});
+
+test("release-notes: the main-only check runs first and refuses any other ref", () => {
+  const steps = jobSteps(jobBlock(notesText(), "draft"));
+  assert.ok(steps[0].startsWith("      - name: Run only from main\n"), steps[0]);
+  assert.equal(runNotesStep("draft", "Run only from main", { env: { REF: "refs/heads/main" } }).status, 0);
+  for (const ref of ["refs/heads/feature", "refs/tags/v0.1.2", "refs/heads/main-x", ""]) {
+    const r = runNotesStep("draft", "Run only from main", { env: { REF: ref } });
+    assert.notEqual(r.status, 0, ref);
+    assert.match(r.log, /::error::.* is not main/);
+  }
+  assert.deepEqual(stepIds(jobBlock(notesText(), "draft")), ["tag", "images", "draft"]);
+});
+
+test("release-notes: the main-only refusal encodes the ref it names", () => {
+  const r = runNotesStep("draft", "Run only from main", { env: { REF: "refs/heads/x%0A::warning::y" } });
+  assert.equal(r.status, 1, r.log);
+  assert.ok(r.log.includes("::error::refs/heads/x%250A::warning::y is not main"), r.log);
+});
+
+// gh answers by its arguments: the tag refs from REFS, the Releases' tags
+// from RELEASES (drafts included, as the job token sees them), the CHANGELOG
+// at TAG from CHANGELOG_FILE, and a release create copies its notes file to
+// notes.md. GH_STATUS makes every call fail.
+const NOTES_GH_STUB = [
+  "gh() {",
+  '  echo "gh $*" >> "$CALLS"',
+  '  if [ "${GH_STATUS:-0}" != 0 ]; then echo "gh: Server Error (HTTP 500)" >&2; return "$GH_STATUS"; fi',
+  '  case "$*" in',
+  '    "api --paginate repos/${REPO}/git/matching-refs/tags/v --jq .[].ref") printf "%s\\n" $REFS ;;',
+  '    "api --paginate repos/${REPO}/releases?per_page=100 --jq .[].tag_name") printf "%s\\n" $RELEASES ;;',
+  '    "api -H Accept: application/vnd.github.raw repos/${REPO}/contents/CHANGELOG.md?ref=refs/tags/${TAG}") cat "$CHANGELOG_FILE" ;;',
+  '    "release create "*)',
+  '      local prev="" a',
+  '      for a in "$@"; do',
+  '        if [ "$prev" = --notes-file ]; then cp "$a" notes.md; fi',
+  '        prev="$a"',
+  "      done ;;",
+  '    *) echo "gh: unexpected call: $*" >&2; return 99 ;;',
+  "  esac",
+  "}",
+];
+// docker answers an inspect from DIGESTS, a list of ref=digest: the digest,
+// or the image JSON from APP_JSON or SLICER_JSON. A ref by digest,
+// image@sha256:..., is found when DIGESTS lists that digest for the image. A
+// ref not listed gets GHCR's "not found"; BROKEN's ref gets another error,
+// BROKEN_TEXT or "ERROR: denied".
+const NOTES_DOCKER_STUB = [
+  "docker() {",
+  '  echo "docker $*" >> "$CALLS"',
+  '  local ref="$4" format="$6" kv digest="" image',
+  '  image="${ref%@*}"',
+  '  image="${image%:*}"',
+  '  if [ -n "$BROKEN" ] && [ "$ref" = "$BROKEN" ]; then printf "%s\\n" "${BROKEN_TEXT:-ERROR: denied}" >&2; return 1; fi',
+  '  for kv in $DIGESTS; do',
+  '    if [ "${kv%%=*}" = "$ref" ]; then digest="${kv#*=}"; fi',
+  '    if [ "${kv%%:*}@${kv#*=}" = "$ref" ]; then digest="${kv#*=}"; fi',
+  "  done",
+  '  if [ -z "$digest" ]; then echo "ERROR: ${ref}: not found" >&2; return 1; fi',
+  '  case "$format" in',
+  '    "{{.Manifest.Digest}}") echo "$digest" ;;',
+  '    "{{json .Image}}") if [ "$image" = "$SLICER_IMAGE" ]; then cat "$SLICER_JSON"; else cat "$APP_JSON"; fi ;;',
+  '    *) echo "docker: unexpected format $format" >&2; return 99 ;;',
+  "  esac",
+  "}",
+];
+
+const whichTag = (env) =>
+  runNotesStep("draft", "Which tag", {
+    stubs: NOTES_GH_STUB,
+    setup: withNotesFiles,
+    files: ["pwned"],
+    env: {
+      EVENT: "workflow_run",
+      RUN_BRANCH: "",
+      INPUT_TAG: "",
+      GH_TOKEN: "x",
+      REPO: NOTES_REPO,
+      REFS: refs("v0.1.0", "v0.1.1", "v0.1.2"),
+      RELEASES: "v0.1.0 v0.1.1",
+      ...env,
+    },
+  });
+
+for (const [name, env, nothingRuns] of [
+  ["the daily slicer run, from main", { RUN_BRANCH: "main" }, true],
+  ["an rc tag", { RUN_BRANCH: "v0.1.2-rc.1" }, true],
+  ["a throwaway tag", { RUN_BRANCH: "v0.0.0-test" }, true],
+  ["a tag that was never pushed", { RUN_BRANCH: "v0.1.2", REFS: refs("v0.1.0", "v0.1.1") }, false],
+  // A draft is in the list the same way as a published Release.
+  ["a tag that has a Release already", { RUN_BRANCH: "v0.1.2", RELEASES: "v0.1.1 v0.1.2" }, false],
+  ["a tag typed by hand with shell in it", { EVENT: "workflow_dispatch", INPUT_TAG: "v0.1.2$(touch pwned)" }, true],
+]) {
+  test(`release-notes which tag: ${name} stops with a notice`, () => {
+    const r = whichTag(env);
+    assert.equal(r.status, 0, r.log);
+    assert.equal(r.outputs.go, "false");
+    assert.match(r.log, /::notice::/);
+    assert.equal(r.outputs.tag, undefined);
+    assert.equal(r.files.pwned, null, "nothing in the tag ran");
+    if (nothingRuns) assert.equal(r.calls, "", "not a release tag: no gh call, so no releases call");
+  });
+}
+
+for (const [name, env] of [
+  ["from the run", { RUN_BRANCH: "v0.1.2" }],
+  ["from the input", { EVENT: "workflow_dispatch", INPUT_TAG: "v0.1.2", RUN_BRANCH: "main" }],
+]) {
+  test(`release-notes which tag: v0.1.2 ${name} goes`, () => {
+    const r = whichTag(env);
+    assert.equal(r.status, 0, r.log);
+    assert.deepEqual(r.outputs, { go: "true", tag: "v0.1.2", version: "0.1.2" });
+    assert.deepEqual(r.calls.trim().split("\n"), [
+      "gh api --paginate repos/jonathanmcohen/platehouse/git/matching-refs/tags/v --jq .[].ref",
+      "gh api --paginate repos/jonathanmcohen/platehouse/releases?per_page=100 --jq .[].tag_name",
+    ]);
+  });
+}
+
+test("release-notes which tag: a failed gh call fails the step", () => {
+  const r = whichTag({ RUN_BRANCH: "v0.1.2", GH_STATUS: "1" });
+  assert.notEqual(r.status, 0, r.log);
+  assert.notEqual(r.outputs.go, "true");
+});
+
+// A crash in the tag check must not read as "not a release tag", which would
+// end the run green with no draft.
+test("release-notes which tag: a crash in the tag check fails the step, never reads as not a release tag", () => {
+  const r = runNotesStep("draft", "Which tag", {
+    stubs: NOTES_GH_STUB,
+    setup: (work) => {
+      withNotesFiles(work);
+      writeFileSync(join(work, ".github", "scripts", "release-notes.mjs"), "process.exit(3);\n");
+    },
+    env: { EVENT: "workflow_run", RUN_BRANCH: "v0.1.2", INPUT_TAG: "", GH_TOKEN: "x", REPO: NOTES_REPO, REFS: refs("v0.1.2"), RELEASES: "" },
+  });
+  assert.notEqual(r.status, 0, r.log);
+  assert.equal(r.outputs.go, undefined);
+  assert.doesNotMatch(r.log, /::notice::/);
+  assert.equal(r.calls, "", "nothing after the check ran");
+});
+
+const imagesOut = (env) =>
+  runNotesStep("draft", "Are both images out", {
+    stubs: NOTES_DOCKER_STUB,
+    env: {
+      VERSION: "0.1.2",
+      BROKEN: "",
+      DIGESTS: `${NOTES_APP}:0.1.2=${NOTES_APP_DIGEST} ${NOTES_SLICER}:0.1.2=${NOTES_SLICER_DIGEST}`,
+      ...env,
+    },
+  });
+
+test("release-notes images: both out gives both digests", () => {
+  const r = imagesOut({});
+  assert.equal(r.status, 0, r.log);
+  assert.deepEqual(r.outputs, { go: "true", app_digest: NOTES_APP_DIGEST, slicer_digest: NOTES_SLICER_DIGEST });
+});
+
+for (const [name, digests] of [
+  ["the app image is not out yet", `${NOTES_SLICER}:0.1.2=${NOTES_SLICER_DIGEST}`],
+  ["the slicer image is not out yet", `${NOTES_APP}:0.1.2=${NOTES_APP_DIGEST}`],
+]) {
+  test(`release-notes images: ${name}: the draft waits for the other run`, () => {
+    const r = imagesOut({ DIGESTS: digests });
+    assert.equal(r.status, 0, r.log);
+    assert.equal(r.outputs.go, "false");
+    assert.match(r.log, /::notice::/);
+  });
+}
+
+test("release-notes images: a registry error other than not found fails", () => {
+  const r = imagesOut({ BROKEN: `${NOTES_SLICER}:0.1.2` });
+  assert.equal(r.status, 1, r.log);
+  assert.match(r.log, /::error::could not tell whether ghcr\.io\/jonathanmcohen\/platehouse-slicer:0\.1\.2 exists/);
+  assert.notEqual(r.outputs.go, "true");
+});
+
+// The registry's text goes to the log with workflow commands stopped, so a
+// line in it that looks like a command is printed, never run.
+const assertStopped = (log, line) => {
+  const lines = log.split("\n");
+  const at = lines.indexOf(line);
+  assert.ok(at > 0, log);
+  const token = lines[at - 1].match(/^::stop-commands::([0-9a-f]{32})$/)?.[1];
+  assert.ok(token, `commands are stopped before the registry's text\n${log}`);
+  assert.ok(lines.slice(at + 1).includes(`::${token}::`), `and started again after it\n${log}`);
+};
+
+test("release-notes images: the registry's text is printed with workflow commands stopped", () => {
+  const r = imagesOut({ BROKEN: `${NOTES_SLICER}:0.1.2`, BROKEN_TEXT: "::error::injected" });
+  assert.equal(r.status, 1, r.log);
+  assertStopped(r.log, "::error::injected");
+});
+
+test("release-notes images: each stop uses a new token", () => {
+  const token = (log) => log.match(/::stop-commands::([0-9a-f]{32})/)?.[1];
+  const a = imagesOut({ BROKEN: `${NOTES_SLICER}:0.1.2` });
+  const b = imagesOut({ BROKEN: `${NOTES_SLICER}:0.1.2` });
+  assert.ok(token(a.log) && token(b.log), a.log);
+  assert.notEqual(token(a.log), token(b.log));
+});
+
+const NOTES_CHANGELOG = [
+  "# Changelog",
+  "",
+  "## [0.1.3] - 2026-12-10",
+  "",
+  "### Fixed",
+  "",
+  "- a backport fix",
+  "",
+  "## [0.1.2] - 2026-12-01",
+  "",
+  "### Fixed",
+  "",
+  "- a fix",
+  "",
+  "## [0.1.1] - 2026-11-24",
+  "",
+].join("\n");
+const notesImage = (platforms, env) =>
+  JSON.stringify(Object.fromEntries(platforms.map((p) => [p, { os: "linux", architecture: p.split("/")[1], config: { Env: env } }])));
+const writeDraft = (env) =>
+  runNotesStep("draft", "Write the draft", {
+    stubs: [...NOTES_GH_STUB, ...NOTES_DOCKER_STUB],
+    files: ["notes.md"],
+    setup: (work) => {
+      withNotesFiles(work);
+      writeFileSync(join(work, "app.json"), notesImage(["linux/amd64", "linux/arm64"], ["PATH=/usr/bin"]));
+      writeFileSync(join(work, "slicer.json"), notesImage(["linux/amd64"], ["PATH=/usr/bin", "ORCA_VERSION=2.5.2"]));
+      writeFileSync(join(work, "changelog.md"), NOTES_CHANGELOG);
+    },
+    env: {
+      TAG: "v0.1.2",
+      VERSION: "0.1.2",
+      APP_DIGEST: NOTES_APP_DIGEST,
+      SLICER_DIGEST: NOTES_SLICER_DIGEST,
+      GH_TOKEN: "x",
+      REPO: NOTES_REPO,
+      GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_REPOSITORY: NOTES_REPO,
+      REFS: refs("v0.1.0", "v0.1.1", "v0.1.2"),
+      RELEASES: "",
+      BROKEN: "",
+      APP_JSON: "app.json",
+      SLICER_JSON: "slicer.json",
+      CHANGELOG_FILE: "changelog.md",
+      DIGESTS: `${NOTES_APP}:0.1.2=${NOTES_APP_DIGEST} ${NOTES_SLICER}:0.1.2=${NOTES_SLICER_DIGEST} ${NOTES_APP}:latest=${NOTES_APP_DIGEST}`,
+      ...env,
+    },
+  });
+const releaseCreates = (calls) => calls.split("\n").filter((c) => c.startsWith("gh release create"));
+const appRow = (notes) => notes.split("\n").find((l) => l.startsWith(`| \`${NOTES_APP}\` |`));
+
+test("release-notes draft: the highest release gets one draft, with latest, and says to publish it as latest", () => {
+  const r = writeDraft({});
+  assert.equal(r.status, 0, r.log);
+  const creates = releaseCreates(r.calls);
+  assert.equal(creates.length, 1, r.calls);
+  assert.match(
+    creates[0],
+    /^gh release create v0\.1\.2 --repo jonathanmcohen\/platehouse --draft --verify-tag --title Platehouse 0\.1\.2 --notes-file \S+$/,
+  );
+  const notes = r.files["notes.md"];
+  assert.ok(notes, "the notes file was handed to gh");
+  assert.ok(notes.includes(NOTES_APP_DIGEST), notes);
+  assert.ok(notes.includes(NOTES_SLICER_DIGEST), notes);
+  assert.ok(notes.includes("`0.1.2`, `latest`"), notes);
+  assert.ok(notes.includes("OrcaSlicer 2.5.2"), notes);
+  assert.ok(notes.includes("/compare/v0.1.1...v0.1.2"), notes);
+  assert.ok(!notes.includes("{{"), notes);
+  assert.ok(r.summary.includes("--latest=true"), r.summary);
+  assert.ok(!r.summary.includes("--latest=false"), r.summary);
+  assert.ok(r.summary.includes(NOTES_APP_DIGEST) && r.summary.includes(NOTES_SLICER_DIGEST), r.summary);
+});
+
+test("release-notes draft: a backport lists only its version tag and says to publish with --latest=false", () => {
+  const r = writeDraft({
+    TAG: "v0.1.3",
+    VERSION: "0.1.3",
+    REFS: refs("v0.1.0", "v0.1.1", "v0.1.2", "v0.2.0", "v0.1.3"),
+    DIGESTS: `${NOTES_APP}:0.1.3=${NOTES_APP_DIGEST} ${NOTES_SLICER}:0.1.3=${NOTES_SLICER_DIGEST} ${NOTES_APP}:latest=${NOTES_OTHER_DIGEST}`,
+  });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(releaseCreates(r.calls).length, 1, r.calls);
+  const notes = r.files["notes.md"];
+  assert.equal(appRow(notes).split(" | ")[1], "`0.1.3`");
+  assert.ok(notes.includes("/compare/v0.1.2...v0.1.3"), notes);
+  assert.ok(r.summary.includes("--latest=false"), r.summary);
+  assert.ok(!r.summary.includes("--latest=true"), r.summary);
+});
+
+test("release-notes draft: no latest tag at all lists only the version tag", () => {
+  const r = writeDraft({ DIGESTS: `${NOTES_APP}:0.1.2=${NOTES_APP_DIGEST} ${NOTES_SLICER}:0.1.2=${NOTES_SLICER_DIGEST}` });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(appRow(r.files["notes.md"]).split(" | ")[1], "`0.1.2`");
+});
+
+test("release-notes draft: a registry error reading latest fails before any Release is made", () => {
+  const r = writeDraft({ BROKEN: `${NOTES_APP}:latest` });
+  assert.notEqual(r.status, 0, r.log);
+  assert.match(r.log, /::error::/);
+  assert.deepEqual(releaseCreates(r.calls), []);
+});
+
+test("release-notes draft: the registry's text reading latest is printed with workflow commands stopped", () => {
+  const r = writeDraft({ BROKEN: `${NOTES_APP}:latest`, BROKEN_TEXT: "::error::injected" });
+  assert.notEqual(r.status, 0, r.log);
+  assertStopped(r.log, "::error::injected");
+});
+
+// The platforms and the Orca version come from the very builds whose digests
+// the table lists, not from the version tags, which a later run can move.
+test("release-notes draft: the image facts are read by digest, never by tag", () => {
+  const r = writeDraft({});
+  assert.equal(r.status, 0, r.log);
+  const reads = r.calls.split("\n").filter((c) => c.includes("{{json .Image}}"));
+  assert.deepEqual(reads, [
+    `docker buildx imagetools inspect ${NOTES_APP}@${NOTES_APP_DIGEST} --format {{json .Image}}`,
+    `docker buildx imagetools inspect ${NOTES_SLICER}@${NOTES_SLICER_DIGEST} --format {{json .Image}}`,
+  ]);
+});
+
+// The CHANGELOG is read at the tag, named as a tag, so a branch of the same
+// name cannot stand in for it.
+test("release-notes draft: the CHANGELOG is read at refs/tags/<tag>", () => {
+  const r = writeDraft({});
+  assert.equal(r.status, 0, r.log);
+  assert.ok(
+    r.calls.includes("gh api -H Accept: application/vnd.github.raw repos/jonathanmcohen/platehouse/contents/CHANGELOG.md?ref=refs/tags/v0.1.2"),
+    r.calls,
+  );
+});
+
+// Whether to publish as latest is worked out before the draft is made, so a
+// failure there never leaves a draft without its summary.
+test("release-notes draft: a failure working out latest fails before any Release is made", () => {
+  const r = runNotesStep("draft", "Write the draft", {
+    stubs: [...NOTES_GH_STUB, ...NOTES_DOCKER_STUB],
+    setup: (work) => {
+      withNotesFiles(work);
+      writeFileSync(join(work, ".github", "scripts", "release-gate.mjs"), "process.exit(2);\n");
+      writeFileSync(join(work, "app.json"), notesImage(["linux/amd64", "linux/arm64"], ["PATH=/usr/bin"]));
+      writeFileSync(join(work, "slicer.json"), notesImage(["linux/amd64"], ["PATH=/usr/bin", "ORCA_VERSION=2.5.2"]));
+      writeFileSync(join(work, "changelog.md"), NOTES_CHANGELOG);
+    },
+    env: {
+      TAG: "v0.1.2",
+      VERSION: "0.1.2",
+      APP_DIGEST: NOTES_APP_DIGEST,
+      SLICER_DIGEST: NOTES_SLICER_DIGEST,
+      GH_TOKEN: "x",
+      REPO: NOTES_REPO,
+      GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_REPOSITORY: NOTES_REPO,
+      REFS: refs("v0.1.0", "v0.1.1", "v0.1.2"),
+      RELEASES: "",
+      BROKEN: "",
+      APP_JSON: "app.json",
+      SLICER_JSON: "slicer.json",
+      CHANGELOG_FILE: "changelog.md",
+      DIGESTS: `${NOTES_APP}:0.1.2=${NOTES_APP_DIGEST} ${NOTES_SLICER}:0.1.2=${NOTES_SLICER_DIGEST} ${NOTES_APP}:latest=${NOTES_APP_DIGEST}`,
+    },
+  });
+  assert.notEqual(r.status, 0, r.log);
+  assert.deepEqual(releaseCreates(r.calls), []);
+  assert.equal(r.summary, "");
+});
+
+test("RELEASING.md describes the draft Release", () => {
+  const readme = readFileSync(join(ROOT, "RELEASING.md"), "utf8");
+  for (const line of [
+    `latest="$(gh api --paginate repos/jonathanmcohen/platehouse/git/matching-refs/tags/v --jq '.[].ref' | sed -n 's#^refs/tags/##p' | node .github/scripts/release-gate.mjs latest vX.Y.Z)"`,
+    'gh release edit vX.Y.Z --draft=false --latest="$latest"',
+    "Actions, release-notes, Run workflow",
+  ]) {
+    assert.ok(readme.includes(line), line);
+  }
+});
+
+// docs-pages.yml (#499): the docs site publishes only from the highest plain
+// vX.Y.Z release tag, on its push or by hand, or by hand from main while
+// main's version is that release. Its decision step runs in bash like the
+// steps above.
+const DOCS_PAGES = join(ROOT, ".github", "workflows", "docs-pages.yml");
+const docsText = () => readFileSync(DOCS_PAGES, "utf8");
+const DOCS_IF = "if: ${{ steps.ref.outputs.publish == 'true' }}";
+// gh answers the tag refs from REFS; GH_STATUS makes every call fail.
+const DOCS_GH_STUB = [
+  "gh() {",
+  '  echo "gh $*" >> "$CALLS"',
+  '  if [ "${GH_STATUS:-0}" != 0 ]; then echo "gh: Server Error (HTTP 500)" >&2; return "$GH_STATUS"; fi',
+  '  case "$*" in',
+  '    "api --paginate repos/${REPO}/git/matching-refs/tags/v --jq .[].ref") printf "%s\\n" $REFS ;;',
+  '    *) echo "gh: unexpected call: $*" >&2; return 99 ;;',
+  "  esac",
+  "}",
+];
+// git answers the remote branches holding SHA from BRANCHES, one per line as
+// git prints them; GIT_STATUS makes the call fail.
+const DOCS_GIT_STUB = [
+  "git() {",
+  '  echo "git $*" >> "$CALLS"',
+  '  if [ "${GIT_STATUS:-0}" != 0 ]; then echo "fatal: malformed object name" >&2; return "$GIT_STATUS"; fi',
+  '  case "$*" in',
+  '    "branch -r --contains ${SHA}") printf "%s\\n" "$BRANCHES" ;;',
+  '    *) echo "git: unexpected call: $*" >&2; return 99 ;;',
+  "  esac",
+  "}",
+];
+const DOCS_SHA = "a".repeat(40);
+// The step reads the root package.json's version, from VERSION.
+const runDocsStep = (env) =>
+  runWorkflowStep(DOCS_PAGES, "build", "Which ref to publish", {
+    noWorkflowEnv: true,
+    stubs: [...DOCS_GH_STUB, ...DOCS_GIT_STUB],
+    setup: (work) => {
+      withGateScripts(work);
+      writeFileSync(join(work, "package.json"), JSON.stringify({ name: "platehouse", version: env.VERSION ?? "0.1.1" }));
+    },
+    env: {
+      GH_TOKEN: "x",
+      REPO: "jonathanmcohen/platehouse",
+      SHA: DOCS_SHA,
+      REFS: refs("v0.1.0", "v0.1.1", "v0.1.2-rc.1", "v0.0.0-test"),
+      BRANCHES: "  origin/main",
+      ...env,
+    },
+  });
+
+test("docs-pages: publishes on a release tag push and by hand, never on a branch push", () => {
+  const on = onBlock(docsText());
+  assert.match(on, /^on:\n {2}push:\n {4}tags:\n {6}- "v\*\.\*\.\*"\n {2}workflow_dispatch:\n$/, on);
+  assert.doesNotMatch(on, /branches:/);
+  assert.doesNotMatch(on, /paths:/);
+  assert.doesNotMatch(on, /pull_request/);
+});
+
+test("docs-pages: the deploy job runs only when the build decided to publish", () => {
+  const t = docsText();
+  const build = jobBlock(t, "build");
+  assert.doesNotMatch(build, /\n {4}if:/, "the build job always runs, so its first steps can decide");
+  assert.ok(build.includes("\n    outputs:\n      publish: ${{ steps.ref.outputs.publish }}\n"), build);
+  const deploy = jobBlock(t, "deploy");
+  assert.ok(deploy.includes("\n    needs: build\n    if: ${{ needs.build.outputs.publish == 'true' }}\n"), deploy);
+  const names = jobSteps(build).map((s) => s.match(/^ {6}- name: (.+)\n/)[1]);
+  const at = names.indexOf("Which ref to publish");
+  assert.ok(at > names.indexOf("Set up Node") && names.indexOf("Set up Node") !== -1, names.join(", "));
+  assert.deepEqual(names.slice(at + 1), ["Configure Pages", "Install", "Build the docs site", "Upload the site"]);
+  for (const name of names.slice(at + 1)) assert.ok(stepBlock(build, name).includes(`\n        ${DOCS_IF}\n`), name);
+  for (const name of names.slice(0, at + 1)) assert.ok(!stepBlock(build, name).includes(DOCS_IF), name);
+  assert.match(stepBlock(build, "Which ref to publish"), /\n {8}id: ref\n/);
+});
+
+// Each ref builds in its own group, so a later rc or throwaway tag's run never
+// drops a release tag's waiting run; deploys go one at a time and are never
+// cancelled.
+test("docs-pages: builds are grouped by ref, and deploys share one group that is never cancelled", () => {
+  const t = docsText();
+  assert.doesNotMatch(t, /^concurrency:/m, "no workflow-level group");
+  assert.ok(jobBlock(t, "build").includes("\n    concurrency:\n      group: docs-pages-build-${{ github.ref }}\n"), jobBlock(t, "build"));
+  assert.ok(
+    jobBlock(t, "deploy").includes("\n    concurrency:\n      group: docs-pages-deploy\n      cancel-in-progress: false\n"),
+    jobBlock(t, "deploy"),
+  );
+});
+
+// A run that publishes nothing skips Install, so the pnpm store is never on
+// disk, and setup-node's post step fails the job on a cache miss.
+test("docs-pages: Set up Node keeps no cache, so a run that publishes nothing stays green", () => {
+  const step = stepBlock(jobBlock(docsText(), "build"), "Set up Node");
+  assert.equal(stepInputs(step).inputs["node-version-file"], ".node-version");
+  assert.doesNotMatch(step, /\n {10}cache:/, step);
+});
+
+test("docs-pages: no run block expands an expression", () => {
+  const steps = jobSteps(jobBlock(docsText(), "build")).filter((s) => /\n {8}run: /.test(s));
+  assert.equal(steps.length, 3, "the decision, the install and the build run a script");
+  for (const step of steps) {
+    const script = step.slice(step.search(/\n {8}run: /));
+    assert.doesNotMatch(script, /\$\{\{/, step.split("\n")[0]);
+  }
+});
+
+for (const [name, env] of [
+  ["a push of the highest release tag", { EVENT: "push", REF: "refs/tags/v0.1.1" }],
+  ["a run by hand from main at the highest release", { EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: "0.1.1" }],
+  ["a run by hand from the highest release tag", { EVENT: "workflow_dispatch", REF: "refs/tags/v0.1.1" }],
+]) {
+  test(`docs-pages which ref: ${name} publishes`, () => {
+    const r = runDocsStep(env);
+    assert.equal(r.status, 0, r.log);
+    assert.deepEqual(r.outputs, { publish: "true" }, "publish is the one output, and the deploy job reads it");
+    assert.ok(r.summary.includes(env.REF), r.summary);
+  });
+}
+
+for (const [name, tag] of [
+  ["an rc tag", "v0.1.2-rc.1"],
+  ["a throwaway tag", "v0.0.0-test"],
+  ["a backport below the highest release", "v0.1.0"],
+]) {
+  test(`docs-pages which ref: a push of ${name} publishes nothing, with a notice, and the run stays green`, () => {
+    const r = runDocsStep({ EVENT: "push", REF: `refs/tags/${tag}` });
+    assert.equal(r.status, 0, r.log);
+    assert.equal(r.outputs.publish, "false");
+    assert.match(r.log, /::notice::/);
+    assert.ok(r.log.includes(tag), r.log);
+  });
+}
+
+test("docs-pages which ref: a run by hand from main ahead of the highest release refuses, naming both", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: "0.1.2" });
+  assert.equal(r.status, 1, r.log);
+  assert.match(r.log, /::error::.*0\.1\.2.*ahead of the highest release \(v0\.1\.1\)/);
+  assert.doesNotMatch(r.log, /behind/);
+  assert.notEqual(r.outputs.publish, "true");
+});
+
+// A release can be tagged on a release/** branch before it merges to main,
+// and then main is behind it, not ahead.
+for (const [name, version, tags] of [
+  ["a release tagged before it reached main", "0.1.0", ["v0.1.0", "v0.1.1"]],
+  ["a version that never had a tag", "0.0.9", ["v0.1.0", "v0.1.1"]],
+]) {
+  test(`docs-pages which ref: a run by hand from main behind the highest release refuses and says behind: ${name}`, () => {
+    const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: version, REFS: refs(...tags) });
+    assert.equal(r.status, 1, r.log);
+    assert.match(r.log, new RegExp(`::error::.*${version.replaceAll(".", "\\.")}.*behind the highest release \\(v0\\.1\\.1\\)`));
+    assert.doesNotMatch(r.log, /ahead/);
+    assert.notEqual(r.outputs.publish, "true");
+  });
+}
+
+test("docs-pages which ref: a run by hand from main with no release yet says main is ahead", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: "0.1.0", REFS: refs("v0.1.0-rc.1") });
+  assert.equal(r.status, 1, r.log);
+  assert.match(r.log, /::error::.*0\.1\.0.*ahead of the highest release \(none\)/);
+});
+
+test("the step harness refuses a workflow without an env: block unless the caller opts out", () => {
+  assert.throws(() => runWorkflowStep(DOCS_PAGES, "build", "Which ref to publish", {}), /a top-level env: block/);
+});
+
+test("docs-pages which ref: a run by hand from main with a version that is not X.Y.Z refuses", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: "0.1" });
+  assert.equal(r.status, 1, r.log);
+  assert.match(r.log, /::error::/);
+  assert.notEqual(r.outputs.publish, "true");
+});
+
+test("docs-pages which ref: a run by hand from a tag that is not the highest release refuses", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/tags/v0.1.2-rc.1" });
+  assert.equal(r.status, 1, r.log);
+  assert.match(r.log, /::error::/);
+  assert.notEqual(r.outputs.publish, "true");
+});
+
+test("docs-pages which ref: a run by hand from another branch refuses", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/release/v0.1.2" });
+  assert.equal(r.status, 1, r.log);
+  assert.match(r.log, /::error::.*refs\/heads\/release\/v0\.1\.2 is neither/);
+  assert.notEqual(r.outputs.publish, "true");
+});
+
+// As release.yml: a tag publishes only a commit that is on main or a
+// release/** branch, so a release tag pushed on an unmerged commit does not
+// put that commit's docs live.
+test("docs-pages: the checkout holds every branch, so the branch check sees them", () => {
+  const build = jobBlock(docsText(), "build");
+  assert.equal(stepInputs(stepBlock(build, "Check out")).inputs["fetch-depth"], "0");
+  assert.ok(stepBlock(build, "Which ref to publish").includes("\n          SHA: ${{ github.sha }}\n"));
+});
+
+for (const [name, branches] of [
+  ["a release branch", "  origin/release/v0.1.1"],
+  ["main and a release branch", "  origin/main\n  origin/release/v0.1.1"],
+]) {
+  test(`docs-pages which ref: the highest release tag on a commit on ${name} publishes`, () => {
+    const r = runDocsStep({ EVENT: "push", REF: "refs/tags/v0.1.1", BRANCHES: branches });
+    assert.equal(r.status, 0, r.log);
+    assert.equal(r.outputs.publish, "true");
+    assert.ok(r.calls.includes(`git branch -r --contains ${DOCS_SHA}`), r.calls);
+  });
+}
+
+for (const [name, branches] of [
+  ["only a feature branch", "  origin/feature/docs"],
+  ["no branch at all", ""],
+  ["a branch whose name only starts with main", "  origin/main-old"],
+  ["a branch named release without a slash", "  origin/release"],
+]) {
+  for (const event of ["push", "workflow_dispatch"]) {
+    test(`docs-pages which ref: a ${event} of the highest release tag on a commit on ${name} refuses`, () => {
+      const r = runDocsStep({ EVENT: event, REF: "refs/tags/v0.1.1", BRANCHES: branches });
+      assert.equal(r.status, 1, r.log);
+      assert.match(r.log, new RegExp(`::error::.*${DOCS_SHA}.* neither origin/main nor an origin/release/ branch`));
+      assert.notEqual(r.outputs.publish, "true");
+    });
+  }
+}
+
+test("docs-pages which ref: a failed branch lookup fails the step, never publishes", () => {
+  const r = runDocsStep({ EVENT: "push", REF: "refs/tags/v0.1.1", GIT_STATUS: "128" });
+  assert.notEqual(r.status, 0, r.log);
+  assert.equal(r.outputs.publish, undefined);
+});
+
+test("docs-pages which ref: a run by hand from main does not look up branches", () => {
+  const r = runDocsStep({ EVENT: "workflow_dispatch", REF: "refs/heads/main", VERSION: "0.1.1", GIT_STATUS: "128" });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(r.outputs.publish, "true");
+});
+
+test("docs-pages which ref: a failed tags call fails the step", () => {
+  const r = runDocsStep({ EVENT: "push", REF: "refs/tags/v0.1.1", GH_STATUS: "1" });
+  assert.equal(r.status, 1, r.log);
+  assert.equal(r.outputs.publish, undefined);
+});
+
+test("RELEASING.md says how the docs site is published", () => {
+  const readme = readFileSync(join(ROOT, "RELEASING.md"), "utf8");
+  for (const line of [
+    "gh api -X POST repos/jonathanmcohen/platehouse/environments/github-pages/deployment-branch-policies -f name='v*.*.*' -f type=tag",
+    "### Publishing a docs fix",
+    "Actions, docs-pages, Run workflow",
+  ]) {
+    assert.ok(readme.includes(line), line);
+  }
 });

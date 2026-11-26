@@ -17,17 +17,17 @@ pnpm --filter @platehouse/docs serve    # serve the built site
 
 ## Where it is published
 
-`.github/workflows/docs-pages.yml` publishes the site to GitHub Pages whenever a change to
-`docs/`, `apps/docs/`, `apps/web/public/` (the icons the site serves from it) or
-`pnpm-lock.yaml` lands on `main`, and it can be run by hand from the
-Actions tab (docs-pages, Run workflow, on `main`). Pull requests do not publish anything; the
-ci workflow's "Docs build" job is their check.
+`.github/workflows/docs-pages.yml` publishes the site to GitHub Pages when the highest release
+is tagged, so the site describes the latest release. A docs fix between releases is published
+by hand from main (Actions, docs-pages, Run workflow, branch `main`), which works only while
+main's version is the highest release. Pull requests and merges publish nothing; the ci
+workflow's "Docs build" job is the pull requests' check.
 
-**GitHub Pages has to be switched on once before the workflow can publish:** in the repository,
-open Settings, Pages, and under Build and deployment set Source to **GitHub Actions**. Until then
-the workflow's "Configure Pages" step fails. Once it is on, run the workflow by hand (or push a
-docs change) to publish. The address of the published site is shown on that Settings page and
-on each run's deploy job.
+**GitHub Pages has to be set up once before the workflow can publish:** in the repository, open
+Settings, Pages, and under Build and deployment set Source to **GitHub Actions**, and give the
+github-pages environment a deployment rule for `v*.*.*` tags. [RELEASING.md](../../RELEASING.md)
+has the steps. The address of the published site is shown on the Pages settings page and on
+each run's deploy job.
 
 ## The site's address
 

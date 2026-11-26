@@ -781,8 +781,9 @@ const FILE = {
     derivedStatus: {
       ...nullableString,
       description:
-        "For .scad and STEP files, the preview render: pending, ok or failed. Null for " +
-        "other kinds.",
+        "For .scad files, the OpenSCAD render; for STEP files, the conversion to a mesh: " +
+        "pending, ok or failed. Null for STL and 3MF files. The preview picture is " +
+        "previewStatus.",
     },
     derivedMessage: {
       ...nullableString,

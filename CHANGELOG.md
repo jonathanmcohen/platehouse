@@ -6,9 +6,23 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ## [0.1.2] - unreleased
 
+### Added
+
+- Each release now gets a GitHub Release page. Once both images of a release are published, a workflow opens a draft with the images, their digests and the changelog links filled in, and the maintainer completes and publishes it ([#496](https://github.com/jonathanmcohen/platehouse/issues/496)).
+
+### Changed
+
+- The docs site now publishes when a release is tagged, so it describes the latest release and not unreleased work. A docs fix between releases is published by hand ([#499](https://github.com/jonathanmcohen/platehouse/issues/499)).
+- The weekly base image update checks the signature on Node's checksum list against the Node release keys before it proposes a new Node version ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
+
 ### Fixed
 
 - The wait shown for each printer on My printers, and after saving the list, no longer counts slicer work that will never run: a second job for the plate being sliced now, or a job left over for a plate that was already estimated. It could read one or more plates too high ([#490](https://github.com/jonathanmcohen/platehouse/issues/490)).
+- The API reference said derivedStatus is the preview render of a STEP file. It is the conversion to a mesh; the preview picture is previewStatus ([#501](https://github.com/jonathanmcohen/platehouse/issues/501)).
+- The docs now cover more cases ([#498](https://github.com/jonathanmcohen/platehouse/issues/498)):
+  - on Docker Engine older than 26.0.0, other than the 25.0.5 and 23.0.11 patch releases (24.x has no fix), the slicer can still look up outside names when the host uses a local resolver;
+  - the sandbox can be off on Linux 6.12 or newer, when Landlock is turned off, Docker blocks it, or the kernel lacks its 2025 Landlock fix (6.12 before 6.12.24, 6.13 before 6.13.12, 6.14 before 6.14.3);
+  - how to tell which, from the slicer's log.
 
 ## [0.1.1] - 2026-11-24
 

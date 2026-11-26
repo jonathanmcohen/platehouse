@@ -22,8 +22,9 @@
 # changes job, only when docs/, apps/docs, apps/web/public (the icons it
 # serves), the workspace files its install reads, this workflow or
 # .node-version changes. It only builds, at the placeholder address: it is
-# the pull-request check, and nothing here is deployed. Publishing to GitHub Pages is docs-pages.yml, on main only.
-# Nothing depends on it.
+# the pull-request check, and nothing here is deployed. docs-pages.yml
+# publishes the site to GitHub Pages, from the highest release tag. Nothing
+# depends on it.
 #
 # The two slicing gate jobs keep their own path scoping, decided by the changes
 # job (issue #222). The gate tests are quick, so they run when tools/slicing-gate
@@ -96,11 +97,12 @@ jobs:
       # The tests list holds tools/slicing-gate and every file the gate tests
       # read from outside it (issue #222), all in
       # tools/slicing-gate/test/ciworkflow.test.mjs, rctarget.test.mjs,
-      # aptsnapshot.test.mjs and baseimages.test.mjs: this workflow,
-      # .node-version, release.yml, slicer-image.yml, rc-tag.yml,
-      # apt-snapshot.yml, base-images.yml, docs-pages.yml,
+      # aptsnapshot.test.mjs, baseimages.test.mjs and releasenotes.test.mjs:
+      # this workflow, .node-version, release.yml, slicer-image.yml, rc-tag.yml,
+      # apt-snapshot.yml, base-images.yml, docs-pages.yml, release-notes.yml,
       # .github/scripts/rc-target.mjs, .github/scripts/apt-snapshot.mjs,
       # .github/scripts/base-images.mjs, .github/scripts/release-gate.mjs,
+      # .github/scripts/release-notes.mjs, .github/release-notes-template.md,
       # pnpm-workspace.yaml (the overrides test in baseimages.test.mjs),
       # e2e/compose.yml (the Node image the weekly base-images run moves),
       # docker/app.Dockerfile, docker/check-image-labels.sh (the slicer
@@ -135,7 +137,7 @@ jobs:
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|base-images|docs-pages)\.yml$|\.github/scripts/(rc-target|apt-snapshot|base-images|release-gate)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|docker/app\.Dockerfile\.dockerignore$|pnpm-workspace\.yaml$|tsconfig\.json$|tools/brand/tsconfig\.json$|e2e/compose\.yml$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|RELEASING\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|base-images|docs-pages|release-notes)\.yml$|\.github/scripts/(rc-target|apt-snapshot|base-images|release-gate|release-notes)\.mjs$|\.github/release-notes-template\.md$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|docker/app\.Dockerfile\.dockerignore$|pnpm-workspace\.yaml$|tsconfig\.json$|tools/brand/tsconfig\.json$|e2e/compose\.yml$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|RELEASING\.md$|CHANGELOG\.md$)' <<<"$changed"; then
               echo "The slicing gate or a file its tests read changed; the gate tests run."
             else
               tests=false

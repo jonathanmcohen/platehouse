@@ -1,6 +1,10 @@
 ---
 description: What protects Platehouse, from sign-in and API tokens to the slicer sandbox, and where the limits are.
+mdx:
+  format: mdx
 ---
+
+import AllowlistWarning from "./reverse-proxy/_allowlist-warning.md";
 
 # Security
 
@@ -29,49 +33,7 @@ Wi-Fi, and look at the client address the proxy logs for that request. It must b
 public address, and the device must get `403`. Any address of your own (router, `127.0.0.1` or
 `::1`, Docker) means the allowlist is not seeing visitors. When the proxy runs in Docker:
 
-- **Let the proxy see real addresses.** If the proxy runs in Docker and you use an allowlist, prefer
-  `network_mode: host` (Docker Engine on Linux), or run it on the host. With host networking, point
-  the proxy at the host upstream (`127.0.0.1:3000`, with the app's port published on loopback only
-  by uncommenting the `ports:` lines in the example Compose file), and make sure nothing else the
-  proxy listens on, such as Traefik's dashboard on 8080, is exposed. If every visitor, LAN and
-  outside, shows the same address (Docker's bridge pools, Swarm's overlay pools in `10.0.0.0/8`, and
-  Docker Desktop's `192.168.65.0/24`), do not add that address to the allowlist; the allowlist
-  cannot work on this setup. That is the case on Docker Desktop (macOS and Windows), with rootless
-  Docker's builtin port driver before RootlessKit 3.0, with rootless Podman and with Swarm ingress.
-  Run the proxy on the host, or with `network_mode: host`. For rootless Docker, set
-  `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns` and
-  `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns`, or
-  `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=pasta` with `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=implicit`
-  (with RootlessKit 3.0 or newer, the default `builtin` driver with `"userland-proxy": false` also
-  works). See the rootless mode troubleshooting page in Docker's documentation. For Swarm publish
-  with `mode: host`. On Docker Desktop use a VPN rather than an allowlist.
-- **Do not allow Docker's networks.** Never allow `172.16.0.0/12`, `192.168.0.0/16` or `10.0.0.0/8`
-  whole: Docker's default pools lie inside them (Docker Desktop uses `192.168.65.0/24`). For IPv6
-  never allow `fc00::/7` or `fd00::/8`; allow only your LAN's own /64. Allow only your own networks,
-  such as `192.168.1.0/24` for a home network and `10.8.0.0/24` for a VPN (placeholders: use yours).
-  Check that no entry overlaps a Docker network:
-
-  ```bash
-  docker network inspect $(docker network ls -q) -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{.Gateway}} {{end}}'
-  ```
-- **Test IPv6 from the host's addresses, not from DNS.** On the host, run `ip -6 addr show scope
-  global`. If it lists an address, test from outside even with no AAAA record:
-
-  ```bash
-  curl -6 -sI --resolve platehouse.example.com:443:[<host IPv6>] https://platehouse.example.com/
-  ```
-
-  Expect `403` or no connection.
-- **Docker's userland proxy.** Where it applies, it can replace a visitor's address with the bridge
-  gateway's: for IPv6 visitors when the proxy's Docker network has no IPv6, and for connections from
-  the host itself. Set `"userland-proxy": false` in `/etc/docker/daemon.json` (rootless Docker: `~/.config/docker/daemon.json`). Real IPv6 addresses
-  need Docker Engine 27 or newer, where `ip6tables` is on by default; upgrade an older engine first.
-  Restart Docker, then recreate the proxy container (`docker compose up -d --force-recreate`, then
-  the proxy's service name). The example Compose file's `proxy` network is IPv4 only. `enable_ipv6:
-  true` applies only to networks Compose creates; the example's `proxy` network is external, so use
-  `docker network create --ipv6 proxy` and reconnect the containers. A refused IPv6 connection after
-  `"userland-proxy": false` without that step is expected and safe; it is not a reason to undo the
-  change.
+<AllowlistWarning />
 
 The [proxy checklist](./reverse-proxy/checklist.md#7-the-proxy-sees-each-visitors-real-address)
 has the same check.
@@ -319,9 +281,16 @@ container, the slicer, which is locked down.
 - **No internet.** The slicer sits on an internal Docker network shared only with the app, so it
   cannot open connections to the internet. You can confirm it: from the slicer,
   `docker exec platehouse-slicer getent hosts example.com` should fail, and so should a connection
-  to an outside address. Depending on your Docker and firewall setup, an internal network may still
-  reach ports the host itself listens on through the network's gateway address, so check that too
-  and do not leave services on the host that trust any caller. To close that path, do one of these:
+  to an outside address. The name lookup should fail on Docker Engine 26.0.0 or newer, or the
+  25.0.5 or 23.0.11 patch releases (24.x has no fix); see which one you run with
+  `docker version --format '{{.Server.Version}}'`. On an older engine the lookup can still answer
+  when the host uses a local resolver such as systemd-resolved, while connections still fail. That
+  lets a crafted file send data out through DNS. The fix is to upgrade Docker. Until you can,
+  Docker's advisory gives a workaround: set a DNS server for the slicer (`dns:` on its service in
+  Compose), so its lookups are made from the slicer's own network, where the internal network
+  stops them. Depending on your Docker and firewall setup, an internal network may still reach
+  ports the host itself listens on through the network's gateway address, so check that too and
+  do not leave services on the host that trust any caller. To close that path, do one of these:
   - add a firewall rule on the host that drops traffic from the slicer network's subnet to the
     host's own addresses, or
   - create the slicer network with the bridge option `com.docker.network.bridge.inhibit_ipv4`,
@@ -357,15 +326,16 @@ container, the slicer, which is locked down.
   the files it writes itself, such as the slice's time and memory report, in the job folder above
   it, out of OrcaSlicer's reach.
 - **The sandbox is checked first.** At start-up the slicer checks that the sandbox really blocks a
-  read outside the job folder, and runs no render, slice or STEP conversion until that check
-  passes. It needs Linux 6.12 or newer (Landlock ABI 6). On an older kernel, or while the check
-  fails, renders and STL pictures are off. Slices and STEP conversions are off too, unless
-  `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer: then they run without the sandbox, with only
-  the limits above and the container's own isolation. Without the sandbox, a slice or STEP
-  conversion can also read and change other files the slicer's user can reach, including
-  leftovers of earlier jobs, reach the app over the internal network and send signals to the
-  slicer's own processes. A program that keeps running after its job can also read or change later
-  jobs' files, other members' files included.
+  read outside the job folder, and runs no render, slice or STEP conversion until that check passes.
+  It needs Linux 6.12 or newer (Landlock ABI 6). The sandbox can also be off on a newer kernel; see
+  [The sandbox is off on a new kernel](./troubleshooting.md#the-sandbox-is-off-on-a-new-kernel). On
+  an older kernel, or while the check fails, renders and STL pictures are off. Slices and STEP
+  conversions are off too, unless `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer: then they
+  run without the sandbox, with only the limits above and the container's own isolation. Without the
+  sandbox, a slice or STEP conversion can also read and change other files the slicer's user can
+  reach, including leftovers of earlier jobs, reach the app over the internal network and send
+  signals to the slicer's own processes. A program that keeps running after its job can also read or
+  change later jobs' files, other members' files included.
 
 **What it does not do:**
 

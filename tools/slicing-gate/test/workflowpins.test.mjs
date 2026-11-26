@@ -1,8 +1,10 @@
 // Pins every GitHub Action in .github/workflows to a commit SHA (issue #420)
-// and holds the small build-hygiene fixes of issue #473: the docs-pages path
-// filter, release.yml's runner image, the LICENSE in the app image, tools/brand
-// in the root tsconfig and a docker compose config check in CI. The workflows
-// are read as text, like the other workflow tests; nothing runs on GitHub.
+// and holds the small build-hygiene fixes of issue #473: release.yml's runner
+// image, the LICENSE in the app image, tools/brand in the root tsconfig and a
+// docker compose config check in CI. (#473's docs-pages path filter went with
+// #499: docs-pages runs on release tags; ciworkflow.test.mjs pins its triggers.)
+// The workflows are read as text, like the other workflow tests; nothing runs
+// on GitHub.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -70,14 +72,6 @@ test("one action is pinned to one SHA and one tag across all workflows", () => {
     }
   }
   for (const [name, pins] of Object.entries(byAction)) assert.equal(pins.size, 1, `${name}: ${[...pins].join(" | ")}`);
-});
-
-test("docs-pages rebuilds when the workspace manifest, lockfile or Node version changes (#473)", () => {
-  const t = workflow("docs-pages.yml");
-  const paths = t.slice(t.indexOf("    paths:\n")).split("\n  workflow_dispatch")[0];
-  for (const p of ["package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", ".node-version"]) {
-    assert.ok(paths.includes(`      - "${p}"\n`), `${p} is in the path filter`);
-  }
 });
 
 test("release.yml runs on ubuntu-24.04, never ubuntu-latest, at every job and build runner (#473)", () => {

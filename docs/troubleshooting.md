@@ -54,12 +54,12 @@ and never logs a secret, token or slicer link.
   away), or when the server no longer knows the upload. Look for the model in the library before
   sending the file again: it often appears once the import finishes. If it is still missing after
   an hour, press **Retry**.
-- **"The server is out of room for uploads"**: the server refused the upload with 507.
-  Unfinished uploads already hold `UPLOAD_TEMP_MAX_BYTES` together, `TMP_DIR` already holds
-  10,000 uploads, or this one would leave the disk under `TMP_DIR` with less than 1 GiB free or
-  fewer than 10,000 free inodes. The free space counts the bytes other unfinished uploads are
-  still to receive, so a 507 can come while the disk still shows room. Nothing was saved.
-  The server logs each refusal with the session or token it was for:
+- **"The server is out of room for uploads"**: the server refused the upload with 507, because
+  the total of unfinished uploads, the 10,000 uploads or the free disk or inodes under `TMP_DIR`
+  ran out (the rules are in [Upload limits](./storage.md#upload-limits)). Nothing was saved. A 507
+  can come while the disk still shows room, because the free space counts the bytes other
+  unfinished uploads are still to receive. The server logs each refusal with the session or token
+  it was for:
   - For `UPLOAD_TEMP_MAX_BYTES`, the line also names the three users holding the most bytes.
     Free space on that disk or raise `UPLOAD_TEMP_MAX_BYTES` in `.env`, or wait for their uploads
     to finish or be removed. A `docker-compose.yml` copied before the example passed this setting
@@ -70,19 +70,17 @@ and never logs a secret, token or slicer link.
     are kept for a day after their import, so this clears as they age out.
   - For the free space or inodes, it names no one: free space on the disk under `TMP_DIR`.
 
-  **Retry** may also work once other uploads have finished. See
-  [Storage](./storage.md#what-is-stored-where).
+  **Retry** may also work once other uploads have finished.
 - **"Too many of your uploads are unfinished"**: the server refused the upload with 429, because
-  your session already has 20 uploads that have not finished. Nothing was saved.
-  The dialog sends three at a time, so the others are usually in another tab or were left by an
-  earlier batch that stopped part way. An unfinished upload is deleted an hour after it was
-  created if it has received nothing, and 24 hours after otherwise. Let the others finish, then
-  press **Retry**.
+  your session already has 20 uploads that have not finished (see
+  [Upload limits](./storage.md#upload-limits)). Nothing was saved. The dialog sends three at a
+  time, so the others are usually in another tab or were left by an earlier batch that stopped
+  part way. Let the others finish, then press **Retry**.
 - **"You have sent a great many files recently"**: the server refused the upload with 429,
   because your session or API token already has 2,000 uploads on the server, finished ones
-  included. A finished upload's record is kept for a day after its import, so this clears by
-  itself: try again tomorrow. Nothing was saved. Whoever runs Platehouse can see it in the
-  server's log, which names the session or token refused.
+  included (see [Upload limits](./storage.md#upload-limits)). This clears by itself: try again
+  tomorrow. Nothing was saved. Whoever runs Platehouse can see it in the server's log, which names
+  the session or token refused.
 - **"No Bambu plate data in this file"**: the `.3mf` was stored, but Platehouse could not read plate
   data from it. It may be damaged, not a Bambu or OrcaSlicer project, or over one of the safety
   limits (for example more than 128 plates).
@@ -138,12 +136,14 @@ inbox waits and tries again, and the log says an outage started and ended.
   (`http://platehouse-slicer:8080` in the example), or the slicer image may be older than the app
   (see above).
 - **"Estimates are off on this server: its kernel is older than Linux 6.12."** or **"Estimates are
-  off on this server: its sandbox check failed."**: the slicer's sandbox is off, so it refused to
-  slice. The plate is recorded as failed once, with that sentence under **Details**, and is not
-  tried again while the sandbox stays off. Upgrade the host's kernel to Linux 6.12 or newer, or, if
-  you accept slicing without the sandbox, set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer. Once
-  the slicer reports its sandbox on (or allowed without it), the plates it refused are estimated
-  again automatically, at most 50 on each Orca version check; no need to press **Retry**.
+  off on this server: its sandbox check failed."**: If the host already runs Linux 6.12 or newer,
+  see [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel) first. The
+  slicer's sandbox is off, so it refused to slice. The plate is recorded as failed once, with that
+  sentence under **Details**, and is not tried again while the sandbox stays off. Otherwise,
+  upgrade the host's kernel to Linux 6.12 or newer, or, if you accept slicing without the sandbox,
+  set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer. Once the slicer reports its sandbox on (or
+  allowed without it), the plates it refused are estimated again automatically, at most 50 on each
+  Orca version check; no need to press **Retry**.
 
 OrcaSlicer refusals, shown on the plate with OrcaSlicer's own message behind **Details**:
 
@@ -166,20 +166,24 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
 ## Renders and STEP files
 
 - **"Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12."**:
-  the slicer's sandbox is off because the host kernel has no Landlock ABI 6, so the slicer refuses
-  STL pictures, STEP files' preview pictures and OpenSCAD renders, and the files keep their icon.
-  Upgrade the host to Linux 6.12 or newer and restart the slicer. The files are picked up again by
-  themselves once the slicer reports its sandbox on. `SLICER_ALLOW_UNSANDBOXED` does not cover
-  these.
+  If the host already runs Linux 6.12 or newer, see
+  [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel) first. The slicer's
+  sandbox is off because the slicer found no Landlock ABI 6 or newer, on an old kernel or for one
+  of the reasons in that section, so the slicer refuses STL pictures, STEP files' preview pictures
+  and OpenSCAD renders, and the files keep their icon. Otherwise, upgrade the host to Linux 6.12 or
+  newer and restart the slicer. The files are picked up again by themselves once the slicer
+  reports its sandbox on. `SLICER_ALLOW_UNSANDBOXED` does not cover these.
 - **"Pictures and OpenSCAD renders are off on this server: its sandbox check failed."**: the
   kernel is new enough, but the slicer's check of its sandbox failed, for example because the
   slicer's container settings were changed from the example. The slicer's log says what failed,
   and it checks again by itself, after a minute at first and then less often. Restore the example's
   settings; the files are picked up again once the check passes.
-- **"STEP previews are off on this server: its kernel is older than Linux 6.12."**: the same
-  kernel limit, for converting a STEP file to the mesh its 3D preview and picture are made from.
-  Upgrade the host's kernel to Linux 6.12 or newer, or, if you accept converting STEP files
-  without the sandbox, set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer (see
+- **"STEP previews are off on this server: its kernel is older than Linux 6.12."**: If the host
+  already runs Linux 6.12 or newer, see
+  [The sandbox is off on a new kernel](#the-sandbox-is-off-on-a-new-kernel) first. The same kernel
+  limit, for converting a STEP file to the mesh its 3D preview and picture are made from.
+  Otherwise, upgrade the host's kernel to Linux 6.12 or newer, or, if you accept converting STEP
+  files without the sandbox, set `SLICER_ALLOW_UNSANDBOXED=true` on the slicer (see
   [Security](./security.md#the-slicer-sandbox) for what that gives up). The files are picked up
   again once conversions can run.
 - **"STEP previews are off on this server: its sandbox check failed."**: the same as the sandbox
@@ -204,6 +208,52 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
   refused the request (wrong key permissions, missing bucket). Check the storage settings.
 - **A render error with OpenSCAD's own message**: the `.scad` file itself has a problem; the message
   is OpenSCAD's.
+
+## The sandbox is off on a new kernel
+
+The slicer turns its sandbox off when the Landlock ABI it finds is below 6. On a kernel of Linux
+6.12 or newer that has three causes, each below with how to recognise it and the fix.
+
+### Landlock is turned off in the kernel
+
+The kernel's list of security modules lacks `landlock`. Check on the host:
+
+```sh
+cat /sys/kernel/security/lsm
+```
+
+If `landlock` is not in the list, add `lsm=landlock,...` to the kernel command line, keeping the
+modules already listed, and reboot. Or use a kernel that turns it on. When it works, `dmesg` shows
+"landlock: Up and running".
+
+### Docker blocks Landlock
+
+Docker Engine older than 20.10.18 has a default seccomp profile that blocks the three Landlock
+calls, and so does a custom seccomp profile that leaves them out. Upgrade Docker, or fix the
+profile. The example Compose file sets no seccomp option, so remove one you added. Do not use
+`seccomp=unconfined` or `privileged` to get around it: add the three `landlock_*` calls
+(`landlock_create_ruleset`, `landlock_add_rule` and `landlock_restrict_self`) to your seccomp
+profile, or remove the custom profile.
+
+### A kernel without the 2025 Landlock fix
+
+The sandbox needs a Landlock fix from 2025. It is in Linux 6.12.24, 6.13.12, 6.14.3 and 6.15 or
+newer. The slicer finds ABI 5 on 6.12 before 6.12.24, 6.13 before 6.13.12 and 6.14 before 6.14.3.
+Update the kernel. A distribution kernel, such as Ubuntu's, keeps a base version like `6.14.0-...`
+and carries fixes in its own updates, so `uname -r` cannot tell you; the slicer's log can.
+
+### Which case it is
+
+Read the slicer's self-test line:
+
+```sh
+docker logs platehouse-slicer 2>&1 | grep 'sandbox self-test'
+```
+
+It names the Landlock ABI. ABI 0 is one of the first two cases: run `cat /sys/kernel/security/lsm`
+on the host, and if it lacks `landlock` the kernel has it turned off, otherwise Docker is blocking
+it. ABI 5 is the third case. `dmesg | grep landlock` on the host shows whether the kernel started
+Landlock. After the fix, restart the slicer; the files it refused are picked up again by themselves.
 
 ## Downloads and slicer links
 

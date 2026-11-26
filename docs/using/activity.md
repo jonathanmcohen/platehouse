@@ -50,7 +50,9 @@ stored error text before showing it.
   - **Sandbox: off.** with the reason: the server's kernel is older than Linux 6.12, or the
     sandbox check failed. Pictures, OpenSCAD renders, STEP previews and estimates are then off.
     With `SLICER_ALLOW_UNSANDBOXED=true` on the slicer, a second line says that estimates and STEP
-    previews still run, without the sandbox, while pictures and OpenSCAD renders stay off.
+    previews still run, without the sandbox, while pictures and OpenSCAD renders stay off. On a
+    kernel of Linux 6.12 or newer the reason can be wrong; see
+    [The sandbox is off on a new kernel](../troubleshooting.md#the-sandbox-is-off-on-a-new-kernel).
 
   The slicer reports itself healthy whether its sandbox is on or off, so this line, not
   `docker compose ps`, is where to check it. With no sandbox line, the slicer did not answer, or

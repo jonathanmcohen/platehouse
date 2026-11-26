@@ -11,20 +11,26 @@ This page walks through a first install with the example files in the repository
 ## What you need
 
 - **A Linux host with Docker and Docker Compose v2.** The app image is built for amd64 and arm64.
-  The slicer image is amd64 only, so the host must be amd64.
+  The slicer image is amd64 only, so the host must be amd64. Use Docker Engine 26.0 or newer.
+  Older engines from 20.10.18 run Platehouse, but see [Security](./security.md#the-slicer-sandbox)
+  (DNS) and [Troubleshooting](./troubleshooting.md#the-sandbox-is-off-on-a-new-kernel) (Landlock).
 - **CPU and memory.** The example gives the slicer 4 CPUs and 4 GiB, and the app 2 CPUs and
   2 GiB, plus whatever Postgres needs. The heaviest plate measured so far used about 2.5 GiB of
   memory while slicing.
-- **A Linux kernel with Landlock ABI 6 or newer** (Linux 6.12 or newer). Check it on the host
-  with `uname -r`: the version it prints must be 6.12 or higher. Pictures of STL and STEP files,
-  OpenSCAD renders, STEP conversions (for the 3D preview) and estimates all run inside the slicer's
-  sandbox, which needs it. The slicer checks the sandbox when it starts and refuses that work when
-  the kernel is too old; the files then keep their icon, and say why. The slicer still reports
-  itself healthy, so `docker compose ps` does not show this: check the sandbox on the Activity page
-  after the first start (see [7. Sign in](#7-sign-in)). The fix is a newer kernel. Setting
-  `SLICER_ALLOW_UNSANDBOXED=true` on the slicer lets estimates and STEP conversions run without the
-  sandbox on an older kernel, which means slicing and converting untrusted files with no sandbox
-  around OrcaSlicer and the STEP converter; read
+- **A Linux kernel with Landlock ABI 6 or newer.** That is Linux 6.12 or newer, updated: 6.12.24,
+  6.13.12, 6.14.3, or 6.15 and later. Landlock must be turned on (`/sys/kernel/security/lsm` lists
+  `landlock`), on Docker Engine 20.10.18 or newer. `uname -r` shows the kernel version, but a
+  distribution kernel can carry the fix under an older-looking version, so the Activity page is the
+  real check. Pictures of STL and STEP files, OpenSCAD renders, STEP conversions (for the 3D
+  preview) and estimates all run inside the slicer's sandbox, which needs it. The slicer checks the
+  sandbox when it starts and refuses that work when the kernel is too old; the files then keep their
+  icon, and say why. The slicer still reports itself healthy, so `docker compose ps` does not show
+  this: check the sandbox on the Activity page after the first start (see [7. Sign in](#7-sign-in)).
+  The fix is a newer kernel; see
+  [Troubleshooting](./troubleshooting.md#the-sandbox-is-off-on-a-new-kernel) for the other causes.
+  Setting `SLICER_ALLOW_UNSANDBOXED=true` on the slicer lets estimates and STEP conversions run
+  without the sandbox on an older kernel, which means slicing and converting untrusted files with no
+  sandbox around OrcaSlicer and the STEP converter; read
   [Security](./security.md#the-slicer-sandbox) first. It never covers pictures or OpenSCAD renders,
   which need the sandbox. When the kernel is upgraded and the slicer restarts, the files it refused
   are picked up again by themselves.

@@ -80,6 +80,11 @@ defaults:
 jobs:
   rc:
     name: Point rc at the newest fully published release
+    # Only a run by hand, or a run of this repository's own release.yml or
+    # slicer-image.yml started by a push, by hand or by the schedule (a re-run
+    # keeps its event). workflow_run matches workflows by name, so without this
+    # a fork pull request's workflow named release would start this job.
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.head_repository.full_name == github.repository && contains(fromJSON('["push","workflow_dispatch","schedule"]'), github.event.workflow_run.event) && contains(fromJSON('[".github/workflows/release.yml",".github/workflows/slicer-image.yml"]'), github.event.workflow_run.path))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

@@ -6,7 +6,8 @@
 // anything or runs a workflow on GitHub.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -18,6 +19,10 @@ import {
   FILES,
   GATE_DOCKERFILE,
   GATE_README,
+  NODE_KEYRING_URL,
+  NODE_RELEASE_KEY_FINGERPRINTS,
+  NODE_RELEASE_KEYRING_SHA256,
+  NODE_RELEASE_KEYS_COMMIT,
   NODE_VERSION_FILE,
   ROOT_README,
   SLICER_DOCKERFILE,
@@ -27,6 +32,7 @@ import {
   nodeSha,
   readPins,
   rewritePins,
+  verifySignedShasums,
 } from "../../../.github/scripts/base-images.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -333,6 +339,257 @@ test("nodeSha: refuses a file that is not listed, listed twice, or listed with a
   assert.throws(() => nodeSha("abc  node-v1-linux-x64.tar.xz\n", "node-v1-linux-x64.tar.xz"), /sha256 abc is not 64 hex digits/);
 });
 
+// ------------------------------------- the signature on SHASUMS256.txt
+//
+// The fixtures in support/node-release-keys come from two throwaway keys, A
+// and B, made once with GnuPG 2.5 and then thrown away (no private key is
+// kept anywhere). keyring.gpg is A's public key; SHASUMS256.txt.asc is the
+// body below clearsigned by A; SHASUMS256.other-key.txt.asc is the same body
+// clearsigned by B, which is not in the keyring; SHASUMS256.tampered.txt.asc
+// is A's file with the first 3 of its signed text changed to a 5. Run in
+// bash, with the fixture folder as $out:
+//
+//   work="$(mktemp -d)"
+//   uid='Platehouse test key <test@example.invalid>'
+//   printf '%s  node-v26.2.0-linux-x64.tar.xz\n%s  node-v26.1.0-linux-x64.tar.xz\n' \
+//     "$(printf '3%.0s' $(seq 64))" "$(printf '4%.0s' $(seq 64))" >"$work/body.txt"
+//   for k in a b; do
+//     mkdir -m 700 "$work/$k"
+//     gpg --homedir "$work/$k" --batch --passphrase '' --quick-generate-key "$uid" rsa3072 sign never
+//     gpg --homedir "$work/$k" --batch --passphrase '' --pinentry-mode loopback \
+//       --clearsign --digest-algo SHA256 -o "$work/$k.asc" "$work/body.txt"
+//   done
+//   gpg --homedir "$work/a" --export >"$out/keyring.gpg"
+//   cp "$work/a.asc" "$out/SHASUMS256.txt.asc"
+//   cp "$work/b.asc" "$out/SHASUMS256.other-key.txt.asc"
+//   awk '!done && /^3/ { sub(/^3/, "5"); done = 1 } 1' "$work/a.asc" >"$out/SHASUMS256.tampered.txt.asc"
+//   gpgconf --homedir "$work/a" --kill all; gpgconf --homedir "$work/b" --kill all; rm -rf "$work"
+//
+// Two more throwaway keys, C and D, each with its own keyring, give a good
+// signature from a key gpgv still accepts but must not be trusted: C expired
+// the day after it signed (made and used with a faked clock on 2020-01-01),
+// and D's own revocation is in its keyring. SHASUMS256.unsigned.txt.asc is
+// the body alone, a list with its signature stripped. The same $work body:
+//
+//   mkdir -m 700 "$work/c" "$work/d"
+//   gpg --homedir "$work/c" --batch --passphrase '' --faked-system-time '20200101T000000!' \
+//     --quick-generate-key "$uid" rsa3072 sign 1d
+//   gpg --homedir "$work/c" --batch --passphrase '' --pinentry-mode loopback \
+//     --faked-system-time '20200101T010000!' --clearsign --digest-algo SHA256 -o "$work/c.asc" "$work/body.txt"
+//   gpg --homedir "$work/c" --export >"$out/keyring.expired-key.gpg"
+//   cp "$work/c.asc" "$out/SHASUMS256.expired-key.txt.asc"
+//   gpg --homedir "$work/d" --batch --passphrase '' --quick-generate-key "$uid" rsa3072 sign never
+//   gpg --homedir "$work/d" --batch --passphrase '' --pinentry-mode loopback \
+//     --clearsign --digest-algo SHA256 -o "$work/d.asc" "$work/body.txt"
+//   fpr="$(gpg --homedir "$work/d" --with-colons --list-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+//   sed 's/^:-----BEGIN/-----BEGIN/' "$work/d/openpgp-revocs.d/$fpr.rev" | gpg --homedir "$work/d" --batch --import
+//   gpg --homedir "$work/d" --export >"$out/keyring.revoked-key.gpg"
+//   cp "$work/d.asc" "$out/SHASUMS256.revoked-key.txt.asc"
+//   cp "$work/body.txt" "$out/SHASUMS256.unsigned.txt.asc"
+//
+// The tests that run gpgv skip, with the reason, only where gpgv is missing
+// and CI is not set; on CI they always run.
+const GPGV = spawnSync("gpgv", ["--version"]).status === 0;
+const needGpgv = { skip: GPGV || process.env.CI ? false : "gpgv is not installed; CI runs this" };
+const FIX = join(dirname(fileURLToPath(import.meta.url)), "support", "node-release-keys");
+const FIX_KEYRING = join(FIX, "keyring.gpg");
+const FIX_SHA = createHash("sha256").update(readFileSync(FIX_KEYRING)).digest("hex");
+const fixture = (name) => join(FIX, name);
+// Key A's primary fingerprint, the one key the fixture lists are allowed.
+const FIX_FINGERPRINT = "F544558457442FAD4B028F013A9A958C556307AD";
+// Key B's, which signed the other-key list and is in no keyring here.
+const OTHER_FINGERPRINT = "A50CDA10D1308275BCE3F26A7830B79213DB0255";
+// Keys C (expired) and D (revoked), each alone in its own keyring.
+const EXPIRED_FINGERPRINT = "0295FA15418B5FF0E1285685A8BDE02B6FC0AD5F";
+const REVOKED_FINGERPRINT = "7DDD32F6C882E4F569C557997223BA07F4164FEE";
+const FINGERPRINTS_LINE = /export const NODE_RELEASE_KEY_FINGERPRINTS = \[[^\]]*\];/;
+// base-images.mjs with its keyring pin and fingerprint allowlist moved to the
+// fixture key, for the command line and the workflow step, which read both
+// from the script.
+const scriptPinnedToFixture = () => {
+  const original = readFileSync(SCRIPT, "utf8");
+  const withRing = original.replace(NODE_RELEASE_KEYRING_SHA256, FIX_SHA);
+  assert.notEqual(withRing, original, "the keyring pin was replaced");
+  const pinned = withRing.replace(FINGERPRINTS_LINE, `export const NODE_RELEASE_KEY_FINGERPRINTS = ["${FIX_FINGERPRINT}"];`);
+  assert.notEqual(pinned, withRing, "the fingerprint allowlist was replaced");
+  return pinned;
+};
+const verifyFixture = (name, more = {}) =>
+  verifySignedShasums({ ascPath: fixture(name), keyringPath: FIX_KEYRING, keyringSha256: FIX_SHA, fingerprints: [FIX_FINGERPRINT], ...more });
+// A stand-in gpgv: prints body on stdout, writes status (lines without the
+// [GNUPG:] prefix) to the status fd 3, and exits with exit.
+const fakeGpgv = (dir, { body = "", status = [], exit = 0 }) => {
+  const path = join(dir, "fake-gpgv");
+  writeFileSync(join(dir, "fake-body"), body);
+  writeFileSync(join(dir, "fake-status"), status.map((l) => `[GNUPG:] ${l}\n`).join(""));
+  writeFileSync(path, `#!/bin/bash\ncat "${dir}/fake-body"\ncat "${dir}/fake-status" >&3\nexit ${exit}\n`, { mode: 0o755 });
+  return path;
+};
+
+test("verifySignedShasums: a list signed by an allowed key in the keyring gives its text", needGpgv, () => {
+  const text = verifyFixture("SHASUMS256.txt.asc");
+  assert.equal(nodeSha(text, "node-v26.2.0-linux-x64.tar.xz"), hex("3"));
+});
+
+test("verifySignedShasums: a good signature from a key in the keyring but not in the allowlist is refused", needGpgv, () => {
+  assert.throws(
+    () => verifyFixture("SHASUMS256.txt.asc", { fingerprints: [OTHER_FINGERPRINT] }),
+    (e) => e.message.includes(FIX_FINGERPRINT) && /not in NODE_RELEASE_KEY_FINGERPRINTS/.test(e.message),
+  );
+  assert.throws(
+    () => verifySignedShasums({ ascPath: fixture("SHASUMS256.txt.asc"), keyringPath: FIX_KEYRING, keyringSha256: FIX_SHA }),
+    /not in NODE_RELEASE_KEY_FINGERPRINTS/,
+    "the default allowlist is Node's releasers, not the fixture key",
+  );
+});
+
+test("verifySignedShasums: anything but exactly one good signature is refused, and stdout is not used", () =>
+  inScratch((dir) => {
+    const body = `${hex("3")}  node-v26.2.0-linux-x64.tar.xz\n`;
+    const valid = `VALIDSIG ${FIX_FINGERPRINT} 2026-11-25 1795639258 0 4 0 1 8 01 ${FIX_FINGERPRINT}`;
+    const run = (fake) => () => verifyFixture("SHASUMS256.txt.asc", { gpgv: fakeGpgv(dir, fake) });
+    assert.equal(run({ body, status: ["NEWSIG", valid] })(), body, "one allowed VALIDSIG and exit 0 is the one shape accepted");
+    assert.throws(run({ body, status: ["NEWSIG", valid, "NEWSIG", valid] }), /2 good signatures, not 1/);
+    assert.throws(run({ body, status: [] }), /0 good signatures, not 1/);
+    assert.throws(run({ body, status: ["NEWSIG", valid], exit: 1 }), /does not verify \(gpgv exit 1\)/);
+  }));
+
+test("verifySignedShasums: lines outside the signed block are not in the text", needGpgv, () =>
+  inScratch((dir) => {
+    const asc = join(dir, "SHASUMS256.txt.asc");
+    const added = (v) => `${hex("9")}  node-v${v}-linux-x64.tar.xz\n`;
+    writeFileSync(asc, `${added("26.3.0")}${readFileSync(fixture("SHASUMS256.txt.asc"), "utf8")}${added("26.4.0")}`);
+    const text = verifySignedShasums({ ascPath: asc, keyringPath: FIX_KEYRING, keyringSha256: FIX_SHA, fingerprints: [FIX_FINGERPRINT] });
+    assert.equal(nodeSha(text, "node-v26.2.0-linux-x64.tar.xz"), hex("3"));
+    assert.doesNotMatch(text, /26\.3\.0|26\.4\.0/);
+  }));
+
+test("verifySignedShasums: a tampered list does not verify, and gives no text", needGpgv, () => {
+  assert.throws(() => verifyFixture("SHASUMS256.tampered.txt.asc"), /SHASUMS256\.txt\.asc does not verify \(gpgv exit \d+\)/);
+});
+
+// gpgv has no trust model: it exits 0 for a good signature from an expired or
+// revoked key, and only its status lines say so.
+for (const [name, key, fingerprint, code] of [
+  ["an expired key", "expired-key", EXPIRED_FINGERPRINT, "EXPKEYSIG"],
+  ["a revoked key", "revoked-key", REVOKED_FINGERPRINT, "REVKEYSIG"],
+]) {
+  test(`verifySignedShasums: a good signature from ${name} is refused, even with the key allowed`, needGpgv, () => {
+    const ring = fixture(`keyring.${key}.gpg`);
+    assert.throws(
+      () =>
+        verifySignedShasums({
+          ascPath: fixture(`SHASUMS256.${key}.txt.asc`),
+          keyringPath: ring,
+          keyringSha256: createHash("sha256").update(readFileSync(ring)).digest("hex"),
+          fingerprints: [fingerprint],
+        }),
+      new RegExp(`SHASUMS256\\.txt\\.asc is refused: gpgv reported ${code}`),
+    );
+  });
+}
+
+test("verifySignedShasums: a bad, expired, revoked or errored signature beside a good one is refused", () =>
+  inScratch((dir) => {
+    const body = `${hex("3")}  node-v26.2.0-linux-x64.tar.xz\n`;
+    const valid = `VALIDSIG ${FIX_FINGERPRINT} 2026-11-25 1795639258 0 4 0 1 8 01 ${FIX_FINGERPRINT}`;
+    for (const line of [
+      "EXPKEYSIG 3A9A958C556307AD Platehouse test key",
+      "REVKEYSIG 3A9A958C556307AD Platehouse test key",
+      "EXPSIG 3A9A958C556307AD Platehouse test key",
+      "BADSIG 3A9A958C556307AD Platehouse test key",
+      "ERRSIG 3A9A958C556307AD 1 8 01 1795639258 4 -",
+    ]) {
+      const gpgv = fakeGpgv(dir, { body, status: ["NEWSIG", line, valid] });
+      assert.throws(
+        () => verifyFixture("SHASUMS256.txt.asc", { gpgv }),
+        new RegExp(`is refused: gpgv reported ${line.split(" ")[0]}`),
+        line,
+      );
+    }
+  }));
+
+test("verifySignedShasums: a gpgv killed by a signal names the signal", () =>
+  inScratch((dir) => {
+    const gpgv = join(dir, "killed-gpgv");
+    writeFileSync(gpgv, "#!/bin/bash\nkill -KILL $$\n", { mode: 0o755 });
+    assert.throws(() => verifyFixture("SHASUMS256.txt.asc", { gpgv }), /does not verify \(gpgv exit SIGKILL\)/);
+  }));
+
+// The issuer named in a signature is whatever its maker wrote there, and can
+// be a subkey, so the refusal says it is a claim and sends the maintainer to
+// RELEASING.md, never to a lookup of that key.
+test("verifySignedShasums: a list signed by a key not in the keyring names the claimed issuer as unverified, never a commit", needGpgv, () => {
+  assert.throws(
+    () => verifyFixture("SHASUMS256.other-key.txt.asc"),
+    (e) =>
+      e.message.includes(
+        `claims to be signed by key ${OTHER_FINGERPRINT} (the signature's issuer field; may be a subkey; not verified)`,
+      ) &&
+      /RELEASING\.md, "Node release keys"/.test(e.message) &&
+      !/README/.test(e.message) &&
+      !e.message.includes(NODE_RELEASE_KEYS_COMMIT) &&
+      !/[0-9a-f]{40}/.test(e.message),
+  );
+});
+
+test("verifySignedShasums: with no issuer fingerprint, the refusal names NO_PUBKEY's key ID", () =>
+  inScratch((dir) => {
+    const keyIdOnly = fakeGpgv(dir, { status: ["NEWSIG", "ERRSIG 7830B79213DB0255 1 8 01 1795639258 9 -", "NO_PUBKEY 7830B79213DB0255"], exit: 2 });
+    assert.throws(() => verifyFixture("SHASUMS256.txt.asc", { gpgv: keyIdOnly }), /claims to be signed by key 7830B79213DB0255 /);
+  }));
+
+test("verifySignedShasums: a keyring that is not the pinned one is refused before gpgv runs", () => {
+  assert.throws(
+    () =>
+      verifySignedShasums({
+        ascPath: fixture("SHASUMS256.txt.asc"),
+        keyringPath: FIX_KEYRING,
+        keyringSha256: hex("0"),
+        gpgv: "/nonexistent/gpgv",
+      }),
+    (e) => /has sha256 [0-9a-f]{64}, not the pinned 0{64}/.test(e.message) && !/not installed/.test(e.message),
+  );
+});
+
+test("verifySignedShasums: a gpgv that cannot start says gpgv is not installed", () => {
+  assert.throws(() => verifyFixture("SHASUMS256.txt.asc", { gpgv: "/nonexistent/gpgv" }), /gpgv is not installed/);
+});
+
+test("the Node release keyring is pinned to a commit of nodejs/release-keys, a sha256 and its keys' fingerprints", () => {
+  assert.match(NODE_RELEASE_KEYS_COMMIT, /^[0-9a-f]{40}$/);
+  assert.match(NODE_RELEASE_KEYRING_SHA256, /^[0-9a-f]{64}$/);
+  assert.equal(NODE_KEYRING_URL, `https://raw.githubusercontent.com/nodejs/release-keys/${NODE_RELEASE_KEYS_COMMIT}/gpg-only-active-keys/pubring.kbx`);
+  assert.ok(NODE_RELEASE_KEY_FINGERPRINTS.length > 0);
+  for (const f of NODE_RELEASE_KEY_FINGERPRINTS) assert.match(f, /^[0-9A-F]{40}$/);
+  assert.equal(new Set(NODE_RELEASE_KEY_FINGERPRINTS).size, NODE_RELEASE_KEY_FINGERPRINTS.length, "no fingerprint twice");
+  assert.ok(!NODE_RELEASE_KEY_FINGERPRINTS.includes(FIX_FINGERPRINT), "the fixture key is never allowed");
+  assert.match(readFileSync(SCRIPT, "utf8"), FINGERPRINTS_LINE, "one array literal the tests can find");
+});
+
+test("RELEASING.md says how the Node release keys are moved", () => {
+  const releasing = readFileSync(join(ROOT, "RELEASING.md"), "utf8");
+  for (const line of ["## Node release keys", "NODE_RELEASE_KEYS_COMMIT", "NODE_RELEASE_KEYRING_SHA256", "NODE_RELEASE_KEY_FINGERPRINTS"]) {
+    assert.ok(releasing.includes(line), line);
+  }
+  const section = releasing.slice(releasing.indexOf("## Node release keys"));
+  // The rotation steps, in this order, each on one line.
+  const steps = [
+    "1. Pick a commit on the `main` branch of nodejs/release-keys",
+    "2. Check that the commit is on `main`: `gh api repos/nodejs/release-keys/compare/<sha>...main --jq .status` must print `ahead` or `identical`",
+    "3. Download the ring from that commit and list its fingerprints",
+    "4. Check each fingerprint against the Release keys list in the nodejs/node README",
+    "5. In one reviewed pull request, change `NODE_RELEASE_KEYS_COMMIT`, `NODE_RELEASE_KEYRING_SHA256` and `NODE_RELEASE_KEY_FINGERPRINTS` together",
+  ];
+  let at = -1;
+  for (const step of steps) {
+    const i = section.indexOf(step);
+    assert.ok(i > at, `in order: ${step}`);
+    at = i;
+  }
+  assert.ok(section.includes("Never take a commit, a sha256 or a fingerprint from a pull request, an issue or a run's log"));
+});
+
 // ----------------------------------------------------- the command line
 
 function inScratch(fn) {
@@ -388,11 +645,67 @@ test("cli latest-node: prints the newest release, and never one older than the c
     assert.equal(cli(dir, ["latest-node", "24", "index.json", "24.1.0"]).status, 1);
   }));
 
-test("cli node-sha: prints the sha for the file", () =>
+test("cli node-sha-signed: prints the sha from a list that verifies, and nothing from one that does not", needGpgv, () =>
   inScratch((dir) => {
+    // The real path: the script runs its command line only when argv[1] is
+    // its own file URL, and the temp folder may be behind a symlink.
+    const script = join(realpathSync(dir), "base-images.mjs");
+    writeFileSync(script, scriptPinnedToFixture());
+    const run = (asc) =>
+      spawnSync(process.execPath, [script, "node-sha-signed", fixture(asc), FIX_KEYRING, "node-v26.2.0-linux-x64.tar.xz"], {
+        cwd: dir,
+        encoding: "utf8",
+        env: { PATH: process.env.PATH },
+      });
+    const good = run("SHASUMS256.txt.asc");
+    assert.equal(good.status, 0, good.stderr);
+    assert.equal(good.stdout, `${hex("3")}\n`);
+    for (const asc of ["SHASUMS256.tampered.txt.asc", "SHASUMS256.other-key.txt.asc"]) {
+      const bad = run(asc);
+      assert.equal(bad.status, 1, asc);
+      assert.equal(bad.stdout, "", asc);
+    }
+  }));
+
+// Every refusal reaches the log as one ::error:: line, its text encoded once
+// at the command line: gpgv's stderr and the signer it names come from the
+// downloaded file.
+test("cli node-sha-signed: a refusal is one ::error:: line, encoded once", () =>
+  inScratch((dir) => {
+    const script = join(realpathSync(dir), "base-images.mjs");
+    writeFileSync(script, scriptPinnedToFixture());
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const run = (status, stderr, exit) => {
+      writeFileSync(join(dir, "fake-status"), status.map((l) => `[GNUPG:] ${l}\n`).join(""));
+      writeFileSync(join(dir, "fake-stderr"), stderr);
+      writeFileSync(
+        join(bin, "gpgv"),
+        `#!/bin/bash\ncat "${dir}/fake-stderr" >&2\ncat "${dir}/fake-status" >&3\nexit ${exit}\n`,
+        { mode: 0o755 },
+      );
+      return spawnSync(process.execPath, [script, "node-sha-signed", fixture("SHASUMS256.txt.asc"), FIX_KEYRING, "node-v26.2.0-linux-x64.tar.xz"], {
+        cwd: dir,
+        encoding: "utf8",
+        env: { PATH: `${bin}:${process.env.PATH}` },
+      });
+    };
+    const armor = run([], "gpgv: invalid armor header: 50%\r::warning::x\n", 2);
+    assert.equal(armor.status, 1);
+    assert.equal(armor.stderr.trimEnd().split("\n").length, 1, armor.stderr);
+    assert.ok(armor.stderr.includes("50%25%0D::warning::x"), armor.stderr);
+    const signer = run(["NEWSIG", "ERRSIG 7830B79213DB0255 1 8 01 1795639258 9 50%\rX::warning::y", "NO_PUBKEY 7830B79213DB0255"], "", 2);
+    assert.equal(signer.status, 1);
+    assert.equal(signer.stderr.trimEnd().split("\n").length, 1, signer.stderr);
+    assert.ok(signer.stderr.includes("key 50%25%0DX::warning::y "), signer.stderr);
+    assert.doesNotMatch(signer.stderr, /%2525/, "encoded once, not twice");
+  }));
+
+test("cli keyring-url: prints the pinned keyring URL; node-sha is gone", () =>
+  inScratch((dir) => {
+    assert.equal(cli(dir, ["keyring-url"]).stdout, `${NODE_KEYRING_URL}\n`);
     writeFileSync(join(dir, "SHASUMS256.txt"), SHASUMS);
-    assert.equal(cli(dir, ["node-sha", "SHASUMS256.txt", "node-v26.13.1-linux-x64.tar.xz"]).stdout, `${hex("b")}\n`);
-    assert.equal(cli(dir, ["node-sha", "SHASUMS256.txt", "nope"]).status, 1);
+    assert.equal(cli(dir, ["node-sha", "SHASUMS256.txt", "node-v26.13.1-linux-x64.tar.xz"]).status, 2, "an unsigned list has no command");
   }));
 
 test("cli rewrite: writes the changed files from the NEXT_ environment, and refuses without it", () =>
@@ -455,6 +768,19 @@ test("cli leftovers: exit 0 when clean, 1 listing the files when not", () =>
     assert.equal(dirty.status, 1);
     assert.match(dirty.stderr, /::error::/);
     assert.match(dirty.stderr, /docs\/notes\.md/);
+  }));
+
+// The list of files is workflow-command text too: one ::error:: line, with
+// %, CR and LF encoded, so a tracked file's name cannot start a command.
+test("cli leftovers: the refusal is one ::error:: line, the file list encoded", () =>
+  inScratch((dir) => {
+    gitRepo(dir, { ...fakeTexts(), "docs/notes.md": `${hex("b")}\n`, "docs/50%.md": `${hex("b")}\n` });
+    const dirty = cli(dir, ["leftovers", hex("b")]);
+    assert.equal(dirty.status, 1);
+    assert.equal(dirty.stderr.trimEnd().split("\n").length, 1, dirty.stderr);
+    assert.ok(dirty.stderr.startsWith("::error::"), dirty.stderr);
+    assert.ok(dirty.stderr.includes("%0Adocs/50%25.md") || dirty.stderr.includes("docs/50%25.md%0A"), dirty.stderr);
+    assert.ok(dirty.stderr.includes("docs/notes.md"), dirty.stderr);
   }));
 
 // -------------------------------------------------------------- the workflow
@@ -632,14 +958,20 @@ test("base-images: the main-only check runs first and refuses any other ref", ()
 });
 
 // The resolve step with the real script and stand-ins for the network: curl
-// writes the file named by -o, from INDEX_JSON or SHASUMS; docker prints the
-// digest of the image it is asked about, or fails for one named in MISSING.
+// writes the file named by -o, from INDEX_JSON, or a copy of the file ASC
+// (the signed list) or KEYRING (the release keyring); a plain SHASUMS256.txt
+// gets SHASUMS, an unsigned list with another sha for 26.2.0 that must never
+// be used. docker prints the digest of the image it is asked about, or fails
+// for one named in MISSING. The script is a copy pinned to the fixture
+// keyring, as the real one is pinned to Node's.
 const RESOLVE_STUBS = [
   "curl() {",
   '  echo "curl $*" >>"$CALLS"',
   '  out=""; prev=""; for a in "$@"; do if [ "$prev" = -o ]; then out="$a"; fi; prev="$a"; done',
   '  case "$*" in',
   '    *index.json*) printf "%s" "$INDEX_JSON" >"$out" ;;',
+  '    *SHASUMS256.txt.asc*) cp "$ASC" "$out" ;;',
+  '    *pubring.kbx*) cp "$KEYRING" "$out" ;;',
   '    *SHASUMS256.txt*) printf "%s" "$SHASUMS" >"$out" ;;',
   "    *) return 22 ;;",
   "  esac",
@@ -660,11 +992,13 @@ const resolveRun = (env = {}) =>
     setup: (work) => {
       writeTree(work, fakeTexts());
       mkdirSync(join(work, ".github", "scripts"), { recursive: true });
-      copyFileSync(SCRIPT, join(work, ".github", "scripts", "base-images.mjs"));
+      writeFileSync(join(work, ".github", "scripts", "base-images.mjs"), scriptPinnedToFixture());
     },
     env: {
       INDEX_JSON: JSON.stringify([{ version: "v26.2.0" }, { version: "v26.1.0" }, { version: "v27.0.0" }]),
-      SHASUMS: `${hex("3")}  node-v26.2.0-linux-x64.tar.xz\n${hex("4")}  node-v26.1.0-linux-x64.tar.xz\n`,
+      ASC: fixture("SHASUMS256.txt.asc"),
+      KEYRING: FIX_KEYRING,
+      SHASUMS: `${hex("9")}  node-v26.2.0-linux-x64.tar.xz\n${hex("4")}  node-v26.1.0-linux-x64.tar.xz\n`,
       UBUNTU_DIGEST: hex("2"),
       NODE_DIGEST: hex("1"),
       MISSING: "",
@@ -672,7 +1006,7 @@ const resolveRun = (env = {}) =>
     },
   });
 
-test("base-images resolve: finds the newest Node of the same major, its sha and both digests", () => {
+test("base-images resolve: finds the newest Node of the same major, its sha from the signed list and both digests", needGpgv, () => {
   const r = resolveRun();
   assert.equal(r.status, 0, r.log);
   assert.deepEqual(r.outputs, {
@@ -690,7 +1024,12 @@ test("base-images resolve: finds the newest Node of the same major, its sha and 
   assert.match(r.calls, /docker buildx imagetools inspect node:26\.2\.0-trixie-slim --format \{\{\.Manifest\.Digest\}\}/);
   assert.match(r.calls, /docker buildx imagetools inspect ubuntu:24\.04 --format \{\{\.Manifest\.Digest\}\}/);
   assert.match(r.calls, /curl .*https:\/\/nodejs\.org\/dist\/index\.json/);
-  assert.match(r.calls, /curl .*https:\/\/nodejs\.org\/dist\/v26\.2\.0\/SHASUMS256\.txt/);
+  assert.match(r.calls, /curl .*https:\/\/nodejs\.org\/dist\/v26\.2\.0\/SHASUMS256\.txt\.asc/);
+  assert.ok(
+    r.calls.includes(`https://raw.githubusercontent.com/nodejs/release-keys/${NODE_RELEASE_KEYS_COMMIT}/gpg-only-active-keys/pubring.kbx`),
+    r.calls,
+  );
+  assert.doesNotMatch(r.calls, /SHASUMS256\.txt(?!\.asc)/, "the unsigned list is never downloaded");
 });
 
 test("base-images resolve: a Node on nodejs.org but not yet on Docker Hub keeps the current Node, with a notice", () => {
@@ -700,18 +1039,42 @@ test("base-images resolve: a Node on nodejs.org but not yet on Docker Hub keeps 
   assert.equal(r.outputs.next_node_sha, hex("c"), "the sha stays with the version");
   assert.equal(r.outputs.next_app_base, `node:26.1.0-trixie-slim@sha256:${hex("1")}`);
   assert.match(r.log, /::notice::node:26\.2\.0-trixie-slim is not on Docker Hub yet/);
+  assert.doesNotMatch(r.calls, /SHASUMS256|pubring/, "no list or keyring is downloaded when Node stays");
 });
 
 test("base-images resolve: fails, with nothing handed on, when a lookup fails or an answer is not a digest", () => {
-  const down = resolveRun({ MISSING: "ubuntu:24.04" });
+  // Node stays at 26.1.0, so the run reaches the Ubuntu lookup without gpgv.
+  const INDEX_JSON = JSON.stringify([{ version: "v26.1.0" }]);
+  const down = resolveRun({ INDEX_JSON, MISSING: "ubuntu:24.04" });
   assert.notEqual(down.status, 0);
   assert.deepEqual(down.outputs, {});
-  const bad = resolveRun({ UBUNTU_DIGEST: "xyz" });
+  const bad = resolveRun({ INDEX_JSON, UBUNTU_DIGEST: "xyz" });
   assert.notEqual(bad.status, 0);
   assert.match(bad.log, /::error::.*sha256:xyz is not an image digest/);
   assert.deepEqual(bad.outputs, {});
-  const noShas = resolveRun({ SHASUMS: "" });
-  assert.notEqual(noShas.status, 0);
+});
+
+test("base-images resolve: an empty download fails, with nothing handed on", needGpgv, () => {
+  const empty = resolveRun({ ASC: "/dev/null" });
+  assert.notEqual(empty.status, 0);
+  assert.match(empty.log, /::error::SHASUMS256\.txt\.asc does not verify/);
+  assert.deepEqual(empty.outputs, {});
+});
+
+test("base-images resolve: a list that does not verify fails, with nothing handed on", needGpgv, () => {
+  const tampered = resolveRun({ ASC: fixture("SHASUMS256.tampered.txt.asc") });
+  assert.notEqual(tampered.status, 0, tampered.log);
+  assert.match(tampered.log, /::error::SHASUMS256\.txt\.asc does not verify/);
+  assert.deepEqual(tampered.outputs, {});
+  const otherKey = resolveRun({ ASC: fixture("SHASUMS256.other-key.txt.asc") });
+  assert.notEqual(otherKey.status, 0, otherKey.log);
+  assert.match(otherKey.log, /::error::SHASUMS256\.txt\.asc claims to be signed by key [0-9A-F]{40} \(the signature's issuer field; may be a subkey; not verified\), which is not in the pinned Node release keyring\./);
+  assert.deepEqual(otherKey.outputs, {});
+  // A plain list served as the .asc, its signature stripped.
+  const unsigned = resolveRun({ ASC: fixture("SHASUMS256.unsigned.txt.asc") });
+  assert.notEqual(unsigned.status, 0, unsigned.log);
+  assert.match(unsigned.log, /::error::SHASUMS256\.txt\.asc does not verify/);
+  assert.deepEqual(unsigned.outputs, {});
 });
 
 test("base-images rewrite: changes the files and reports changed=true, or changed=false when nothing moves", () => {
@@ -904,8 +1267,8 @@ test("base-images: dispatch-ci starts ci.yml on the bot branch, only after a ref
 test("base-images: ci.yml's gate-tests list names this workflow, its script and pnpm-workspace.yaml", () => {
   const ci = readFileSync(CI, "utf8");
   const list = ci.match(/grep -Eq '\^\((tools\/slicing-gate\/[^']*)\)' <<<"\$changed"/)[1];
-  assert.match(list, /\(ci\|release\|slicer-image\|rc-tag\|apt-snapshot\|base-images\|docs-pages\)\\\.yml\$/);
-  assert.match(list, /\\\.github\/scripts\/\(rc-target\|apt-snapshot\|base-images\|release-gate\)\\\.mjs\$/);
+  assert.match(list, /\(ci\|release\|slicer-image\|rc-tag\|apt-snapshot\|base-images\|docs-pages\|release-notes\)\\\.yml\$/);
+  assert.match(list, /\\\.github\/scripts\/\(rc-target\|apt-snapshot\|base-images\|release-gate\|release-notes\)\\\.mjs\$/);
   assert.match(list, /\|pnpm-workspace\\\.yaml\$/);
 });
 

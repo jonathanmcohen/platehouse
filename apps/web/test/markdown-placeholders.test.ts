@@ -7,7 +7,8 @@
 // tracked .md file must keep each placeholder in a code span or a code block.
 // docs/ is included. Its pages are .md files, which the Docusaurus site reads
 // as CommonMark, not MDX (markdown.format is "detect" in
-// apps/docs/docusaurus.config.mjs), so nothing there fails on a bare tag, and
+// apps/docs/docusaurus.config.mjs), except the pages whose front matter sets
+// mdx.format: mdx. Nothing in a CommonMark page fails on a bare tag, and
 // GitHub strips one from a docs page as it does anywhere else.
 //
 // How: each file is parsed with a CommonMark parser plus GitHub's
