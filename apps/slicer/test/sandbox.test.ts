@@ -252,6 +252,43 @@ describe("processes left behind by a job", () => {
     expect(leftoverProcesses(dir, 7)).toEqual([]);
   });
 
+  // The re-read before each kill: a process that changed between the scan and
+  // its turn is not signalled. Killing A rewrites B, as the world might.
+  describe("the re-read before each kill spares a process that changed", () => {
+    const TWO: Array<[number, string, number]> = [
+      [1, "tini", 0],
+      [7, "node", 1],
+      [42, "sleep", 1], // A
+      [43, "sleep", 1], // B
+    ];
+    const cases: Array<[string, (dir: string) => void]> = [
+      [
+        "its parent became 0",
+        (dir) => writeFileSync(join(dir, "43", "stat"), "43 (sleep) S 0 43 43 0 -1 4194560 0\n"),
+      ],
+      [
+        "it became a zombie",
+        (dir) => writeFileSync(join(dir, "43", "stat"), "43 (sleep) Z 1 43 43 0 -1 4194560 0\n"),
+      ],
+      ["its folder was removed", (dir) => rmSync(join(dir, "43"), { recursive: true })],
+    ];
+    for (const [name, change] of cases) {
+      test(`B is not killed when ${name}`, () => {
+        const dir = proc(TWO);
+        const killed: number[] = [];
+        const out = reapLeftovers({
+          procDir: dir,
+          selfPid: 7,
+          kill: killing(dir, killed, (pid) => {
+            if (pid === 42) change(dir);
+          }),
+        });
+        expect(killed).toEqual([42]);
+        expect(out).toEqual([42]);
+      });
+    }
+  });
+
   /** A kill that leaves the process and starts one more orphan each time. */
   function spawning(dir: string, calls: number[]) {
     return (pid: number) => {

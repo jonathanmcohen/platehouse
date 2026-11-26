@@ -290,10 +290,28 @@ describe("OpenSCAD in the image", () => {
     const pids = started.stdout.trim().split("\n");
     expect(pids, started.stderr).toHaveLength(2);
     for (const pid of pids) expect(pid).toMatch(/^\d+$/);
-    const present = (pid: string) =>
-      slicer.exec(["sh", "-c", `test -d /proc/${pid} && echo up`]).stdout.trim() === "up";
-    // control: both are running before the job
-    for (const pid of pids) expect(present(pid), `process ${pid} did not start`).toBe(true);
+    // The state is read after the last ")" of the stat line; a missing file,
+    // Z (zombie) or X (dead) is gone. The parent is the field after the state.
+    const statOf = (pid: string) =>
+      slicer
+        .exec(["sh", "-c", `cat /proc/${pid}/stat 2>/dev/null`])
+        .stdout.trim()
+        .replace(/^.*\) /s, "")
+        .split(" ");
+    const present = (pid: string) => {
+      const state = statOf(pid)[0];
+      return state !== "" && state !== "Z" && state !== "X";
+    };
+    // control: both are running before the job, and the setsid'd shell that
+    // parents them has tini (PID 1) as its own parent
+    for (const pid of pids) {
+      expect(present(pid), `process ${pid} did not start: ${JSON.stringify(statOf(pid))}`).toBe(
+        true,
+      );
+    }
+    const child = statOf(pids[0] as string);
+    const shell = statOf(child[1] as string);
+    expect(shell[1], `parent of the shell ${child[1]}: ${JSON.stringify(shell)}`).toBe("1");
 
     const res = await post("/v1/scad/stl", "cube([1, 1, 1]);\n");
     expect(await statusOf(res)).toBe("200");

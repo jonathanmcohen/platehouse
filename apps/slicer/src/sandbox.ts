@@ -718,7 +718,9 @@ export function leftoverProcesses(procDir: string, selfPid: number): number[] {
  * subtree is known only once every parent is read), so each pass reads it
  * first. To keep the gap between looking at a process and signalling it
  * short, each one is read again just before its signal, and is signalled
- * only if it is still there, still live and still outside the spared set.
+ * only if it is still there, still live, not parented by 0 (docker exec's
+ * own processes, whose parent 0 is how the scan spares them) and still
+ * outside the spared set.
  *
  * When the last pass still finds processes it has not signalled before, the
  * clean-up has not finished, and onOutrun runs: by default it logs one line
@@ -750,7 +752,8 @@ export function reapLeftovers(
     for (const pid of fresh) {
       tried.add(pid);
       const now = readStat(procDir, pid);
-      if (!now || now.state === "Z" || now.state === "X" || spared.has(now.ppid)) continue;
+      if (!now || now.state === "Z" || now.state === "X" || now.ppid === 0 || spared.has(now.ppid))
+        continue;
       try {
         kill(pid, "SIGKILL");
         killed.push(pid);
