@@ -1473,9 +1473,8 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    *   nothing took the name, so SWAPPED_REASON would be false for it.
    * The lstat that decided a file is a regular file is passed to copyBack,
    * which checks that the file it opens is that one. Returns false only when
-   * the name was taken, the held item left where it
-   * is. Throws when putting it back failed or cannot be done, with nothing
-   * left under the name.
+   * the name was taken, the held item left where it is. Throws when putting
+   * it back failed or cannot be done, with nothing left under the name.
    */
   async function putBack(
     name: string,

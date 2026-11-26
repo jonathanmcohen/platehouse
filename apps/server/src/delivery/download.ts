@@ -43,20 +43,21 @@
 //   security review): Node does not hold a response to its Content-Length,
 //   so a longer object would put its extra bytes on the keep-alive socket,
 //   where a proxy reusing the connection reads them as the next answer, and
-//   a shorter one would leave the client waiting. So an object whose size, as the store reports it (objectSize;
-//   for a range, the total its Content-Range gives), differs from the
-//   record is 503 before any header (checkObjectSize), and the bytes are
-//   counted as they go (exactSize): a stream that runs past the record, or
-//   the range, or ends short of it destroys the response, so the client
-//   sees an aborted answer, never a clean end. res.strictContentLength is
-//   not used: on a short stream it throws from res.end() and ends the
-//   process. A HEAD never opens a GetObject: it confirms the object exists
-//   with a HeadObject (no body), compares the size the HeadObject reports
-//   with the record (fileHead in api/v1.ts, blobHead here; issue #164), and
-//   sends the headers, so it fails where the GET would for an unknown,
-//   trashed or missing object, an object of another size or a store outage.
-//   checkObjectSize, exactSize and the HEAD size check live in api/v1.ts,
-//   so the public API's file content route uses the same code.
+//   a shorter one would leave the client waiting. So an object whose size,
+//   as the store reports it (objectSize; for a range, the total its
+//   Content-Range gives), differs from the record is 503 before any header
+//   (checkObjectSize), and the bytes are counted as they go (exactSize): a
+//   stream that runs past the record, or the range, or ends short of it
+//   destroys the response, so the client sees an aborted answer, never a
+//   clean end. res.strictContentLength is not used: on a short stream it
+//   throws from res.end() and ends the process. A HEAD never opens a
+//   GetObject: it confirms the object exists with a HeadObject (no body),
+//   compares the size the HeadObject reports with the record (fileHead in
+//   api/v1.ts, blobHead here; issue #164), and sends the headers, so it
+//   fails where the GET would for an unknown, trashed or missing object, an
+//   object of another size or a store outage. checkObjectSize, exactSize
+//   and the HEAD size check live in api/v1.ts, so the public API's file
+//   content route uses the same code.
 // - A file or blob that is unknown, malformed or in the trash is 404. When
 //   the store cannot give the bytes (an outage, a missing object, a refusal)
 //   the answer is 503 "This file is unavailable right now", and nothing is

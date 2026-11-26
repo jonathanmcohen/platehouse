@@ -25,8 +25,8 @@ All notable changes to Platehouse are recorded here. The format follows
   - on Docker Engine older than 26.0.0, other than the 25.0.5 and 23.0.11 patch releases (24.x has no fix), the slicer can still look up outside names when the host uses a local resolver;
   - the sandbox can be off on Linux 6.12 or newer, when Landlock is turned off, Docker blocks it, or the kernel lacks its 2025 Landlock fix (6.12 before 6.12.24, 6.13 before 6.13.12, 6.14 before 6.14.3);
   - how to tell which, from the slicer's log.
-- A server whose web build is replaced while it runs (a rebuilt or bind-mounted build) serves the new pages without a restart.
-- Putting a file back under an imported file's name in the inbox checks that the file it copies is the one it found, so a file swapped in at that moment is not copied.
+- A server whose web build is replaced while it runs (a rebuilt or bind-mounted build) serves the new pages without a restart ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
+- Putting a file back under an imported file's name in the inbox checks that the file it copies is the one it found, so a file swapped in at that moment is not copied ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
 
 ### Security
 

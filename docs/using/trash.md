@@ -23,9 +23,10 @@ in the library.
   Platehouse. With bucket versioning on, the old versions stay at your storage provider for your
   retention period (see [Storage](../storage.md#turn-on-versioning)).
 - A purge that fails part way, for example during a storage outage, leaves the model in the trash,
-  and a later run finishes it. A model whose purge has begun, from Empty trash or the daily
-  job, can no longer be restored, even while it is still listed. A purge can also fail because the model has an object in the bucket under a key outside
-  the `models/<model id>/<blob id>` layout, which Platehouse will not delete. The model stays in the
-  trash until you remove that object by hand, and then the next run finishes it.
+  and a later run finishes it. A model whose purge has begun, from Empty trash or the daily job,
+  can no longer be restored, even while it is still listed. A purge can also fail because the
+  model has an object in the bucket under a key outside the `models/<model id>/<blob id>` layout,
+  which Platehouse will not delete. The model stays in the trash until you remove that object by
+  hand, and then the next run finishes it.
 
 The API cannot trash, delete or purge anything, and it cannot see trashed models.

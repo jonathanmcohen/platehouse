@@ -429,19 +429,34 @@ curl -fsS -OJ "$PLATEHOUSE/api/v1/files/0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70/con
 error answer, such as a `404`, instead of saving that answer as the file.
 
 A cut download carries on from where it stopped: `-C -` makes curl send a `Range` header for the
-bytes the saved file is missing, and Platehouse answers `206` with that part. curl cannot combine
-`-C` with `-J`, so give the name the first download saved with `-o`:
+bytes the saved file is missing, and Platehouse answers `206` with that part. A file's bytes can be
+replaced between two requests, and then its `ETag` changes, so save the first answer's headers with
+`-D` and send its `ETag` back in `If-Range` when you carry on. curl cannot combine `-C` with `-J`,
+so give the name the first download saved with `-o`:
 
 ```sh
-curl -fsS -C - -o bracket.3mf "$PLATEHOUSE/api/v1/files/0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70/content" \
+curl -fsS -D bracket.headers -o bracket.3mf \
+  "$PLATEHOUSE/api/v1/files/0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70/content" \
   -H "Authorization: Bearer $PLATEHOUSE_TOKEN"
+grep -i '^etag' bracket.headers
+
+curl -fsS -C - -o bracket.3mf \
+  "$PLATEHOUSE/api/v1/files/0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70/content" \
+  -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
+  -H 'If-Range: "<the ETag from the first answer>"'
 ```
 
-One range is answered per request; several in one `Range` header get the whole file, `200`. Send
-`If-Range` with the `ETag` from the first answer to make sure the file was not replaced meanwhile:
-when it was, the answer is the whole new file, `200`. A range that starts at or past the end of
-the file is `416`, and its `Content-Range` gives the size, as `bytes */<size>`; curl takes that
-answer to a `-C -` request as the file being complete already.
+When the file has not changed, the answer is `206` and curl adds the missing part. When it has,
+the answer is the whole new file, `200`, and curl stops with exit code 33 rather than add it to the
+old part: delete the partial file and download it again. Without `If-Range`, the part curl adds
+could come from the new bytes, leaving a file that is half one version and half the other. To check
+a finished download, compare its SHA-256 with the `sha256` that `GET /files/{id}` gives for the
+file.
+
+One range is answered per request; several in one `Range` header get the whole file, `200`.
+`If-Range` takes the `ETag` only, not a date. A range that starts at or past the end of the file is
+`416`, and its `Content-Range` gives the size, as `bytes */<size>`; curl takes that answer to a
+`-C -` request as the file being complete already.
 
 The **Open in Bambu Studio** and **Open in OrcaSlicer** buttons on a model page work differently.
 A slicer opens a file from a URL and cannot send a token, so the web app makes a short-lived link

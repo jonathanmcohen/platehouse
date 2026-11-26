@@ -87,8 +87,8 @@ dialog opens. Any member may have made those tokens, so a shared script may stop
 Signing someone else out needs a sign-in from the last 5 minutes. If yours is older, the section
 says so, and **Sign in again** brings you back here after the sign-in. Signing yourself out needs
 only a live session, except when you tick the second box: that needs a sign-in from the last 5
-minutes for yourself too. Each session may use Sign out everywhere at most 10 times in any 10 minutes
-(see [Security](../security.md#rate-limits)).
+minutes for yourself too. Each session may use Sign out everywhere at most 10 times in any 10
+minutes (see [Security](../security.md#rate-limits)).
 
 ## Model names
 
