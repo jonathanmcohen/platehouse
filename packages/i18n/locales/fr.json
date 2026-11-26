@@ -601,6 +601,7 @@
   "trash.confirmTitle": "Vider la corbeille ?",
   "trash.deleted": "{count, plural, one {# mod\u00e8le supprim\u00e9} many {# de mod\u00e8les supprim\u00e9s} other {# mod\u00e8les supprim\u00e9s}} d\u00e9finitivement.",
   "trash.empty": "Vider la corbeille",
+  "trash.emptying": "Vidage de la corbeille en cours. Les mod\u00e8les sont supprim\u00e9s un par un et quittent cette liste au fur et \u00e0 mesure.",
   "trash.incomplete": "{count, plural, one {# mod\u00e8le n'a pas pu \u00eatre supprim\u00e9 et reste} many {# de mod\u00e8les n'ont pas pu \u00eatre supprim\u00e9s et restent} other {# mod\u00e8les n'ont pas pu \u00eatre supprim\u00e9s et restent}} dans la corbeille ; la prochaine purge r\u00e9essaiera.",
   "trash.intro": "Un mod\u00e8le mis \u00e0 la corbeille est supprim\u00e9 d\u00e9finitivement 30 jours plus tard. Restaurer le remet en place avec ses fichiers, ses \u00e9tiquettes et ses collections.",
   "trash.isEmpty": "La corbeille est vide.",

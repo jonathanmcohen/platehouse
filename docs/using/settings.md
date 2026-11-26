@@ -104,5 +104,6 @@ Manyfold importer, or one made through the API's create-model call.
 
 ## Trash
 
-The trashed models, with their purge dates, **Restore** and **Empty trash**. See
+The trashed models, with their purge dates, **Restore** and **Empty trash**, which deletes them in
+the background after asking; a model cannot be restored once you confirm it. See
 [The trash](./trash.md).

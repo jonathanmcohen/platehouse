@@ -601,6 +601,7 @@
   "trash.confirmTitle": "\u00bfVaciar la papelera?",
   "trash.deleted": "Se {count, plural, one {elimin\u00f3 definitivamente # modelo} many {eliminaron definitivamente # modelos} other {eliminaron definitivamente # modelos}}.",
   "trash.empty": "Vaciar la papelera",
+  "trash.emptying": "Vaciando la papelera. Los modelos se eliminan uno por uno y salen de esta lista a medida que se eliminan.",
   "trash.incomplete": "{count, plural, one {No se pudo eliminar # modelo y sigue} many {No se pudieron eliminar # modelos y siguen} other {No se pudieron eliminar # modelos y siguen}} en la papelera; la pr\u00f3xima purga lo volver\u00e1 a intentar.",
   "trash.intro": "Un modelo en la papelera se elimina definitivamente 30 d\u00edas despu\u00e9s de moverlo all\u00ed. Restaurar lo devuelve con sus archivos, etiquetas y colecciones.",
   "trash.isEmpty": "La papelera est\u00e1 vac\u00eda.",

@@ -594,6 +594,7 @@
   "trash.confirmTitle": "Empty the trash?",
   "trash.deleted": "Deleted {count} {count, plural, one {model} other {models}} for good.",
   "trash.empty": "Empty trash",
+  "trash.emptying": "Emptying the trash. Models are deleted one at a time and leave this list as they go.",
   "trash.incomplete": "{count} {count, plural, one {model could not be deleted and stays} other {models could not be deleted and stay}} in the trash; the next purge tries again.",
   "trash.intro": "A model in the trash is deleted for good 30 days after it was trashed. Restore brings it back with its files, tags and collections.",
   "trash.isEmpty": "The trash is empty.",

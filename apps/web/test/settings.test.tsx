@@ -26,6 +26,7 @@ import { howLong, REREAD_SHOWS_CHANGE, WAITING_POLL_MS } from "../src/settings/P
 import { SettingsPage } from "../src/settings/SettingsPage";
 import { VERSIONING_OFF_WARNING } from "../src/settings/VersioningBanner";
 import { TagsPage } from "../src/tags/TagsPage";
+import { EMPTYING_POLL_MS } from "../src/trash/TrashList";
 import { TrashPage } from "../src/trash/TrashPage";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -154,10 +155,10 @@ function hold(key: string): () => Promise<void> {
 const failing = new Set<string>();
 
 /**
- * When set, Empty trash leaves the last model in the trash and answers as
- * the server does for PurgeIncomplete (apps/server/src/app-api/organise.ts).
+ * Whether the server's Empty trash job is running: GET /app/api/trash answers
+ * it as emptying, and the models it has marked as purging.
  */
-let emptyIncomplete = false;
+let emptying = false;
 /**
  * When set, GET /app/api/settings answers printers: null, as the server does
  * when the slicer is unreachable, busy or refuses (apps/server/src/app-api/settings.ts).
@@ -411,6 +412,8 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
       pageSize,
       pageCount,
       total,
+      emptying,
+      purging: state.trash.filter((m) => m.purgeStarted).length,
     });
   }
   // Empty trash purges only the models trashed at or before the cutoff it is
@@ -422,18 +425,12 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     if (Number.isNaN(cutoff) || cutoff > Date.parse(state.now)) {
       return json(400, { error: "bad_request" });
     }
+    // The server marks the models and queues the job; it answers at once.
+    // The job is the test's to finish (finishEmptying).
     const asked = state.trash.filter((m) => Date.parse(m.trashedAt) <= cutoff);
-    const stuck = emptyIncomplete ? asked.slice(-1) : [];
-    const purged = asked.length - stuck.length;
-    state.trash = state.trash.filter((m) => !asked.includes(m) || stuck.includes(m));
-    if (emptyIncomplete) {
-      return json(500, {
-        error: "incomplete",
-        purged,
-        message: "1 model could not be deleted and stays in the trash; the next purge tries again.",
-      });
-    }
-    return json(200, { purged });
+    state.trash = state.trash.map((m) => (asked.includes(m) ? { ...m, purgeStarted: true } : m));
+    emptying = true;
+    return json(202, { queued: asked.length });
   }
   if (method === "POST" && seg[0] === "trash" && seg[2] === "restore") {
     if (!state.trash.some((m) => m.id === seg[1])) return json(404, { error: "not_found" });
@@ -621,7 +618,7 @@ beforeEach(() => {
   issued.length = 0;
   held.clear();
   failing.clear();
-  emptyIncomplete = false;
+  emptying = false;
   slicerDown = false;
   parked = null;
   vi.stubGlobal("fetch", vi.fn(fakeApi));
@@ -653,6 +650,25 @@ async function settle(): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
   }
+}
+
+/** Lets 3 seconds pass, so a poll fires, and lets what it reads render. */
+async function pollOnce(): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(EMPTYING_POLL_MS);
+  });
+  await settle();
+}
+
+/**
+ * The background job ends: the models it deleted leave the trash, and
+ * stuck of the marked ones stay (still marked, as the server leaves them).
+ */
+function finishEmptying(stuck = 0): void {
+  const marked = state.trash.filter((m) => m.purgeStarted);
+  const kept = marked.slice(0, stuck);
+  state.trash = state.trash.filter((m) => !m.purgeStarted || kept.includes(m));
+  emptying = false;
 }
 
 async function show(path: string, page: ReactNode): Promise<void> {
@@ -1728,6 +1744,10 @@ describe("the settings page", () => {
 });
 
 describe("the trash", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   test("each model shows its purge date, and restore brings it back", async () => {
     await show("/trash", <TrashPage />);
     expect(document.querySelector("h1")?.textContent).toBe("Trash");
@@ -1852,23 +1872,27 @@ describe("the trash", () => {
     await click(button("Empty trash", dialog() as HTMLElement));
     expect(callsTo("POST", "/app/api/trash/empty")).toHaveLength(1);
     expect(dialog()).toBeNull();
-    expect(text()).toContain("The trash is empty.");
     expect(dialogs.confirm).not.toHaveBeenCalled();
   });
 
-  test("after an Empty trash that worked, focus is on the result, not the page body", async () => {
+  test("after confirming Empty trash, the dialog closes and focus is on the status line, which says it is emptying", async () => {
     await show("/trash", <TrashPage />);
     await click(button("Empty trash"));
     await click(button("Empty trash", dialog() as HTMLElement));
     expect(dialog()).toBeNull();
     const status = document.querySelector<HTMLElement>('[role="status"]');
-    expect(status?.textContent).toContain("Deleted 2 models for good.");
+    expect(status?.textContent).toBe(
+      "Emptying the trash. Models are deleted one at a time and leave this list as they go.",
+    );
     expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement).toBe(status);
+    // The models stay listed, marked as being deleted.
+    expect(text()).toContain("Old benchy");
+    expect(text()).toContain("Broken clip");
+    expect(text().split("It is being deleted now and cannot be restored.")).toHaveLength(3);
   });
 
-  test("an Empty trash in flight cannot be cancelled, so a partial result is still shown", async () => {
-    emptyIncomplete = true;
+  test("an Empty trash in flight cannot be cancelled", async () => {
     await show("/trash", <TrashPage />);
     const release = hold("POST /app/api/trash/empty");
     await click(button("Empty trash"));
@@ -1881,11 +1905,6 @@ describe("the trash", () => {
     expect(dialog()).not.toBeNull();
 
     await release();
-    const ask = dialog();
-    expect(ask).not.toBeNull();
-    expect(ask?.textContent).toContain("1 model could not be deleted");
-    // Once the answer is in, Cancel works again.
-    await click(button("Cancel", ask as HTMLElement));
     expect(dialog()).toBeNull();
   });
 
@@ -1902,6 +1921,7 @@ describe("the trash", () => {
   });
 
   test("empty trash deletes only the models trashed before the page read the list, and says how many", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     await show("/trash", <TrashPage />);
     // Another tab or browser trashes a model after the page read the list.
     state.now = "2026-11-12T12:00:05.000Z";
@@ -1925,13 +1945,17 @@ describe("the trash", () => {
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
       { cutoff: "2026-11-12T09:00:00.000Z" },
     ]);
+    // The job leaves the model nobody confirmed in the trash, still restorable.
+    expect(text()).toContain("Unseen bracket");
+    finishEmptying();
+    await pollOnce();
     expect(text()).toContain("Deleted 2 models for good.");
-    // The list is read again, so the model nobody confirmed shows, still restorable.
     expect(text()).toContain("Unseen bracket");
     expect(text()).not.toContain("Old benchy");
   });
 
   test("after a restore, Empty trash still sends when the list was read", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     await show("/trash", <TrashPage />);
     await click(button("Restore Old benchy"));
     await click(button("Empty trash"));
@@ -1940,10 +1964,13 @@ describe("the trash", () => {
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
       { cutoff: "2026-11-12T09:00:00.000Z" },
     ]);
+    finishEmptying();
+    await pollOnce();
     expect(text()).toContain("Deleted 1 model for good.");
   });
 
   test("a large trash sends the same small body", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     state.trash = Array.from({ length: 3000 }, (_, i) => ({
       id: `0190f7a2-0000-7000-8000-${String(i).padStart(12, "0")}`,
       name: `Model ${i}`,
@@ -1962,6 +1989,8 @@ describe("the trash", () => {
     expect(sent).toEqual([{ cutoff: "2026-11-12T09:00:00.000Z" }]);
     // Far under the server's 64 KiB body limit, however long the list.
     expect(JSON.stringify(sent[0]).length).toBeLessThan(100);
+    finishEmptying();
+    await pollOnce();
     expect(text()).toContain("Deleted 3000 models for good.");
   });
 
@@ -1971,25 +2000,125 @@ describe("the trash", () => {
     await click(button("Empty trash"));
     await click(button("Empty trash", dialog() as HTMLElement));
     expect(callsTo("GET", "/app/api/trash")).toHaveLength(2);
-    expect(text()).toContain("The trash is empty.");
   });
 
-  test("an Empty trash that only partly worked says so and shows what is left", async () => {
-    emptyIncomplete = true;
-    await show("/trash", <TrashPage />);
-    await click(button("Empty trash"));
-    await click(button("Empty trash", dialog() as HTMLElement));
-    const ask = dialog();
-    expect(ask).not.toBeNull();
-    expect(ask?.textContent).toContain(
-      "Deleted 1 model for good. 1 model could not be deleted and stays in the trash; the next purge tries again.",
-    );
-    expect(ask?.textContent).not.toContain("Something went wrong");
-    // The list is read again: the purged model is gone, the stuck one stays.
-    expect(callsTo("GET", "/app/api/trash")).toHaveLength(2);
-    await click(button("Cancel", ask as HTMLElement));
-    expect(text()).not.toContain("Old benchy");
-    expect(text()).toContain("Broken clip");
+  describe("following the job", () => {
+    const EMPTYING =
+      "Emptying the trash. Models are deleted one at a time and leave this list as they go.";
+    const setVisibility = (value: "visible" | "hidden") => {
+      Object.defineProperty(document, "visibilityState", { value, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+    const statusLine = () => document.querySelector<HTMLElement>('[role="status"]');
+    const reads = () => callsTo("GET", "/app/api/trash").length;
+    async function confirmEmpty() {
+      await click(button("Empty trash"));
+      await click(button("Empty trash", dialog() as HTMLElement));
+    }
+    /** Records the status line's text each time it changes, as React renders it. */
+    function recordStatus(): { seen: string[]; stop: () => void } {
+      const seen: string[] = [statusLine()?.textContent ?? ""];
+      const observer = new MutationObserver(() => {
+        const now = statusLine()?.textContent ?? "";
+        if (seen.at(-1) !== now) seen.push(now);
+      });
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      return { seen, stop: () => observer.disconnect() };
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+    });
+    afterEach(() => {
+      setVisibility("visible");
+      vi.useRealTimers();
+    });
+
+    test("it reads the listing again every 3 seconds while emptying, and stops when it is not", async () => {
+      await show("/trash", <TrashPage />);
+      await confirmEmpty();
+      const afterConfirm = reads();
+      await pollOnce();
+      expect(reads()).toBe(afterConfirm + 1);
+      await pollOnce();
+      expect(reads()).toBe(afterConfirm + 2);
+      finishEmptying();
+      await pollOnce();
+      const done = reads();
+      expect(done).toBe(afterConfirm + 3);
+      await pollOnce();
+      await pollOnce();
+      expect(reads()).toBe(done);
+    });
+
+    test("it does not read while the tab is hidden, and reads once when it is shown", async () => {
+      await show("/trash", <TrashPage />);
+      await confirmEmpty();
+      await act(async () => {
+        setVisibility("hidden");
+      });
+      const hiddenAt = reads();
+      await pollOnce();
+      await pollOnce();
+      expect(reads()).toBe(hiddenAt);
+      await act(async () => {
+        setVisibility("visible");
+      });
+      await settle();
+      expect(reads()).toBe(hiddenAt + 1);
+    });
+
+    test("the final line says how many were deleted, written once, after the emptying line", async () => {
+      await show("/trash", <TrashPage />);
+      const recorded = recordStatus();
+      await confirmEmpty();
+      await pollOnce();
+      await pollOnce();
+      finishEmptying();
+      await pollOnce();
+      await pollOnce();
+      recorded.stop();
+      expect(recorded.seen).toEqual(["", EMPTYING, "Deleted 2 models for good."]);
+      expect(text()).toContain("The trash is empty.");
+    });
+
+    test("with one model left, the final line says so", async () => {
+      await show("/trash", <TrashPage />);
+      await confirmEmpty();
+      finishEmptying(1);
+      await pollOnce();
+      expect(statusLine()?.textContent).toBe(
+        "Deleted 1 model for good. 1 model could not be deleted and stays in the trash; the next purge tries again.",
+      );
+      expect(text()).toContain("Old benchy");
+      expect(text()).not.toContain("Broken clip");
+    });
+
+    test("a page opened while the job runs shows it without taking focus, and ends with the right counts", async () => {
+      state.trash = state.trash.map((m) => ({ ...m, purgeStarted: true }));
+      emptying = true;
+      await show("/trash", <TrashPage />);
+      const recorded = recordStatus();
+      expect(statusLine()?.textContent).toBe(EMPTYING);
+      expect(document.activeElement).toBe(document.body);
+      await pollOnce();
+      expect(reads()).toBe(2);
+      finishEmptying(1);
+      await pollOnce();
+      recorded.stop();
+      expect(recorded.seen).toEqual([
+        EMPTYING,
+        "Deleted 1 model for good. 1 model could not be deleted and stays in the trash; the next purge tries again.",
+      ]);
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    test("a page opened with no job running says nothing", async () => {
+      await show("/trash", <TrashPage />);
+      await pollOnce();
+      expect(statusLine()?.textContent).toBe("");
+      expect(reads()).toBe(1);
+    });
   });
 
   test("the dialog keeps focus inside it", async () => {
@@ -2020,7 +2149,7 @@ describe("the trash", () => {
   });
 
   test("after a failed change, the error is announced, Tab cycles and Escape closes", async () => {
-    emptyIncomplete = true;
+    failing.add("POST /app/api/trash/empty");
     await show("/trash", <TrashPage />);
     const release = hold("POST /app/api/trash/empty");
     const empty = button("Empty trash");
@@ -2034,7 +2163,7 @@ describe("the trash", () => {
     await release();
 
     const alert = ask.querySelector('[role="alert"]');
-    expect(alert?.textContent).toContain("1 model could not be deleted");
+    expect(alert?.textContent).toBeTruthy();
     expect(confirm.getAttribute("aria-disabled")).toBe("false");
     expect(focused()).toBe(confirm);
     await press(focused(), "Tab", { shiftKey: true });
