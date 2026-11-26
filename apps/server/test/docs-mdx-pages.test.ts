@@ -11,9 +11,9 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import matter from "@11ty/gray-matter";
 import { createProcessor } from "@mdx-js/mdx";
 import { describe, expect, it } from "vitest";
-import { parse as parseYaml } from "yaml";
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const MDX_PAGES: Record<string, string> = {
@@ -38,49 +38,70 @@ interface MdxNode {
  * A page's front matter as gray-matter, which Docusaurus reads it with, finds
  * it: from an opening "---" at the very start to the next line that starts
  * with "---". Null when the page has none. The end is where the page's body
- * starts. The opening line itself is checked by frontMatterProblems.
+ * starts; the closer is the closing line, null when the front matter never
+ * closes. The opening and closing lines are checked by frontMatterProblems.
  */
-function frontMatter(text: string): { opener: string; yaml: string; end: number } | null {
+function frontMatter(text: string): { opener: string; closer: string | null; end: number } | null {
   if (!text.startsWith("---") || text.charAt(3) === "-") return null;
   const firstBreak = text.indexOf("\n");
   const opener = firstBreak === -1 ? text : text.slice(0, firstBreak);
   const close = text.indexOf("\n---", opener.length);
-  if (close === -1) return { opener, yaml: text.slice(opener.length), end: text.length };
+  if (close === -1) return { opener, closer: null, end: text.length };
   const lineEnd = text.indexOf("\n", close + 1);
-  return {
-    opener,
-    yaml: text.slice(opener.length, close),
-    end: lineEnd === -1 ? text.length : lineEnd + 1,
-  };
+  const end = lineEnd === -1 ? text.length : lineEnd + 1;
+  return { opener, closer: text.slice(close + 1, lineEnd === -1 ? text.length : lineEnd), end };
 }
+
+// gray-matter would eval ---js front matter. frontMatterProblems refuses any
+// opener but --- before it calls gray-matter, and this engine refuses again.
+const NO_JAVASCRIPT = {
+  javascript: (): object => {
+    throw new Error("JavaScript front matter is refused");
+  },
+};
 
 /**
  * Why a docs page's front matter or fences could let MDX in, as a list; empty
  * when it is plain. Every page: no carriage return or byte order mark (either
  * changes how gray-matter splits the page), an opening line of exactly "---"
  * (gray-matter takes ---json, ---js and others as an engine, and eval's ---js
- * while the site builds), front matter that parses as YAML, and no
- * mdx-code-block fence (Docusaurus unwraps those before MDX compiles the
- * page). The YAML is parsed, so a quoted key, a tag, an alias or an escape
- * still shows as an mdx key: a page not allowed MDX has none, and an allowed
- * page's is exactly { format: "mdx" }.
+ * while the site builds), a closing line of exactly "---" (remark-frontmatter,
+ * which MDX compiles the page with, ends the front matter only there, so with
+ * anything else the two would split the page in different places), front
+ * matter that parses, and no mdx-code-block fence (Docusaurus unwraps those
+ * before MDX compiles the page). The front matter is read by gray-matter
+ * itself, with its js-yaml, so a quoted key, a tag, an alias, an escape, a
+ * merge key or a collection key shows as an mdx key exactly when Docusaurus
+ * sees one: a page not allowed MDX has none, and an allowed page's is exactly
+ * { format: "mdx" }.
  */
 function frontMatterProblems(text: string, mdxAllowed: boolean): string[] {
   const problems: string[] = [];
   if (text.includes("\r")) problems.push("holds a carriage return");
-  if (text.startsWith("\uFEFF")) problems.push("starts with a byte order mark");
   if (text.includes("mdx-code-block")) problems.push("holds an mdx-code-block fence");
+  if (text.startsWith("\uFEFF")) {
+    problems.push("starts with a byte order mark");
+    return problems;
+  }
   const front = frontMatter(text);
   if (text.startsWith("---") && front?.opener !== "---") {
     problems.push(`its first line is ${JSON.stringify(text.split("\n")[0])}, not exactly ---`);
     return problems;
   }
+  if (front && front.closer !== "---") {
+    problems.push(
+      front.closer === null
+        ? "its front matter never closes"
+        : `its front matter's closing line is ${JSON.stringify(front.closer)}, not exactly ---`,
+    );
+    return problems;
+  }
   let data: unknown = null;
   try {
-    data = front ? parseYaml(front.yaml) : null;
+    data = matter(text, { engines: NO_JAVASCRIPT }).data;
   } catch (e) {
     problems.push(
-      `its front matter is not YAML: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`,
+      `its front matter does not parse: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`,
     );
     return problems;
   }
@@ -212,6 +233,11 @@ describe("the MDX docs pages", () => {
     ["JavaScript front matter", '---js\n{ mdx: { format: "mdx" } }\n---\n'],
     ["a byte order mark before the front matter", "\uFEFF---js\n{}\n---\n"],
     ["front matter that is not valid YAML", "---\nmdx: [\n---\n"],
+    ["a merge key", "---\n<<: {mdx: {format: mdx}}\n---\n"],
+    ["a merge key through an alias", "---\nm: &a {mdx: {format: mdx}}\n<<: *a\n---\n"],
+    ["a merge key with an escaped name", '---\n<<: [{"\\x6ddx": {format: mdx}}]\n---\n'],
+    ["a collection key", "---\n? [mdx]\n: {format: mdx}\n---\n"],
+    ["front matter that never closes", "---\ndescription: A page.\n"],
   ])("refuses %s on a page not allowed MDX", (_name, text) => {
     expect(frontMatterProblems(text, false)).not.toEqual([]);
   });
@@ -222,6 +248,25 @@ describe("the MDX docs pages", () => {
     ).not.toEqual([]);
     expect(
       frontMatterProblems(PAGE.replace("---\ndescription", "---js\ndescription"), true),
+    ).not.toEqual([]);
+  });
+
+  // remark-frontmatter, which MDX compiles the page with, ends the front
+  // matter only at a line of exactly ---; gray-matter ends it at any line that
+  // starts with ---. Text after the closing --- would be read as front matter
+  // by one and compiled as MDX by the other, so the closing line must be ---.
+  it.each([
+    ["an expression", "---{alert(1)}"],
+    ["JSX", "--- <b onClick={() => alert(1)}>x</b>"],
+  ])("refuses an allowed page with %s after its closing ---", (_name, closer) => {
+    const page = PAGE.replace("  format: mdx\n---\n", `  format: mdx\n${closer}\n`);
+    expect(page).not.toEqual(PAGE);
+    expect(frontMatterProblems(page, true)).not.toEqual([]);
+  });
+
+  it("refuses an allowed page whose front matter never closes", () => {
+    expect(
+      frontMatterProblems("---\ndescription: A page.\nmdx:\n  format: mdx\n", true),
     ).not.toEqual([]);
   });
 
