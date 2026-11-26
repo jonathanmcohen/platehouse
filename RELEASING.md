@@ -91,6 +91,9 @@ git push origin --delete refs/tags/vX.Y.Z
 git tag -d vX.Y.Z
 ```
 
+If two release tags are pushed close together, check that the site shows the highest one; if it
+does not, run docs-pages by hand from that tag.
+
 ### Publishing a docs fix
 
 Merge the fix to main, then run the workflow by hand from main
