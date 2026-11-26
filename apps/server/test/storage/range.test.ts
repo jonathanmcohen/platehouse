@@ -7,6 +7,7 @@ import type { Config } from "../../src/config.js";
 import {
   BlobNotFound,
   createBlobStore,
+  objectSize,
   StoreError,
   StoreUnavailable,
 } from "../../src/storage/s3.js";
@@ -56,6 +57,36 @@ describe("getBlobRange", () => {
     expect(fake.requests[0]?.method).toBe("GET");
     expect(fake.requests[0]?.path).toBe(`/platehouse-test/${KEY}`);
     expect(fake.requests[0]?.headers.range).toBe("bytes=10-14");
+  });
+
+  it("reports the object's total size from Content-Range", async () => {
+    const { store } = await fakeAt(() => ({
+      status: 206,
+      headers: { "content-type": "application/octet-stream", "content-range": "bytes 10-14/100" },
+      body: "hello",
+    }));
+    expect(objectSize(await store.getBlobRange(KEY, 10, 15))).toBe(100);
+  });
+
+  it.each([
+    ["a 200 with the whole body and no content-range", 200, undefined],
+    ["another start", 206, "bytes 0-4/100"],
+    ["a total of *", 206, "bytes 10-14/*"],
+    ["a non-numeric total", 206, "bytes 10-14/abc"],
+  ])("refuses %s as RangeIgnored", async (_why, status, contentRange) => {
+    const { fake, store } = await fakeAt(() => ({
+      status,
+      headers: {
+        "content-type": "application/octet-stream",
+        ...(contentRange ? { "content-range": contentRange } : {}),
+      },
+      body: "hello",
+    }));
+    const err = await store.getBlobRange(KEY, 10, 15).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StoreError);
+    expect((err as StoreError).code).toBe("RangeIgnored");
+    expect((err as StoreError).operation).toBe("GetObject");
+    expect(fake.requests).toHaveLength(1);
   });
 
   it("is BlobNotFound when the key does not exist", async () => {
@@ -118,7 +149,7 @@ describe("getBlobRange with a signal", () => {
   it("reads as usual with a signal that does not abort", async () => {
     const { store } = await fakeAt(() => ({
       status: 206,
-      headers: { "content-type": "application/octet-stream" },
+      headers: { "content-type": "application/octet-stream", "content-range": "bytes 0-4/100" },
       body: "hello",
     }));
     const controller = new AbortController();

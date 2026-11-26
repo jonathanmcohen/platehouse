@@ -72,7 +72,11 @@ export interface BlobStore {
    * description re-conversion reads a .3mf's MakerWorld text this way
    * (#357). Errors as getBlobStream's, so a missing key is BlobNotFound and
    * an outage StoreUnavailable, while the bytes are read too; a range the
-   * store refuses is a StoreError. A start or end that is not a whole number,
+   * store refuses is a StoreError. The object's total size, from the store's
+   * Content-Range, is objectSize(stream), as for getBlobStream. An answer
+   * that ignored the range (no Content-Range, another start, or no numeric
+   * total) is refused with StoreError(GetObject, RangeIgnored), so the bytes
+   * of a stream returned are exactly the range asked for. A start or end that is not a whole number,
    * or a range that is empty or runs backwards, is a RangeError, thrown
    * before anything is sent. With a signal, an abort ends the request, and
    * the bytes while they are read, with an AbortError (never a store error,
@@ -325,18 +329,29 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
       const { signal } = opts;
       if (signal?.aborted) throw abortError();
       let body: unknown;
+      let contentRange: string | undefined;
       try {
         const out = await client.send(
           new GetObjectCommand({ Bucket: bucket, Key: key, Range: `bytes=${start}-${end - 1}` }),
           signal ? { abortSignal: signal } : {},
         );
         body = out.Body;
+        contentRange = out.ContentRange;
       } catch (err) {
         if (signal?.aborted) throw abortError();
         throw toStoreError(err, "GetObject", { notFound: true });
       }
       if (!(body instanceof Readable)) throw new StoreError("GetObject", "NoBody");
-      const out = withStoreErrors(body, "GetObject");
+      // A store that ignored the Range sends the whole object with no
+      // Content-Range (or another one): refuse it, so a caller never takes
+      // bytes from the wrong place as the range it asked for.
+      const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(contentRange ?? "");
+      const total = match ? Number(match[3]) : Number.NaN;
+      if (!match || Number(match[1]) !== start || !Number.isSafeInteger(total)) {
+        body.destroy();
+        throw new StoreError("GetObject", "RangeIgnored");
+      }
+      const out = reportObjectSize(withStoreErrors(body, "GetObject"), total);
       if (signal) {
         const onAbort = () => out.destroy(abortError());
         signal.addEventListener("abort", onAbort, { once: true });
