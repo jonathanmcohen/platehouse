@@ -3380,9 +3380,14 @@ test("release-notes: runs after release and slicer-image and by hand, one tag at
     /^on:\n {2}workflow_run:\n {4}workflows: \[release, slicer-image\]\n {4}types: \[completed\]\n {2}workflow_dispatch:\n {4}inputs:\n {6}tag:\n {8}description: .+\n {8}required: true\n {8}type: string\n$/,
   );
   assert.match(t, /^name: release-notes$/m);
-  assert.match(
-    t,
-    /\nconcurrency:\n {2}group: release-notes-\$\{\{ github\.event\.workflow_run\.head_branch \|\| inputs\.tag \}\}\n {2}cancel-in-progress: false\n/,
+  // release-notes-<tag> for every run of this repository; a run from a fork
+  // (which the job's gate then skips) gets its own group, so a fork branch
+  // named like a tag never replaces the real run's pending one.
+  assert.ok(
+    t.includes(
+      "\nconcurrency:\n  group: release-notes-${{ github.event.workflow_run.head_branch || inputs.tag }}${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name != github.repository && format('-fork-{0}', github.event.workflow_run.head_repository.full_name) || '' }}\n  cancel-in-progress: false\n",
+    ),
+    t.slice(t.indexOf("\nconcurrency:"), t.indexOf("\nconcurrency:") + 400),
   );
   assert.match(t, /^permissions:\n {2}contents: read\n(?! {2}\S)/m);
   assert.deepEqual(workflowEnv(t), { APP_IMAGE: NOTES_APP, SLICER_IMAGE: NOTES_SLICER });

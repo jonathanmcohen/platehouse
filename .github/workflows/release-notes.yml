@@ -55,9 +55,12 @@ on:
 permissions:
   contents: read
 
-# One run at a time for each tag; a run in progress is never cancelled.
+# One run at a time for each tag; a run in progress is never cancelled. A run
+# from a fork's workflow, which the job's gate skips, gets a group of its own,
+# so a fork branch named like a tag never replaces this repository's pending
+# run for that tag.
 concurrency:
-  group: release-notes-${{ github.event.workflow_run.head_branch || inputs.tag }}
+  group: release-notes-${{ github.event.workflow_run.head_branch || inputs.tag }}${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name != github.repository && format('-fork-{0}', github.event.workflow_run.head_repository.full_name) || '' }}
   cancel-in-progress: false
 
 env:
