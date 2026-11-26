@@ -5,12 +5,15 @@
 // undone: it ends every session of that person (POST /app/api/users/sign-out),
 // and with the box ticked also revokes every API token they made. The box
 // starts unticked, so revoking a person's scripts is always a choice. A
-// token whose maker is unknown is never revoked here; the token list above
-// shows those, to revoke by hand.
+// second box, shown only while tokens with no recorded maker exist (made
+// before Platehouse 0.1.1), revokes those too. It is unticked on every open,
+// and since any member may have made them it can stop a shared script.
 //
 // Every signed-in user may use it, but signing someone else out needs a
 // sign-in in the last few minutes: the server refuses it otherwise with
-// sign_in_required, and the page says so with a Sign in again link. After a
+// sign_in_required, and the page says so with a Sign in again link. Revoking
+// tokens with no recorded maker needs that fresh sign-in for anyone, yourself
+// included, and has its own wording. After a
 // change the status line says what was ended, the list is read again, and so
 // is the token list (onTokensRevoked) when tokens were revoked. Signing yourself out
 // everywhere ends this session too, so the page says so and offers a Sign in
@@ -39,6 +42,7 @@ export interface KnownUser {
 interface SignOutAnswer {
   sessionsEnded: number;
   tokensRevoked: number;
+  unknownTokensRevoked: number;
 }
 
 /** First strong isolate and pop directional isolate, around a name in plain text. */
@@ -94,15 +98,18 @@ function UserName({ user }: { user: KnownUser }): ReactNode {
 
 export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void }) {
   const { t } = useI18n();
-  const list = useAppApi<{ users: KnownUser[] }>("/users");
+  const list = useAppApi<{ users: KnownUser[]; unknownTokens: number }>("/users");
   const [asking, setAsking] = useState<KnownUser | null>(null);
   const [revokeTokens, setRevokeTokens] = useState(false);
+  const [revokeUnknown, setRevokeUnknown] = useState(false);
   const [status, setStatus] = useState<{ text: string; self: boolean } | null>(null);
-  /** True after a sign-out of someone else refused for an older sign-in. */
-  const [signInNeeded, setSignInNeeded] = useState(false);
+  /** Set after a sign-out refused for an older sign-in; true when it was the unknown-token box that needed it. */
+  const [signInNeeded, setSignInNeeded] = useState<null | { unknown: boolean }>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const boxId = useId();
+  const unknownBoxId = useId();
   const users = list.data?.users ?? [];
+  const unknownTokens = list.data?.unknownTokens ?? 0;
 
   function shown(user: KnownUser): string {
     const label = userLabel(t, user);
@@ -110,12 +117,15 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
   }
 
   async function signOut(user: KnownUser) {
-    setSignInNeeded(false);
+    setSignInNeeded(null);
+    // The box is only sent as it stands on screen: hidden means false.
+    const unknown = unknownTokens > 0 && revokeUnknown;
     let answer: SignOutAnswer;
     try {
       answer = await appApi<SignOutAnswer>("POST", "/users/sign-out", {
         subject: user.subject,
         revokeTokens,
+        revokeUnknownTokens: unknown,
       });
     } catch (failure) {
       if (!needsSignIn(failure)) throw failure;
@@ -123,7 +133,7 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
       // offer the sign-in; nothing was ended.
       setAsking(null);
       setStatus(null);
-      setSignInNeeded(true);
+      setSignInNeeded({ unknown: unknown && user.you });
       return;
     }
     setAsking(null);
@@ -137,10 +147,14 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
       tokens: answer.tokensRevoked,
     };
     setStatus({
-      text: revokeTokens ? t("signOut.doneRevoked", values) : t("signOut.done", values),
+      text: unknown
+        ? t("signOut.doneRevokedUnknown", { ...values, unknown: answer.unknownTokensRevoked })
+        : revokeTokens
+          ? t("signOut.doneRevoked", values)
+          : t("signOut.done", values),
       self: false,
     });
-    if (answer.tokensRevoked > 0) onTokensRevoked();
+    if (answer.tokensRevoked + answer.unknownTokensRevoked > 0) onTokensRevoked();
     await list.reload();
   }
 
@@ -159,9 +173,10 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
           </>
         ) : null}
       </p>
-      {signInNeeded ? (
+      {signInNeeded !== null ? (
         <p role="alert" className="studio-alert studio-alert-alert" data-sign-out-refused>
-          {t("signOut.signInRequired")} <a href={SIGN_IN_AGAIN_URL}>{t("signOut.signInAgain")}</a>
+          {t(signInNeeded.unknown ? "signOut.signInRequiredUnknown" : "signOut.signInRequired")}{" "}
+          <a href={SIGN_IN_AGAIN_URL}>{t("signOut.signInAgain")}</a>
         </p>
       ) : null}
       {list.error === undefined ? null : (
@@ -189,6 +204,7 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
                   aria-label={t("signOut.buttonLabel", { name: shown(user) })}
                   onClick={() => {
                     setRevokeTokens(false);
+                    setRevokeUnknown(false);
                     setAsking(user);
                   }}
                 >
@@ -220,6 +236,19 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
             />{" "}
             <label htmlFor={boxId}>{t("signOut.revokeTokens", { tokens: asking.tokens })}</label>
           </p>
+          {unknownTokens > 0 ? (
+            <p>
+              <input
+                id={unknownBoxId}
+                type="checkbox"
+                checked={revokeUnknown}
+                onChange={(event) => setRevokeUnknown(event.currentTarget.checked)}
+              />{" "}
+              <label htmlFor={unknownBoxId}>
+                {t("signOut.revokeUnknown", { tokens: unknownTokens })}
+              </label>
+            </p>
+          ) : null}
         </ConfirmDialog>
       )}
     </div>

@@ -101,6 +101,8 @@ interface FakeState {
     tokens: number;
     you: boolean;
   }>;
+  /** Live tokens with no recorded maker, as GET /app/api/users counts them. */
+  unknownTokens: number;
   /** When true, a new token is refused because the session's sign-in is too old (issue #322). */
   signInRequired: boolean;
   /** When true, the token list and the user list cannot be read (500). */
@@ -375,12 +377,18 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     state.tokens = state.tokens.filter((t) => t.id !== seg[1]);
     return json(204);
   }
-  if (method === "GET" && path === "/app/api/users") return json(200, { users: state.users });
+  if (method === "GET" && path === "/app/api/users")
+    return json(200, { users: state.users, unknownTokens: state.unknownTokens });
   // Sign out everywhere, as the server does: every session of the user ends,
   // and with revokeTokens every live token they made is revoked.
   if (method === "POST" && path === "/app/api/users/sign-out") {
     if (state.rateLimited) return limited();
-    if (state.signInRequired && body.subject !== "subject-me") return json(403, STALE_ANSWER);
+    // Revoking tokens with no maker needs a fresh sign-in for any target, yourself included.
+    if (
+      state.signInRequired &&
+      (body.subject !== "subject-me" || body.revokeUnknownTokens === true)
+    )
+      return json(403, STALE_ANSWER);
     const user = state.users.find((u) => u.subject === body.subject);
     const sessionsEnded = user?.sessions ?? 0;
     const theirs = state.tokens.filter((t) => t.createdBy?.subject === body.subject);
@@ -395,7 +403,12 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
           : u,
       )
       .filter((u) => u.sessions > 0 || u.tokens > 0);
-    return json(200, { sessionsEnded, tokensRevoked });
+    const unknownTokensRevoked = body.revokeUnknownTokens === true ? state.unknownTokens : 0;
+    if (body.revokeUnknownTokens === true) {
+      state.tokens = state.tokens.filter((t) => t.createdBy !== null);
+      state.unknownTokens = 0;
+    }
+    return json(200, { sessionsEnded, tokensRevoked, unknownTokensRevoked });
   }
   if (method === "GET" && path === "/app/api/trash") {
     // Paged as the server pages it: newest first, 100 to a page, a page past
@@ -571,6 +584,7 @@ beforeEach(() => {
       },
     ],
     users: [{ subject: "subject-me", name: "Synthetic Me", sessions: 1, tokens: 0, you: true }],
+    unknownTokens: 0,
     signInRequired: false,
     listsFail: false,
     rateLimited: false,
@@ -1605,6 +1619,7 @@ describe("the settings page", () => {
     expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
       subject: "subject-gone",
       revokeTokens: false,
+      revokeUnknownTokens: false,
     });
     expect(dialog()).toBeNull();
     expect(signOutStatus()).toContain(
@@ -1687,6 +1702,7 @@ describe("the settings page", () => {
     expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
       subject: "subject-gone",
       revokeTokens: true,
+      revokeUnknownTokens: false,
     });
     expect(signOutStatus()).toContain("revoked 1 API token");
     // The token list is read again, so the revoked token is gone from it.
@@ -1709,6 +1725,7 @@ describe("the settings page", () => {
     expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
       subject: "subject-twin-b",
       revokeTokens: false,
+      revokeUnknownTokens: false,
     });
   });
 
@@ -1731,9 +1748,134 @@ describe("the settings page", () => {
     expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
       subject: "subject-me",
       revokeTokens: false,
+      revokeUnknownTokens: false,
     });
     expect(signOutStatus()).toContain("You are signed out everywhere");
     expect(link("Sign in").getAttribute("href")).toBe("/auth/login");
+  });
+
+  test("Sign out everywhere offers the second box only when tokens have no recorded maker", async () => {
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Me\u2069 (user id subject-me) (you) everywhere"));
+    expect(dialog()?.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
+    expect(dialog()?.textContent).not.toContain("made by an unknown user");
+  });
+
+  test("Sign out everywhere shows the second box unticked, labelled with the count, and unticked again on reopening", async () => {
+    state.unknownTokens = 2;
+    await show("/settings", <SettingsPage />);
+    const open = "Sign out \u2068Synthetic Me\u2069 (user id subject-me) (you) everywhere";
+    await click(button(open));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    expect(boxes).toHaveLength(2);
+    const second = boxes[1] as HTMLInputElement;
+    expect(second.checked).toBe(false);
+    expect(boxes[0]?.id).not.toBe(second.id);
+    const label = (dialog() as HTMLElement).querySelector(`label[for="${second.id}"]`);
+    expect(label?.textContent).toBe(
+      "Also revoke the 2 API tokens made by an unknown user (made before Platehouse 0.1.1; any member may have made them, so a shared script may stop working)",
+    );
+    await click(second);
+    expect(second.checked).toBe(true);
+    await click(button("Cancel", dialog() as HTMLElement));
+    await click(button(open));
+    const again = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    expect(again[1]?.checked).toBe(false);
+  });
+
+  test("Sign out everywhere sends revokeUnknownTokens false when the second box is not ticked", async () => {
+    state.unknownTokens = 1;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: false,
+      revokeUnknownTokens: false,
+    });
+  });
+
+  test("Sign out everywhere sends revokeUnknownTokens true when the second box is ticked", async () => {
+    state.unknownTokens = 1;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    await click(boxes[1] as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: false,
+      revokeUnknownTokens: true,
+    });
+  });
+
+  test("Sign out everywhere names both counts for someone else and reads the token list again for unknown tokens alone", async () => {
+    state.unknownTokens = 1;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    expect(text()).toContain("Office desktop");
+    const tokenReads = callsTo("GET", "/app/api/tokens").length;
+    await click(button("Sign out \u2068Synthetic Gone\u2069 (user id subject-gone) everywhere"));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    await click(boxes[1] as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(signOutStatus()).toContain("Ended 1 session for \u2068Synthetic Gone\u2069");
+    expect(signOutStatus()).toContain("revoked 0 API tokens they made");
+    expect(signOutStatus()).toContain("revoked 1 API token made by an unknown user");
+    expect(callsTo("GET", "/app/api/tokens").length).toBeGreaterThan(tokenReads);
+    expect(text()).not.toContain("Office desktop");
+  });
+
+  test("Sign out everywhere refused for yourself with the second box ticked asks to sign in again", async () => {
+    state.signInRequired = true;
+    state.unknownTokens = 1;
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Me\u2069 (user id subject-me) (you) everywhere"));
+    const boxes = (dialog() as HTMLElement).querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    await click(boxes[1] as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-me",
+      revokeTokens: false,
+      revokeUnknownTokens: true,
+    });
+    const alert = document.querySelector("[data-sign-out-refused]");
+    expect(alert?.textContent).toContain(
+      "To revoke tokens made by an unknown user, sign in again first.",
+    );
+    expect(link("Sign in again").getAttribute("href")).toBe("/auth/login?next=/settings");
+    expect(signOutStatus()).toBe("");
+    expect(text()).toContain("Office desktop");
   });
 
   test("the settings page holds the trash", async () => {

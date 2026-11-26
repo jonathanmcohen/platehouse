@@ -182,9 +182,9 @@ Before and after the steps above, when you go from 0.1.0 to 0.1.1:
   [Sign-in](./sign-in.md#what-platehouse-asks-of-the-provider)). Every other session carries on.
 - **Older tokens have no maker.** Settings now shows who made each API token. Tokens made with
   0.1.0 show "Made by an unknown user (before Platehouse recorded who made each token)"; they keep
-  working. Sign out everywhere never revokes a token with no recorded maker, so after the upgrade
-  check the token list in Settings and revoke any such token you cannot account for (see
-  [Sign-in](./sign-in.md#the-allowed-group), step 3 of cutting someone off).
+  working. From 0.1.2, Sign out everywhere can revoke them with a second box, though a shared
+  script may stop working. Checking the token list in Settings after the upgrade is still a good
+  idea (see [Sign-in](./sign-in.md#the-allowed-group), step 3 of cutting someone off).
 - **Background work after the first start.** Older STL and STEP files get their preview pictures
   in the background ("Preview pictures for older STL and STEP files" under **Scheduled jobs** on
   the Activity page). MakerWorld descriptions imported before 0.1.1 are converted again from their

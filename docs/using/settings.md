@@ -75,16 +75,19 @@ made, with how many of each.
 
 1. Press **Sign out** beside the person.
 2. The **Sign out everywhere?** dialog asks first. To revoke their tokens too, tick its box that
-   reads "Also revoke the N API tokens they made" (N is how many they made).
+   reads "Also revoke the N API tokens they made" (N is how many they made). When tokens with no
+   recorded maker exist, a second box reads "Also revoke the N API tokens made by an unknown
+   user".
 3. Press **Sign out everywhere**.
 
-Tokens made with 0.1.0 have no recorded maker, so Sign out everywhere never revokes them; revoke
-those by hand in the token list (see [Sign-in](../sign-in.md#the-allowed-group), step 3 of
-cutting someone off).
+Tokens made with 0.1.0 have no recorded maker, so no person's Sign out revokes them unless you
+tick the second box. It is shown only while such tokens exist and starts unticked each time the
+dialog opens. Any member may have made those tokens, so a shared script may stop working.
 
 Signing someone else out needs a sign-in from the last 5 minutes. If yours is older, the section
 says so, and **Sign in again** brings you back here after the sign-in. Signing yourself out needs
-only a live session. Each session may use Sign out everywhere at most 10 times in any 10 minutes
+only a live session, except when you tick the second box: that needs a sign-in from the last 5
+minutes for yourself too. Each session may use Sign out everywhere at most 10 times in any 10 minutes
 (see [Security](../security.md#rate-limits)).
 
 ## Model names
