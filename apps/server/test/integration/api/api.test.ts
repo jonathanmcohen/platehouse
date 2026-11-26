@@ -1127,9 +1127,9 @@ describe("the request log", () => {
     expect(lines.length).toBeGreaterThan(50);
     expect(lines.some((line) => line.includes("/api/v1/models"))).toBe(true);
     expect(lines.some((line) => line.includes('"statusCode":401'))).toBe(true);
-    // The suite's own token, a revoked one, one nobody issued, and the two
-    // of the revocation test.
-    expect(sentTokens.length).toBe(5);
+    // The suite's own token, a revoked one, one nobody issued, the two of
+    // the revocation test, and the revoked one the range requests send.
+    expect(sentTokens.length).toBe(6);
     for (const sent of sentTokens) {
       const body = sent.slice(TOKEN_PREFIX.length);
       expect(body).toHaveLength(TOKEN_BODY_LENGTH);
