@@ -3,6 +3,7 @@
 import { describe, expect, test } from "vitest";
 import {
   CONTRACT_VERSION,
+  KERNEL_CAUSES,
   LIMITS,
   REASONS,
   type SliceResult,
@@ -114,6 +115,50 @@ describe("slicer contract v2", () => {
     }
     const off = { state: "off", reason: "check_failed", detail: "x", allowUnsandboxed: true };
     expect(slicerContract.health.safeParse({ ...HEALTH, sandbox: off }).success).toBe(true);
+  });
+
+  test("health takes a kernel cause on the off/old_kernel state, and without one", () => {
+    const off = {
+      state: "off",
+      reason: "old_kernel",
+      detail: "the kernel is too old",
+      allowUnsandboxed: false,
+    };
+    const withCause = { ...off, kernel: "landlock_off" };
+    expect(slicerContract.health.parse({ ...HEALTH, sandbox: withCause }).sandbox).toEqual(
+      withCause,
+    );
+    expect(slicerContract.health.parse({ ...HEALTH, sandbox: off }).sandbox).toEqual(off);
+  });
+
+  test("health refuses a kernel cause on the on and checking states and an unknown cause", () => {
+    for (const state of ["checking", "on"]) {
+      const sandbox = {
+        state,
+        reason: null,
+        detail: null,
+        allowUnsandboxed: false,
+        kernel: "too_old",
+      };
+      expect(slicerContract.health.safeParse({ ...HEALTH, sandbox }).success, state).toBe(false);
+    }
+    const off = {
+      state: "off",
+      reason: "old_kernel",
+      detail: "x",
+      allowUnsandboxed: false,
+      kernel: "nope",
+    };
+    expect(slicerContract.health.safeParse({ ...HEALTH, sandbox: off }).success).toBe(false);
+  });
+
+  test("KERNEL_CAUSES lists the four causes in order", () => {
+    expect([...KERNEL_CAUSES]).toEqual([
+      "too_old",
+      "landlock_off",
+      "landlock_fix_missing",
+      "unknown",
+    ]);
   });
 
   test("health timeouts are positive whole seconds", () => {

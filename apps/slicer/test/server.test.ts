@@ -135,6 +135,9 @@ function setup(
     workMinFreeBytes: 1024 * 1024,
     allowUnsandboxed: false,
     limits: LIMITS,
+    // The test machine's own kernel says nothing about the sandbox: a kernel
+    // below 6.12 makes every old-kernel test read too_old.
+    kernelInfo: () => ({ release: "6.11.0", lsm: null }),
     ...over,
   };
   return { config, stubs, fake, workDir, prlimit };
@@ -1180,6 +1183,152 @@ describe("sandbox self-test: Landlock ABI", () => {
     expect(landrun).toContain("--rw");
     const cmd = landrun.slice(landrun.indexOf("--") + 1);
     expect(cmd).toEqual(["/opt/openscad/AppRun", "--version"]);
+  });
+});
+
+describe("sandbox self-test: the kernel cause", () => {
+  const healthBody = async (base: string, query = "") =>
+    (await (await fetch(`${base}/v1/health${query}`)).json()) as {
+      sandbox: { state: string; reason: string | null; detail: string | null; kernel?: string };
+    };
+  const abiRuns = (log: string) => readFileSync(log, "utf8").trim().split("\n").length;
+  const RETRY = { initialMs: 30, maxMs: 30, busyMs: 10 };
+
+  const CAUSES = [
+    {
+      name: "ABI 5 on 6.11.0",
+      abi: 5,
+      release: "6.11.0",
+      cause: "too_old",
+      suffix: "; the kernel is Linux 6.11.0, older than 6.12",
+    },
+    {
+      name: "ABI 0 on 6.12.3",
+      abi: 0,
+      release: "6.12.3",
+      cause: "landlock_off",
+      suffix:
+        "; the kernel is Linux 6.12.3, 6.12 or newer, so Landlock is turned off in it or the container runtime blocks it; the kernel's security modules could not be read, so it is either",
+    },
+    {
+      name: "ABI 5 on 6.12.3",
+      abi: 5,
+      release: "6.12.3",
+      cause: "landlock_fix_missing",
+      suffix:
+        "; the kernel is Linux 6.12.3, 6.12 or newer, without the 2025 Landlock fix (in 6.12.24, 6.13.12, 6.14.3 and 6.15 or newer): update it",
+    },
+    {
+      name: "ABI 3 on 6.12.0",
+      abi: 3,
+      release: "6.12.0",
+      cause: "unknown",
+      suffix: "; the kernel is Linux 6.12.0, which does not offer the sandbox this server needs",
+    },
+    {
+      name: "ABI 5 on garbage",
+      abi: 5,
+      release: "garbage",
+      cause: "unknown",
+      suffix: "; the kernel is Linux garbage, which does not offer the sandbox this server needs",
+    },
+  ] as const;
+
+  test.each(CAUSES)(
+    "$name is old_kernel with cause $cause, its words in the detail and no retry",
+    async ({ abi, release, cause, suffix }) => {
+      const s = setup({
+        sandboxRetry: RETRY,
+        kernelInfo: () => ({ release, lsm: null }),
+      });
+      const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi });
+      const base = await start({ ...s.config, landrunBin: lr.bin });
+      const { sandbox } = await healthBody(base, "?kernel=1");
+      expect(sandbox.state).toBe("off");
+      expect(sandbox.reason).toBe("old_kernel");
+      expect(sandbox.kernel).toBe(cause);
+      expect(sandbox.detail?.endsWith(suffix)).toBe(true);
+      expect(sandbox.detail).toContain(`the kernel's Landlock ABI is ${abi}, below the 6`);
+      await new Promise((r) => setTimeout(r, 150));
+      expect(abiRuns(lr.abiLog)).toBe(1);
+      expect((await healthBody(base)).sandbox.reason).toBe("old_kernel");
+    },
+  );
+
+  test.each([
+    ["lockdown,capability,yama", "landlock is not among the kernel's security modules"],
+    ["capability,landlock,yama", "landlock is among the kernel's security modules"],
+    [null, "the kernel's security modules could not be read, so it is either"],
+  ])("ABI 0 on 6.12.3 with security modules %j says its sub-case", async (lsm, words) => {
+    const s = setup({ kernelInfo: () => ({ release: "6.12.3", lsm }) });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: 0 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const { sandbox } = await healthBody(base);
+    expect(sandbox.detail).toContain(words);
+  });
+
+  test("a kernel reader that throws is old_kernel, unknown, not retried, and says the release could not be read", async () => {
+    const s = setup({
+      sandboxRetry: RETRY,
+      kernelInfo: () => {
+        throw new Error("no uname");
+      },
+    });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: 5 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const { sandbox } = await healthBody(base, "?kernel=1");
+    expect(sandbox.state).toBe("off");
+    expect(sandbox.reason).toBe("old_kernel");
+    expect(sandbox.kernel).toBe("unknown");
+    expect(sandbox.detail?.endsWith("; the kernel's release could not be read")).toBe(true);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(abiRuns(lr.abiLog)).toBe(1);
+  });
+
+  test("health has the cause only with ?kernel=1", async () => {
+    const s = setup({ kernelInfo: () => ({ release: "6.12.3", lsm: null }) });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: 0 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const plain = await healthBody(base);
+    expect(Object.hasOwn(plain.sandbox, "kernel")).toBe(false);
+    for (const query of ["?kernel=0", "?kernel=", "?kernel=true"]) {
+      expect(Object.hasOwn((await healthBody(base, query)).sandbox, "kernel"), query).toBe(false);
+    }
+    expect((await healthBody(base, "?kernel=1")).sandbox.kernel).toBe("landlock_off");
+    // the 503 body is unchanged by the cause
+    const res = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(10);" });
+    expect(Object.keys((await res.json()) as object).sort()).toEqual(["detail", "error", "reason"]);
+  });
+
+  test("a check_failed has no cause, with or without ?kernel=1", async () => {
+    const s = setup({ sandboxRetry: { initialMs: 5000, maxMs: 5000, busyMs: 10 } });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "other" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    for (const query of ["", "?kernel=1"]) {
+      const { sandbox } = await healthBody(base, query);
+      expect(sandbox.reason).toBe("check_failed");
+      expect(Object.hasOwn(sandbox, "kernel"), query).toBe(false);
+    }
+  });
+
+  test("an on sandbox has no cause with ?kernel=1, and every health body parses", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const body = await healthBody(base, "?kernel=1");
+    expect(body.sandbox.state).toBe("on");
+    expect(Object.hasOwn(body.sandbox, "kernel")).toBe(false);
+    expect(slicerContract.health.safeParse(body).success).toBe(true);
+  });
+
+  test("an old_kernel health body parses, with and without the cause", async () => {
+    const s = setup({ kernelInfo: () => ({ release: "6.12.3", lsm: "capability" }) });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: 0 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    for (const query of ["", "?kernel=1"]) {
+      const res = await fetch(`${base}/v1/health${query}`);
+      expect(slicerContract.health.safeParse(await res.json()).success, query).toBe(true);
+    }
   });
 });
 

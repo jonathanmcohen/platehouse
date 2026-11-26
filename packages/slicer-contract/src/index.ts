@@ -23,7 +23,8 @@
 // The slicer runs that check at start-up, holding the heavy-job lock (so
 // health.busy is true and a job is 409 busy while it runs), and runs it again
 // after a check_failed, never after an old_kernel. health.sandbox reports
-// where it stands. With SLICER_ALLOW_UNSANDBOXED set, a slice or a STEP
+// where it stands; GET /v1/health?kernel=1 adds "kernel", the cause of an
+// old_kernel (KERNEL_CAUSES), to the off state, and only to it. With SLICER_ALLOW_UNSANDBOXED set, a slice or a STEP
 // conversion runs without the sandbox instead of answering 503; a render or
 // an STL picture never does. health.timeouts are the time caps, in whole
 // seconds, so a caller can size its own timers from them.
@@ -139,6 +140,15 @@ const contract = z.literal(CONTRACT_VERSION);
 export const SANDBOX_OFF_REASONS = ["old_kernel", "check_failed"] as const;
 const sandboxOffReason = z.enum(SANDBOX_OFF_REASONS);
 
+/** Why an old_kernel is old: health adds it to the off state on `?kernel=1`. */
+export const KERNEL_CAUSES = [
+  "too_old",
+  "landlock_off",
+  "landlock_fix_missing",
+  "unknown",
+] as const;
+export type KernelCause = (typeof KERNEL_CAUSES)[number];
+
 /** SLICER_ALLOW_UNSANDBOXED: a slice or STEP conversion may run unsandboxed. */
 const allowUnsandboxed = z.boolean();
 
@@ -167,6 +177,7 @@ export const health = z.strictObject({
       reason: sandboxOffReason,
       detail: z.string().min(1),
       allowUnsandboxed,
+      kernel: z.enum(KERNEL_CAUSES).optional(),
     }),
   ]),
   timeouts: z.strictObject({

@@ -58,6 +58,7 @@ import { fileURLToPath } from "node:url";
 import {
   CONTRACT_VERSION,
   type ErrorBody,
+  type KernelCause,
   LIMITS,
   type Limits,
   type SandboxOffBody,
@@ -67,6 +68,7 @@ import {
 import { readProject } from "@platehouse/threemf";
 import { z } from "zod";
 import { closeLingering, guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
+import { type KernelInfo, readKernelInfo } from "./kernel.js";
 import {
   bedTooSmall,
   isCleanOffBed,
@@ -140,6 +142,8 @@ export interface SlicerConfig {
    * conversion still runs (without the sandbox); renders never do.
    */
   allowUnsandboxed: boolean;
+  /** The kernel's release and security modules, read when the check finds an old kernel. Default readKernelInfo. */
+  kernelInfo?: () => KernelInfo;
   /** The start-up check's retry delays; tests shorten them. Default SANDBOX_RETRY. */
   sandboxRetry?: SandboxRetry;
   /**
@@ -729,7 +733,19 @@ export function createSlicer(config: SlicerConfig): Slicer {
   let checkFailures = 0;
   let sandboxCheck: Promise<void> = Promise.resolve();
 
+  // The kernel cause of an old_kernel; null otherwise. Health shows it only on ?kernel=1.
+  let kernelCauseOfOff: KernelCause | null = null;
+
   const sandboxState = (): SandboxState => ({ ...sandbox });
+
+  /** Adds the kernel cause on ?kernel=1, to the off state of an old_kernel only. */
+  const withKernelCause = (state: SandboxState, url: URL): SandboxState =>
+    url.searchParams.get("kernel") === "1" &&
+    state.state === "off" &&
+    state.reason === "old_kernel" &&
+    kernelCauseOfOff !== null
+      ? { ...state, kernel: kernelCauseOfOff }
+      : state;
 
   const sandboxOff = (): SandboxOffBody => ({
     error: "sandbox_off",
@@ -769,6 +785,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
   const failedCheck = (detail: string): SandboxCheck => ({
     ok: false,
     reason: "check_failed",
+    kernel: null,
     detail,
   });
 
@@ -785,6 +802,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
     log(`sandbox self-test: ${result.ok ? "ok" : "FAILED"}: ${result.detail}`);
     if (result.ok) {
       sandbox = { ...sandbox, state: "on", reason: null, detail: null };
+      kernelCauseOfOff = null;
       return;
     }
     sandbox = {
@@ -793,6 +811,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
       reason: result.reason ?? "check_failed",
       detail: result.detail,
     };
+    kernelCauseOfOff = result.reason === "old_kernel" ? result.kernel : null;
     // An old kernel stays old until a restart; anything else may pass later.
     if (result.reason !== "old_kernel") {
       checkFailures += 1;
@@ -815,7 +834,16 @@ export function createSlicer(config: SlicerConfig): Slicer {
       // A retry that falls due while a job runs waits for it, shortly.
       if (!job) return scheduleSandboxCheck(retry.busyMs);
       try {
-        result = await sandboxSelfTest(config, job.dir, config.sandboxProbe, job.track);
+        result = await sandboxSelfTest(
+          config,
+          job.dir,
+          {
+            probe: config.sandboxProbe,
+            siblingDir: job.dir,
+            kernelInfo: config.kernelInfo ?? readKernelInfo,
+          },
+          job.track,
+        );
       } catch (err) {
         result = failedCheck(
           `the self-test could not run: ${err instanceof Error ? err.message : String(err)}`,
@@ -1017,7 +1045,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
           orca: config.orcaVersion,
           openscad: config.openscadVersion,
           busy: holder !== null,
-          sandbox: sandboxState(),
+          sandbox: withKernelCause(sandboxState(), url),
           timeouts: {
             sliceSeconds: config.sliceTimeoutSeconds,
             scadSeconds: config.scadTimeoutSeconds,

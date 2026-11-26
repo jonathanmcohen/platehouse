@@ -21,6 +21,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import type { KernelCause } from "@platehouse/slicer-contract";
+import { type KernelInfo, kernelCause, kernelDetail } from "./kernel.js";
 import {
   type GroupResult,
   ledInMessage,
@@ -212,6 +214,18 @@ export interface SandboxCheck {
    * failure, inconclusive ones included. null when the check passed.
    */
   reason: "old_kernel" | "check_failed" | null;
+  /** Which kernel cause made it old_kernel: non-null exactly when reason is old_kernel. */
+  kernel: KernelCause | null;
+}
+
+/** What the sandbox self-test needs from outside the job folder. */
+export interface SelfTestInputs {
+  /** A file outside every job folder that the check imports. */
+  probe: string;
+  /** A folder next to the job folder that the check may not read. */
+  siblingDir: string;
+  /** The kernel's release and security modules; read only once the ABI check fails. */
+  kernelInfo: () => KernelInfo;
 }
 
 /** OpenSCAD's warning for a file import() cannot open (src/io/import_stl.cc). */
@@ -250,13 +264,15 @@ const ABI_CHECK_SECONDS = 30;
 export async function sandboxSelfTest(
   config: ScadConfig,
   dir: string,
-  probe: string,
+  inputs: SelfTestInputs,
   track?: (kill: (() => void) | null) => void,
 ): Promise<SandboxCheck> {
+  const { probe } = inputs;
   if (!existsSync(probe) || statSync(probe).size === 0) {
     return {
       ok: false,
       reason: "check_failed",
+      kernel: null,
       detail: `the sandbox probe ${probe} is missing, so the sandbox cannot be checked`,
     };
   }
@@ -267,6 +283,7 @@ export async function sandboxSelfTest(
     return {
       ok: false,
       reason: "check_failed",
+      kernel: null,
       detail: `the check was inconclusive: the sandbox probe ${probe} cannot be read by the server (${code}), so OpenSCAD failing to open it would prove nothing`,
     };
   }
@@ -281,14 +298,25 @@ export async function sandboxSelfTest(
     return {
       ok: false,
       reason: "check_failed",
+      kernel: null,
       detail: `the check was inconclusive: landrun did not report the kernel's Landlock ABI (${abi.detail})`,
     };
   }
   if (abi.abi < MIN_LANDLOCK_ABI) {
+    // The cause only adds words: the reason stays old_kernel, whatever it is.
+    let info: KernelInfo | null = null;
+    let kernel: KernelCause = "unknown";
+    try {
+      info = inputs.kernelInfo();
+      kernel = kernelCause(abi.abi, info.release);
+    } catch {
+      info = null;
+    }
     return {
       ok: false,
       reason: "old_kernel",
-      detail: `the kernel's Landlock ABI is ${abi.abi}, below the ${MIN_LANDLOCK_ABI} this sandbox needs, so OpenSCAD would run with fewer restrictions than it is built for`,
+      kernel,
+      detail: `the kernel's Landlock ABI is ${abi.abi}, below the ${MIN_LANDLOCK_ABI} this sandbox needs, so OpenSCAD would run with fewer restrictions than it is built for${kernelDetail(kernel, info)}`,
     };
   }
   const abiText = `Landlock ABI ${abi.abi}${abi.atLeast ? " or newer" : ""}`;
@@ -299,6 +327,7 @@ export async function sandboxSelfTest(
     return {
       ok: false,
       reason: "check_failed",
+      kernel: null,
       detail: `OpenSCAD read ${probe} from outside its job folder under landrun`,
     };
   }
@@ -310,12 +339,14 @@ export async function sandboxSelfTest(
     return {
       ok: true,
       reason: null,
+      kernel: null,
       detail: `${abiText}; landrun blocked a read of ${probe}: ${refusal.trim()}`,
     };
   }
   return {
     ok: false,
     reason: "check_failed",
+    kernel: null,
     detail: `the check was inconclusive: OpenSCAD did not report that it could not open ${probe} (${r.message.split("\n").at(-1) ?? ""})`,
   };
 }
