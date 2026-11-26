@@ -537,14 +537,17 @@ export function createSlicer(config: SlicerConfig): Slicer {
 
   const track = (): Tracker => {
     let current: (() => void) | null = null;
-    // Once killNow has run, the job is over: a program registered after it
-    // is killed at once, so nothing starts outside the lock.
+    // Once killNow has run, the job is over, and once close() has run the
+    // server is: a program registered after either is killed at once, so
+    // nothing starts outside the lock, and a self-test render that starts
+    // after the kill pass of close() does not run to its time cap. `closed`
+    // is declared further down and is read only when a program registers.
     let over = false;
     const set = (kill: (() => void) | null) => {
       if (current) running.delete(current);
       current = null;
       if (!kill) return;
-      if (over) {
+      if (over || closed) {
         kill();
         return;
       }

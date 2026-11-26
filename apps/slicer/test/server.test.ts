@@ -1078,9 +1078,10 @@ describe("start-up sandbox check: the lock and the retries", () => {
 
   test("a check_failed is tried again after the back-off, until a check passes", async () => {
     const s = setup({ sandboxRetry: { initialMs: 50, maxMs: 100, busyMs: 10 } });
-    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "other" });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "read" });
     const base = await start({ ...s.config, landrunBin: lr.bin });
     expect((await healthOf(base)).sandbox.reason).toBe("check_failed");
+    // the first probe case reads, so the check stops after its first run
     expect(lines(lr.runsLog)).toBe(1);
     // retries at 50 ms, then 100 ms, then every 100 ms: three more checks
     await waitFor(() => lines(lr.runsLog) >= 4);
@@ -1148,6 +1149,22 @@ describe("start-up sandbox check: the lock and the retries", () => {
     expect(lines(lr.runsLog)).toBe(1);
     expect(readdirSync(s.workDir)).toEqual([]);
   });
+
+  test("close() between the ABI check and the probe render stops the render at once", async () => {
+    const s = setup({ scadTimeoutSeconds: 20 });
+    const lr = fakeLandrun(
+      s.stubs,
+      { kind: "ok", content: "solid ok" },
+      { abi: 9, abiLingerMs: 1500, probe: "hang" },
+    );
+    await start({ ...s.config, landrunBin: lr.bin }, false);
+    await waitForFile(lr.abiLog);
+    await new Promise((r) => setTimeout(r, 200));
+    const asked = Date.now();
+    await running.pop()?.close();
+    expect(Date.now() - asked).toBeLessThan(5000);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  }, 30_000);
 
   test("health reports the time caps and the upload time", async () => {
     const s = setup({ sliceTimeoutSeconds: 31, scadTimeoutSeconds: 32, stepTimeoutSeconds: 33 });
@@ -1991,6 +2008,23 @@ describe("one heavy job at a time", () => {
     await expectBusy(await scad(base, "stl"));
     await expectBusy(await step(base));
     expect(() => readFileSync(s.fake.argsLog)).toThrow();
+    expect((await first).status).toBe(200);
+    const after = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+    expect(after.busy).toBe(false);
+  });
+
+  test("a slice, a STEP conversion and a second render are 409 busy while a render runs", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { renderDelayMs: 1500 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const first = scad(base, "stl");
+    // the self-test's four cases, then the render, which sleeps
+    await waitFor(() => readFileSync(lr.runsLog, "utf8").trim().split("\n").length >= 5);
+    const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+    expect(health.busy).toBe(true);
+    await expectBusy(await postSlice(base, sliceable()));
+    await expectBusy(await step(base));
+    await expectBusy(await scad(base, "stl"));
     expect((await first).status).toBe(200);
     const after = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
     expect(after.busy).toBe(false);

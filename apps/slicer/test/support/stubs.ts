@@ -179,6 +179,9 @@ export type AbiMode = number | "garbled";
  * --best-effort is the ABI check: it is counted in landrun-abi.log, not in
  * landrun.log or landrun-runs.log. setRenderDelay (or opts.renderDelayMs)
  * makes every OpenSCAD run that is not the self-test sleep that long first.
+ * opts.abiLingerMs makes a passing ABI check leave a background sleep that
+ * long, holding its pipes, after it exits 0. The sleep is in its own process
+ * group (set -m), as a setsid() helper is, so the group kill at exit misses it.
  * "big" writes a sparse output file of `bytes` bytes, so a test can pass the
  * render output cap without filling the disk. "fsize" acts out prlimit's
  * file-size limit: it writes part of the output, then dies of SIGXFSZ, as the
@@ -199,7 +202,7 @@ export function fakeLandrun(
      * body that reached the job folder.
      */
     | { kind: "inputs" },
-  opts: { probe?: ProbeMode; abi?: AbiMode; renderDelayMs?: number } = {},
+  opts: { probe?: ProbeMode; abi?: AbiMode; renderDelayMs?: number; abiLingerMs?: number } = {},
 ): {
   bin: string;
   argsLog: string;
@@ -257,6 +260,9 @@ exit 0
   }
   // landrun v0.1.17 without --best-effort, as it fails on an older kernel
   // (internal/log, go-landlock restrict.go).
+  // abiLingerMs: a strict run that passes still leaves a background sleep
+  // holding its pipes, so the caller sees the run end only after that long.
+  const abiLinger = opts.abiLingerMs ? `    ( set -m; sleep ${opts.abiLingerMs / 1000} & )\n` : "";
   const abiCheck = `strict=yes
 for a in "$@"; do [ "$a" = "--best-effort" ] && strict=no; done
 if [ "$strict" = yes ]; then
@@ -267,7 +273,9 @@ if [ "$strict" = yes ]; then
       printf '%s\\n' '[landrun:error] 2026/11/11 00:00:00 something else went wrong' >&2
       exit 1 ;;
   esac
-  if [ "$abi" -ge 9 ]; then exit 0; fi
+  if [ "$abi" -ge 9 ]; then
+${abiLinger}    exit 0
+  fi
   printf '[landrun:error] 2026/11/11 00:00:00 Failed to apply sandbox: failed to apply Landlock restrictions: missing kernel Landlock support. Got Landlock ABI v%s, wanted {Landlock V9; FS: all; Net: all; Scoped: all}\\n' "$abi" >&2
   exit 1
 fi
