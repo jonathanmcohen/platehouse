@@ -229,6 +229,7 @@ import {
   RENDER_UPLOAD_TIMEOUT_MS,
   RenderFailed,
   type RenderOutput,
+  replaceSandboxMessage,
   SandboxOff,
   SlicerDown,
   SlicerFault,
@@ -423,19 +424,22 @@ const WRONG_TYPE_MESSAGE: Readonly<Record<DerivableKind, string>> = {
   step: "The replacement is not a STEP file; nothing was saved",
   stl: "The replacement is not an STL file; nothing was saved",
 };
-const TOO_LARGE_MESSAGE: Readonly<Record<"scad" | "step", string>> = {
-  scad: "The replacement is larger than the 1 MiB the renderer takes; nothing was saved",
-  step: "The replacement is larger than the 256 MiB the converter takes; nothing was saved",
-};
 /**
  * The renderer's limit for each kind's source (the contract's, which scad.ts
- * and step.ts enforce). An STL has none here: one over the preview limit is
- * still a whole STL with a 3D view, so a replacement over it is taken and
- * only its preview fails (DERIVED_MESSAGES.stlTooLarge).
+ * and step.ts enforce) and the sentence for a replacement over it. An STL has
+ * none here: one over the preview limit is still a whole STL with a 3D view,
+ * so a replacement over it is taken and only its preview fails
+ * (DERIVED_MESSAGES.stlTooLarge).
  */
-const BODY_LIMIT: Partial<Record<DerivableKind, number>> = {
-  scad: LIMITS.scadBodyBytes,
-  step: LIMITS.stepBodyBytes,
+const TOO_LARGE: Partial<Record<DerivableKind, { limit: number; message: string }>> = {
+  scad: {
+    limit: LIMITS.scadBodyBytes,
+    message: "The replacement is larger than the 1 MiB the renderer takes; nothing was saved",
+  },
+  step: {
+    limit: LIMITS.stepBodyBytes,
+    message: "The replacement is larger than the 256 MiB the converter takes; nothing was saved",
+  },
 };
 
 /**
@@ -897,6 +901,9 @@ export function createDerived(deps: DerivedDeps) {
     try {
       return await db.transaction().execute(async (trx) => {
         if (requeue !== undefined) {
+          // The model lock first, the order lockFor and a purge take locks
+          // in: a model trashed or being purged since the check gets nothing.
+          if (!(await lockModel(trx, file.modelId, true))) return null;
           const locked = await trx
             .selectFrom("files")
             .select(["derivedStatus", "derivedMessage", "blobId"])
@@ -940,12 +947,16 @@ export function createDerived(deps: DerivedDeps) {
     } catch (error) {
       // The queueing error is the one rethrown. If the database is what
       // failed, this write fails too and the file keeps derived_status null
-      // with no job; the render check (checkRenders) queues it later.
-      await commitQueueFailed(file.id, job.kind).catch((statusError) => {
-        console.error(
-          `derived: file ${file.id} left for the render check: ${describe(statusError)}`,
-        );
-      });
+      // with no job; the render check (checkRenders) queues it later. A
+      // requeue never writes the failure: the file keeps the sentence it was
+      // chosen for, and the next run tries it again.
+      if (requeue === undefined) {
+        await commitQueueFailed(file.id, job.kind).catch((statusError) => {
+          console.error(
+            `derived: file ${file.id} left for the render check: ${describe(statusError)}`,
+          );
+        });
+      }
       throw error;
     }
   }
@@ -1005,14 +1016,10 @@ export function createDerived(deps: DerivedDeps) {
       throw new DerivedError("wrong_type", WRONG_TYPE_MESSAGE[kind]);
     }
     // One the renderer would refuse could never render, so it is refused
-    // here, before anything is stored. An STL has no such limit (BODY_LIMIT).
-    const limit = BODY_LIMIT[kind];
-    if (limit !== undefined && size > limit) {
-      // BODY_LIMIT and TOO_LARGE_MESSAGE have the same two kinds.
-      throw new DerivedError(
-        "too_large",
-        TOO_LARGE_MESSAGE[kind as keyof typeof TOO_LARGE_MESSAGE],
-      );
+    // here, before anything is stored. An STL has no such limit (TOO_LARGE).
+    const tooLarge = TOO_LARGE[kind];
+    if (tooLarge !== undefined && size > tooLarge.limit) {
+      throw new DerivedError("too_large", tooLarge.message);
     }
 
     const blobId = uuidv7();
@@ -1983,7 +1990,9 @@ export function createDerived(deps: DerivedDeps) {
           file,
           source,
           replacing,
-          sandboxMessage(SANDBOX_KIND[job.kind], error.reason),
+          replacing
+            ? replaceSandboxMessage(error.reason)
+            : sandboxMessage(SANDBOX_KIND[job.kind], error.reason),
           error.reason === "old_kernel" ? "sandbox_off_kernel" : "sandbox_off_check",
           selfJobId,
         );

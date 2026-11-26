@@ -163,6 +163,8 @@
   "derived.renderLost": "Le rendu ne s'est pas termin\u00e9.",
   "derived.replaceFailed": "Le trancheur n'a pas pu faire le rendu du fichier de remplacement, il n'a donc pas \u00e9t\u00e9 enregistr\u00e9.",
   "derived.replaceLost": "Le rendu du fichier de remplacement ne s'est pas termin\u00e9, il n'a donc pas \u00e9t\u00e9 enregistr\u00e9.",
+  "derived.replaceSandboxOffCheck": "La v\u00e9rification du bac \u00e0 sable du trancheur a \u00e9chou\u00e9, le fichier de remplacement n'a donc pas \u00e9t\u00e9 enregistr\u00e9.",
+  "derived.replaceSandboxOffKernel": "Le bac \u00e0 sable du trancheur est d\u00e9sactiv\u00e9 \u00e0 cause du noyau de ce serveur, le fichier de remplacement n'a donc pas \u00e9t\u00e9 enregistr\u00e9. L'activit\u00e9 en donne la raison.",
   "derived.replaceSlicerDown": "Le trancheur ne r\u00e9pond pas, le fichier de remplacement n'a donc pas \u00e9t\u00e9 enregistr\u00e9. Il faudra le renvoyer.",
   "derived.replaceStoreDown": "Le stockage ne r\u00e9pond pas, le fichier de remplacement n'a donc pas \u00e9t\u00e9 enregistr\u00e9. Il faudra le renvoyer.",
   "derived.replaceStoreRefused": "Le stockage a refus\u00e9 le fichier de remplacement, il n'a donc pas \u00e9t\u00e9 enregistr\u00e9.",

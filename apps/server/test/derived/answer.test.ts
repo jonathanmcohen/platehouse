@@ -21,6 +21,7 @@ import {
   postRender,
   RenderFailed,
   type RenderRequest,
+  replaceSandboxMessage,
   SandboxOff,
   SlicerDown,
   SlicerFault,
@@ -356,6 +357,15 @@ describe("a slicer whose sandbox is off", () => {
     }
     expect(sandboxMessage("step", "old_kernel")).toBe(DERIVED_MESSAGES.convertSandboxOffKernel);
     expect(sandboxMessage("step", "check_failed")).toBe(DERIVED_MESSAGES.convertSandboxOffCheck);
+  });
+
+  test("replaceSandboxMessage says the replacement was not saved, for each reason", () => {
+    expect(replaceSandboxMessage("old_kernel")).toBe(
+      "The slicer's sandbox is off because of this server's kernel, so the replacement was not saved. Activity says why.",
+    );
+    expect(replaceSandboxMessage("check_failed")).toBe(
+      "The slicer's sandbox check failed, so the replacement was not saved.",
+    );
   });
 
   test("the four sentences are the ones users read", () => {

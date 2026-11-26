@@ -156,6 +156,8 @@
   "derived.renderLost": "The render did not finish.",
   "derived.replaceFailed": "The slicer could not render the replacement, so it was not saved.",
   "derived.replaceLost": "The render of the replacement did not finish, so it was not saved.",
+  "derived.replaceSandboxOffCheck": "The slicer's sandbox check failed, so the replacement was not saved.",
+  "derived.replaceSandboxOffKernel": "The slicer's sandbox is off because of this server's kernel, so the replacement was not saved. Activity says why.",
   "derived.replaceSlicerDown": "The slicer is not answering, so the replacement was not saved. It will need to be sent again.",
   "derived.replaceStoreDown": "Storage is not answering, so the replacement was not saved. It will need to be sent again.",
   "derived.replaceStoreRefused": "Storage refused the replacement, so it was not saved.",

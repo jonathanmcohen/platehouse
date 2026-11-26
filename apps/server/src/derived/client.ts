@@ -137,6 +137,14 @@ export const DERIVED_MESSAGES = {
   convertSandboxOffKernel:
     "STEP previews are off on this server: its kernel is older than Linux 6.12.",
   convertSandboxOffCheck: "STEP previews are off on this server: its sandbox check failed.",
+  /**
+   * A held replacement the slicer refused because its sandbox is off. Not in
+   * the requeue's stored forms: the file keeps its old render, and nothing
+   * queues the replacement again.
+   */
+  replaceSandboxOffKernel:
+    "The slicer's sandbox is off because of this server's kernel, so the replacement was not saved. Activity says why.",
+  replaceSandboxOffCheck: "The slicer's sandbox check failed, so the replacement was not saved.",
   /** An STL over the contract's 256 MiB limit is never sent, and has no preview. */
   stlTooLarge:
     "This STL file is larger than the 256 MiB the preview renderer takes, so it has no preview picture.",
@@ -285,6 +293,13 @@ export function sandboxMessage(
   return reason === "old_kernel"
     ? DERIVED_MESSAGES.sandboxOffKernel
     : DERIVED_MESSAGES.sandboxOffCheck;
+}
+
+/** The message a held replacement shows when the sandbox is off: it was not saved. */
+export function replaceSandboxMessage(reason: SandboxOffBody["reason"]): string {
+  return reason === "old_kernel"
+    ? DERIVED_MESSAGES.replaceSandboxOffKernel
+    : DERIVED_MESSAGES.replaceSandboxOffCheck;
 }
 
 /**

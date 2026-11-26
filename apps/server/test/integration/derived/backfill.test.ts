@@ -1015,4 +1015,98 @@ describe("files a slicer with its sandbox off refused", () => {
     expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(0);
     expect(await jobsOf(other)).toHaveLength(0);
   });
+
+  /** A derived on a sandbox that is on, with the queue and the health answer the test hands it. */
+  function derivedWith(
+    queue: DerivedDeps["queue"],
+    current?: NonNullable<DerivedDeps["slicerState"]>["current"],
+  ) {
+    return createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue,
+      retryDelaySeconds: 1,
+      slicerState: {
+        current:
+          current ??
+          (async () => ({
+            timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+            sandbox: ON,
+          })),
+      },
+    });
+  }
+
+  test("a requeue whose job check throws keeps the sandbox message", async () => {
+    const id = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    let calls = 0;
+    const queue: DerivedDeps["queue"] = {
+      send: env.boss.send.bind(env.boss),
+      findJobs: (async (...args: Parameters<PgBoss["findJobs"]>) => {
+        calls += 1;
+        // The first call is the run's check for waiting jobs; the second is
+        // the file's own check, inside its transaction.
+        if (calls === 2) throw new Error("the job check failed");
+        return env.boss.findJobs(...args);
+      }) as PgBoss["findJobs"],
+    };
+    const failing = derivedWith(queue);
+    let rejected: unknown = null;
+    let queued = -1;
+    try {
+      queued = await failing.requeueSandboxOff(new Date());
+    } catch (error) {
+      rejected = error;
+    }
+    // A file's error is logged and left for the next run, so the run itself
+    // either queues nothing or rejects; it never rewrites the file.
+    expect(
+      queued === 0 || rejected !== null,
+      `queued ${queued}, rejected ${String(rejected)}`,
+    ).toBe(true);
+    expect(calls, "findJobs calls made by the failing run").toBeGreaterThanOrEqual(2);
+    const file = await env.repos.files.get(id);
+    expect(
+      { status: file?.derivedStatus, message: file?.derivedMessage },
+      "the file after the failed job check",
+    ).toEqual({ status: "failed", message: DERIVED_MESSAGES.sandboxOffKernel });
+    expect(await jobsOf(id), "jobs of the file after the failed job check").toHaveLength(0);
+
+    // A later run with a working queue queues it.
+    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(1);
+    expect(await jobsOf(id), "jobs of the file after the later run").toHaveLength(1);
+  });
+
+  test("a model trashed between the requeue's check and its lock gets nothing queued", async () => {
+    const id = await refused("step", DERIVED_MESSAGES.convertSandboxOffKernel);
+    const file = await env.repos.files.get(id);
+    if (!file) throw new Error("no file");
+    // requeueSandboxOff reads the health once; queueJob reads it again for a
+    // STEP file's expiry, before its transaction takes the lock. The model is
+    // trashed there, after the run's own query chose the file.
+    let reads = 0;
+    const trashing = derivedWith(env.boss, async () => {
+      reads += 1;
+      if (reads === 2) {
+        await env.db
+          .updateTable("models")
+          .set({ trashedAt: new Date() })
+          .where("id", "=", file.modelId)
+          .execute();
+      }
+      return {
+        timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+        sandbox: ON,
+      };
+    });
+    expect(await trashing.requeueSandboxOff(new Date()), `health read ${reads} time(s)`).toBe(0);
+    expect(reads, "health reads by the run").toBeGreaterThanOrEqual(2);
+    expect(await jobsOf(id), "jobs of the trashed model's file").toHaveLength(0);
+    const after = await env.repos.files.get(id);
+    expect(
+      { status: after?.derivedStatus, message: after?.derivedMessage },
+      "the trashed model's file",
+    ).toEqual({ status: "failed", message: DERIVED_MESSAGES.convertSandboxOffKernel });
+  });
 });

@@ -163,6 +163,8 @@
   "derived.renderLost": "El renderizado no termin\u00f3.",
   "derived.replaceFailed": "El laminador no pudo renderizar el archivo de sustituci\u00f3n, as\u00ed que no se guard\u00f3.",
   "derived.replaceLost": "El renderizado del archivo de sustituci\u00f3n no termin\u00f3, as\u00ed que no se guard\u00f3.",
+  "derived.replaceSandboxOffCheck": "La comprobaci\u00f3n del entorno aislado del laminador fall\u00f3, as\u00ed que no se guard\u00f3 el archivo de sustituci\u00f3n.",
+  "derived.replaceSandboxOffKernel": "El entorno aislado del laminador est\u00e1 desactivado por el n\u00facleo de este servidor, as\u00ed que no se guard\u00f3 el archivo de sustituci\u00f3n. Actividad indica el motivo.",
   "derived.replaceSlicerDown": "El laminador no responde, as\u00ed que no se guard\u00f3 el archivo de sustituci\u00f3n. Habr\u00e1 que volver a enviarlo.",
   "derived.replaceStoreDown": "El almacenamiento no responde, as\u00ed que no se guard\u00f3 el archivo de sustituci\u00f3n. Habr\u00e1 que volver a enviarlo.",
   "derived.replaceStoreRefused": "El almacenamiento rechaz\u00f3 el archivo de sustituci\u00f3n, as\u00ed que no se guard\u00f3.",

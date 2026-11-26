@@ -453,33 +453,58 @@ describe("a slicer that cannot render right now (uses no retry)", () => {
     env.stub.renders.reset();
   });
 
-  test("a replacement sent while the sandbox is off is not saved: the previous version and its renders stay", async () => {
-    const { modelId, fileId } = await uploadScad(unique("sandbox before"));
-    const before = await settledFile(env, fileId);
-    const oldBlobs = await blobsOf(env, modelId);
-    env.stub.renders.reset();
+  test.each([
+    ["old_kernel", DERIVED_MESSAGES.replaceSandboxOffKernel],
+    ["check_failed", DERIVED_MESSAGES.replaceSandboxOffCheck],
+  ] as const)(
+    "a replacement sent while the sandbox is off (%s) is not saved and says so: the previous version and its renders stay",
+    async (reason, sentence) => {
+      const { modelId, fileId } = await uploadScad(unique(`sandbox before ${reason}`));
+      const before = await settledFile(env, fileId);
+      const oldBlobs = await blobsOf(env, modelId);
+      env.stub.renders.reset();
 
-    env.stub.renders.always("/v1/scad/stl", sandboxOff("old_kernel"));
-    const { sourceBlobId } = await env.derived.replaceFile(
-      fileId,
-      await writeUpload(env, unique("sandbox after")),
-    );
-    const after = await until(
-      () => env.repos.files.get(fileId),
-      (f) => f?.derivedStatus === "failed",
-    );
-    expect(after).toMatchObject({
-      blobId: before.blobId,
-      renderStlBlobId: before.renderStlBlobId,
-      renderPngBlobId: before.renderPngBlobId,
-      derivedMessage: DERIVED_MESSAGES.sandboxOffKernel,
-    });
-    const kept = new Set((await blobsOf(env, modelId)).map((b) => b.id));
-    for (const old of oldBlobs) expect(kept.has(old.id)).toBe(true);
-    expect(kept.has(sourceBlobId)).toBe(false);
-    expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
-    env.stub.renders.reset();
-  });
+      env.stub.renders.always("/v1/scad/stl", sandboxOff(reason));
+      const { sourceBlobId } = await env.derived.replaceFile(
+        fileId,
+        await writeUpload(env, unique(`sandbox after ${reason}`)),
+      );
+      const after = await until(
+        () => env.repos.files.get(fileId),
+        (f) => f?.derivedStatus === "failed",
+      );
+      expect(after, `the file after a replacement refused for ${reason}`).toMatchObject({
+        blobId: before.blobId,
+        renderStlBlobId: before.renderStlBlobId,
+        renderPngBlobId: before.renderPngBlobId,
+        derivedMessage: sentence,
+      });
+      const kept = new Set((await blobsOf(env, modelId)).map((b) => b.id));
+      for (const old of oldBlobs) expect(kept.has(old.id)).toBe(true);
+      expect(kept.has(sourceBlobId)).toBe(false);
+      expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
+      env.stub.renders.reset();
+
+      // A requeue run, with the sandbox on, never picks the message up.
+      const jobsBefore = (await jobsFor(fileId)).length;
+      const on = derivedWith({
+        slicerState: {
+          current: async () => ({
+            timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+            sandbox: { state: "on", reason: null, detail: null, allowUnsandboxed: false },
+          }),
+        },
+      });
+      expect(await on.requeueSandboxOff(new Date()), "files queued by the requeue").toBe(0);
+      expect((await jobsFor(fileId)).length, `jobs of the file after the requeue (${reason})`).toBe(
+        jobsBefore,
+      );
+      expect(await env.repos.files.get(fileId), "the file after the requeue").toMatchObject({
+        derivedStatus: "failed",
+        derivedMessage: sentence,
+      });
+    },
+  );
 });
 
 /** How long a job waits for a slicer that is down before the render ends. */
