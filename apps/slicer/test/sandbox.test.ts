@@ -16,6 +16,7 @@ import {
   leftoverProcesses,
   MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
+  NODE_LIBS,
   prlimitArgs,
   prlimitCommand,
   readLandlockAbi,
@@ -636,7 +637,7 @@ describe("the STEP worker's sandbox", () => {
 
   test("its rules: Node and the system libraries to run, the app to read, the job folder to write, no OpenSSL config", () => {
     expect(rules).toEqual({
-      rox: ["/opt/node", "/usr/lib/x86_64-linux-gnu", "/lib64/ld-linux-x86-64.so.2"],
+      rox: ["/opt/node", ...NODE_LIBS],
       ro: ["/opt/platehouse/app"],
       rw: [DIR],
       env: {
@@ -649,12 +650,40 @@ describe("the STEP worker's sandbox", () => {
     });
   });
 
+  test("NODE_LIBS is the loader and Node's seven libraries, frozen", () => {
+    expect(NODE_LIBS).toEqual([
+      "/lib64/ld-linux-x86-64.so.2",
+      "/usr/lib/x86_64-linux-gnu/libc.so.6",
+      "/usr/lib/x86_64-linux-gnu/libm.so.6",
+      "/usr/lib/x86_64-linux-gnu/libstdc++.so.6",
+      "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+      "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+      "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+      "/usr/lib/x86_64-linux-gnu/libatomic.so.1",
+    ]);
+    expect(Object.isFrozen(NODE_LIBS)).toBe(true);
+  });
+
+  test("its rox holds no library folder: not the multiarch folder, and no path ending /", () => {
+    expect(rules.rox).not.toContain("/usr/lib/x86_64-linux-gnu");
+    expect(rules.rox.filter((p) => p.endsWith("/"))).toEqual([]);
+    expect(rules.rox.filter((p) => p.startsWith("/usr/lib/x86_64-linux-gnu/"))).toEqual(
+      NODE_LIBS.filter((p) => p.startsWith("/usr/lib/x86_64-linux-gnu/")),
+    );
+  });
+
+  test("OpenSCAD and Orca keep the multiarch folder", () => {
+    for (const program of ["openscad", "orca"] as const) {
+      expect(sandboxRules(program, PATHS).rox).toContain("/usr/lib/x86_64-linux-gnu");
+    }
+  });
+
   test("landrun's arguments carry those rules, best effort, then the command after --", () => {
     expect(landrunArgs({ rules, command })).toEqual([
       "--best-effort",
       "--ignore-missing",
       "--rox",
-      "/opt/node,/usr/lib/x86_64-linux-gnu,/lib64/ld-linux-x86-64.so.2",
+      ["/opt/node", ...NODE_LIBS].join(","),
       "--ro",
       "/opt/platehouse/app",
       "--rw",

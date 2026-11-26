@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { slicerContract } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { prlimitCommand, sandboxRules } from "../../src/sandbox.js";
+import { NODE_LIBS, prlimitCommand, sandboxRules } from "../../src/sandbox.js";
 import { IMAGE_PATHS, type RunningSlicer, startSlicer } from "./support/slicer.js";
 
 /** A folder standing for the worker's own job folder. */
@@ -26,6 +26,33 @@ beforeAll(async () => {
 afterAll(() => slicer?.stop());
 
 describe("STEP in the image", () => {
+  test("every library Node links is in NODE_LIBS, and every NODE_LIBS file is in the image", () => {
+    const real = (path: string): string => {
+      const r = slicer.exec(["readlink", "-f", path]);
+      if (r.code !== 0) throw new Error(`readlink -f ${path} failed: ${r.stderr}`);
+      return r.stdout.trim();
+    };
+    const ldd = slicer.exec(["ldd", "/opt/node/bin/node"]);
+    expect(ldd.code, ldd.stderr).toBe(0);
+    // Each line is "name => /path (0x...)", or the loader's "/path (0x...)";
+    // linux-vdso is the kernel's, with no file.
+    const lines = ldd.stdout
+      .split("\n")
+      .filter((l) => l.trim() !== "" && !l.includes("linux-vdso"));
+    const linked = lines.map((line) => {
+      const path = /(?:=>\s*)?(\/\S+)\s+\(0x[0-9a-f]+\)/.exec(line)?.[1];
+      if (!path) throw new Error(`cannot read this ldd line: ${line}`);
+      return real(path);
+    });
+    expect(linked.length).toBeGreaterThanOrEqual(NODE_LIBS.length - 1);
+    const allowed = new Set(NODE_LIBS.map(real));
+    expect(linked.filter((path) => !allowed.has(path))).toEqual([]);
+    for (const lib of NODE_LIBS) {
+      const r = slicer.exec(["test", "-f", lib]);
+      expect(r.code, `${lib} is not a file in the image`).toBe(0);
+    }
+  });
+
   test("STEP sample converts to GLB", async () => {
     const sample = process.env.STEP_SAMPLE;
     if (!sample) throw new Error("STEP_SAMPLE must name the NIST CTC-01 STEP file");

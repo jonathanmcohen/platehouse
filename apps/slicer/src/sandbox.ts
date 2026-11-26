@@ -69,6 +69,25 @@ import { launcherEnv, scratchEnv } from "./orca.js";
  */
 const SYSTEM_EXEC = ["/usr/lib/x86_64-linux-gnu", "/lib64/ld-linux-x86-64.so.2"];
 /**
+ * The only system files the STEP worker may run: the loader and the seven
+ * libraries Node links (what `ldd /opt/node/bin/node` lists), each by its
+ * name in the image, so a link is followed to its file. Not the folder: the
+ * worker needs none of the helpers SYSTEM_EXEC's folder holds (WebKit's and
+ * GStreamer's among them), and no binary that could run a shell (issue #480).
+ * A container test proves every library Node links is here and every entry
+ * exists in the image.
+ */
+export const NODE_LIBS: readonly string[] = Object.freeze([
+  "/lib64/ld-linux-x86-64.so.2",
+  "/usr/lib/x86_64-linux-gnu/libc.so.6",
+  "/usr/lib/x86_64-linux-gnu/libm.so.6",
+  "/usr/lib/x86_64-linux-gnu/libstdc++.so.6",
+  "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+  "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+  "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+  "/usr/lib/x86_64-linux-gnu/libatomic.so.1",
+]);
+/**
  * Read-only data OpenSCAD needs, which Orca gets too: fonts; for PNG
  * renders EGL's glvnd vendor files (how libEGL finds Mesa) and Mesa's driver
  * config, without which a PNG render failed with "No EGL display found" (CI
@@ -140,9 +159,10 @@ export interface SandboxRules {
 /**
  * Each program's rules. Every one may write only paths.dir (its job folder,
  * or for Orca its own folder inside it), runs code only from its own tree,
- * the multiarch library folder and the loader (SYSTEM_EXEC), and gets no
- * network rule, so landrun refuses it every TCP bind and connect (Landlock
- * does not cover UDP; the container's internal network does):
+ * the multiarch library folder and the loader (SYSTEM_EXEC; the STEP worker
+ * gets only NODE_LIBS), and gets no network rule, so landrun refuses it every
+ * TCP bind and connect (Landlock does not cover UDP; the container's internal
+ * network does):
  *
  * - openscad: reads READ_ONLY. These rules are exactly the ones the slicing
  *   gate and the container tests proved, and a unit test pins them.
@@ -160,7 +180,9 @@ export interface SandboxRules {
  *   are /usr/share/glib-2.0/schemas, /proc/self and /etc/ld.so.cache;
  *   landrun logs each denial with LANDRUN_LOG_LEVEL=debug.
  * - step: reads the app, where step.js and occt-import-js are, and runs
- *   Node from its own folder. OPENSSL_CONF is set empty, so Node loads no
+ *   Node from its own folder and only the loader and libraries in NODE_LIBS,
+ *   not the multiarch folder: unlike OpenSCAD and Orca it loads no plug-in
+ *   and no helper, so it needs no more than Node links (issue #480). OPENSSL_CONF is set empty, so Node loads no
  *   OpenSSL config file (Node's documented way past one it cannot read) and
  *   needs nothing under /etc. Without it Node opens /etc/ssl/openssl.cnf at
  *   start-up, and when the file exists but cannot be read it exits with
@@ -187,7 +209,7 @@ export function sandboxRules(program: SandboxedProgram, paths: SandboxPaths): Sa
       };
     case "step":
       return {
-        rox: [paths.nodeDir, ...SYSTEM_EXEC],
+        rox: [paths.nodeDir, ...NODE_LIBS],
         ro: [paths.appDir],
         rw: [dir],
         env: {
