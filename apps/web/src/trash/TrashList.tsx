@@ -1,27 +1,32 @@
-// The trash, on its own page
-// and on the settings page. Each trashed model shows the day after which
-// the daily purge deletes it for good (30 days after it was trashed) and a
-// Restore button, which brings it back with its files, tags and
-// collections. Empty trash asks after a themed confirmation that says how
-// many, never the browser's own dialog. It sends the time the server read the
-// list (readAt), not the models' ids, so its body stays small however long
-// the trash is, and the server marks only the models trashed at or before that
-// time: a model another tab or browser trashed after the list was read is not
-// deleted unseen. The server answers at once (202, how many it queued) and
-// deletes the models in a background job. A model that is marked cannot be
-// restored, and says so. While the listing says the job is running (emptying)
-// the page reads it again every few seconds, but not in a hidden tab, and the
-// status line is written twice: once when the job is seen ("Emptying the
-// trash"), once when it ends, with how many were deleted and, when some could
-// not be, how many stay for the next purge. A page opened mid-job writes the
-// same two lines, without taking focus. After a click, focus goes to the
-// status line rather than back to the button, which has nothing left to do. No button here takes the disabled
-// attribute, which would push a focused button's focus to the page body:
-// Empty trash with nothing in the trash, a Restore that is running and the
-// Restore of a model whose purge has begun are marked aria-disabled and
-// ignore a press. When a restored model leaves the list, focus goes to the
-// next model's Restore, else the previous one's, else the status line
-// (useRowFocus in ../settings/focus).
+// The trash, on its own page and on the settings page. Each trashed model
+// shows the day after which the daily purge deletes it for good (30 days
+// after it was trashed) and a Restore button, which brings it back with its
+// files, tags and collections. Empty trash asks after a themed confirmation
+// that says how many, never the browser's own dialog. It sends the time the
+// server read the list (readAt), not the models' ids, so its body stays small
+// however long the trash is, and the server marks only the models trashed at
+// or before that time: a model another tab or browser trashed after the list
+// was read is not deleted unseen. The server answers at once (202, how many
+// it marked and its time after the marks committed) and deletes the models
+// in a background job. A model that is marked cannot be restored, and says
+// so. While the page follows the job it reads the listing again every few
+// seconds, but not in a hidden tab, and the status line is written twice:
+// once when the job is seen ("Emptying the trash"), once when it ends, with
+// how many were deleted and, when some could not be, how many stay for the
+// next purge. Only a listing read at or after the server's time in the 202
+// can end the job: one read before it can arrive after the answer, and
+// would say no job is running. The page goes on reading while it follows
+// the job, even when the read right after the answer fails. When Empty trash
+// marked nothing (everything listed had left the trash meanwhile) the page
+// says so, follows no job and reads the list once. A page opened mid-job
+// writes the same two lines, without taking focus. After a click, focus goes
+// to the status line rather than back to the button, which has nothing left
+// to do. No button here takes the disabled attribute, which would push a
+// focused button's focus to the page body: Empty trash with nothing in the
+// trash, a Restore that is running and the Restore of a model whose purge
+// has begun are marked aria-disabled and ignore a press. When a restored
+// model leaves the list, focus goes to the next model's Restore, else the
+// previous one's, else the status line (useRowFocus in ../settings/focus).
 // The server pages the trash, 100 models to a page, newest first. The page
 // lives in the address (?page= on /trash, ?trashPage= in Settings, beside its
 // own ?view=), and the library's Pager shows when there is more than one.
@@ -32,8 +37,8 @@
 // focus would fall to the page body: it goes to the status line instead,
 // which then says "Page N of M". Restoring the last model of the last page
 // keeps its row until the read again answers, so the trash never shows as
-// empty for a moment. Empty trash's count is the whole
-// trash, not the page on screen, because the cutoff covers every page.
+// empty for a moment. Empty trash's count is the whole trash, not the page on
+// screen, because the cutoff covers every page.
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
@@ -120,20 +125,28 @@ export function TrashList({ pageParam = "page" }: { pageParam?: string }) {
   const arrived = trash.data;
   /**
    * The Empty trash job this page is following: how many models were marked
-   * when it began. Null when none is.
+   * when it began and, after this page's own Empty trash, the server's time
+   * after the marks committed (since), before which a listing cannot end
+   * the job. Null when none is followed.
    */
-  const following = useRef<{ start: number } | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once per arrival of data; asked, t and the address are read as they are then.
+  const [following, setFollowing] = useState<{ start: number; since: string | null } | null>(null);
+  // Runs once per arrival of data; asked, following, t and the address are
+  // read as they are then.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once per arrival of data.
   useEffect(() => {
     if (arrived === undefined) return;
-    if (arrived.emptying && following.current === null) {
+    if (arrived.emptying && following === null) {
       // A page opened mid-job (or another tab's click): say so, and leave focus be.
-      following.current = { start: arrived.purging };
+      setFollowing({ start: arrived.purging, since: null });
       setStatus(t("trash.emptying"));
-    } else if (!arrived.emptying && following.current !== null) {
+    } else if (
+      !arrived.emptying &&
+      following !== null &&
+      (following.since === null || Date.parse(arrived.readAt) >= Date.parse(following.since))
+    ) {
       const left = arrived.purging;
-      const deleted = deletedSentence(Math.max(0, following.current.start - left), i18n);
-      following.current = null;
+      const deleted = deletedSentence(Math.max(0, following.start - left), i18n);
+      setFollowing(null);
       setStatus(left > 0 ? `${deleted} ${t("trash.incomplete", { count: left })}` : deleted);
     }
     if (pagerFollowed.current) {
@@ -145,18 +158,18 @@ export function TrashList({ pageParam = "page" }: { pageParam?: string }) {
     if (arrived.page < asked) navigate(hrefFor(arrived.page), { replace: true });
   }, [arrived]);
 
-  // While the job runs, read the listing again. Not while the tab is hidden:
-  // one read when it is shown again, then on.
-  const emptying = trash.data?.emptying === true;
+  // While the job runs or the page follows it, read the listing again. Not
+  // while the tab is hidden: one read when it is shown again, then on.
+  const polling = trash.data?.emptying === true || following !== null;
   const reload = trash.reload;
   useWhileVisible(
     (resumed) => {
-      if (!emptying) return () => {};
+      if (!polling) return () => {};
       if (resumed) reload();
       const timer = setInterval(reload, EMPTYING_POLL_MS);
       return () => clearInterval(timer);
     },
-    [emptying, reload],
+    [polling, reload],
   );
 
   function marking(id: string, on: boolean) {
@@ -200,15 +213,20 @@ export function TrashList({ pageParam = "page" }: { pageParam?: string }) {
   async function emptyTrash() {
     if (asking === null) return;
     setStatus("");
-    const answer = await appApi<{ queued: number }>("POST", "/trash/empty", {
+    const answer = await appApi<{ queued: number; at: string }>("POST", "/trash/empty", {
       cutoff: asking.cutoff,
     });
-    // The server has marked the models and queued the job; the page follows
-    // it. The status line takes focus: Empty trash has nothing left to do.
-    following.current = { start: answer.queued };
+    // The status line takes focus: Empty trash has nothing left to do.
     emptyReturn.current = statusLine.current;
     setAsking(null);
-    setStatus(t("trash.emptying"));
+    if (answer.queued === 0) {
+      // Nothing was marked, so no job was queued: nothing to follow.
+      setStatus(t("trash.nothingDeleted"));
+    } else {
+      // The server has marked the models and queued the job; the page follows it.
+      setFollowing({ start: answer.queued, since: answer.at });
+      setStatus(t("trash.emptying"));
+    }
     trash.reload();
   }
 

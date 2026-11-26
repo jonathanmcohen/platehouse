@@ -17,9 +17,9 @@
 // A purge removes one model at a time:
 //   1. in a transaction, lock the model's row FOR UPDATE, only if it is still
 //      in the trash (and, for purgeExpired, still past the cutoff or already
-//      marked by an earlier purge that failed), so a
-//      restore that holds the row makes the purge wait and then find no
-//      trashed model; read its blob rows and list models/<modelId>/;
+//      marked by an earlier purge that failed; for purgeMarked, still
+//      marked), so a restore that holds the row makes the purge wait and then
+//      find no trashed model; read its blob rows and list models/<modelId>/;
 //   2. still in that transaction, set purge_started_at, unless Empty trash
 //      set it already, and commit, just before the first object delete. A
 //      failure before this point (the store unreachable at the listing, the
@@ -60,7 +60,7 @@
 //
 // The daily 03:30 schedule for purgeExpired belongs to the job runner
 // (jobs/queues.ts), which registers it on the maintenance queue.
-import { type Kysely, sql, type Transaction } from "kysely";
+import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { DB } from "../db/types.js";
 import { modelsRepo } from "../repos/models.js";
@@ -112,9 +112,10 @@ export class ObjectsRemain extends Error {
 }
 
 /**
- * restoreModel refused: a purge of the trashed model has begun, and may
- * already have deleted some of its objects. The model stays in the trash,
- * and the next purge removes it.
+ * restoreModel refused: the trashed model's purge has been committed to (its
+ * marker is set). Either a purge of it has begun, and may already have
+ * deleted some of its objects, or Empty trash was confirmed for it. The model
+ * stays in the trash, and the next purge removes it.
  */
 export class PurgeStarted extends Error {
   readonly modelId: string;
@@ -154,9 +155,10 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
 
   /**
    * Purges one model; false when it is no longer in the trash, or, given a
-   * cutoff, when it is neither past the cutoff nor marked by an earlier purge.
+   * cutoff, when it is neither past the cutoff nor marked by an earlier purge,
+   * or, for "marked" (Empty trash's job), when it is not marked.
    */
-  async function purgeModel(modelId: string, cutoff: Date | undefined): Promise<boolean> {
+  async function purgeModel(modelId: string, which: Date | "marked"): Promise<boolean> {
     const prefix = `models/${modelId}/`;
 
     // Steps 1 and 2: read what to delete, then mark the model and commit. A
@@ -168,10 +170,13 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
         .where("id", "=", modelId)
         .where("trashedAt", "is not", null);
       // A marked model is never restored, so its purge is finished whatever
-      // its trash date.
-      if (cutoff !== undefined) {
+      // its trash date. Empty trash's job purges only what is still marked
+      // under the lock, not what was marked when it listed the models.
+      if (which === "marked") {
+        trashed = trashed.where("purgeStartedAt", "is not", null);
+      } else {
         trashed = trashed.where((eb) =>
-          eb.or([eb("trashedAt", "<", cutoff), eb("purgeStartedAt", "is not", null)]),
+          eb.or([eb("trashedAt", "<", which), eb("purgeStartedAt", "is not", null)]),
         );
       }
       // Gone, restored, or trashed again since: not this purge's to remove.
@@ -234,7 +239,7 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
 
   async function purgeAll(
     ids: string[],
-    cutoff: Date | undefined,
+    which: Date | "marked",
     signal?: AbortSignal,
   ): Promise<PurgeResult> {
     const purged: string[] = [];
@@ -243,7 +248,7 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
       // Outside the try: a stop ends the run here and is not a failed model.
       signal?.throwIfAborted();
       try {
-        if (await purgeModel(id, cutoff)) purged.push(id);
+        if (await purgeModel(id, which)) purged.push(id);
       } catch (error) {
         failed.push({ modelId: id, error });
       }
@@ -291,12 +296,12 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
      * cutoff's millisecond, in one statement in the caller's transaction, and
      * answers how many. trashed_at keeps microseconds, so "at or before
      * 12:00:00.123" is "before 12:00:00.124". A marker already set is kept.
-     * The rows are locked in id order (FOR NO KEY UPDATE, as the bulk
-     * actions lock them), so two at once cannot deadlock. A restore that
+     * The rows are locked in id order, as the bulk actions lock theirs, so
+     * two at once cannot deadlock. A restore that
      * holds a model's row makes this wait, and under READ COMMITTED the lock
      * then reads the row again, finds the model live and leaves it.
      */
-    async requestPurge(cutoff: Date, trx: Kysely<DB> | Transaction<DB>): Promise<number> {
+    async requestPurge(cutoff: Date, trx: Kysely<DB>): Promise<number> {
       const before = new Date(cutoff.getTime() + 1);
       const { rows } = await sql<{ id: string }>`
         update models set purge_started_at = coalesce(purge_started_at, now())
@@ -328,7 +333,7 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
         .execute();
       return purgeAll(
         marked.map((m) => m.id),
-        undefined,
+        "marked",
         signal,
       );
     },

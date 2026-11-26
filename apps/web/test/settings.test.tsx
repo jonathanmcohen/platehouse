@@ -171,6 +171,12 @@ let slicerDown = false;
  * waits here, in request order, until the test calls it.
  */
 let parked: Array<() => void> | null = null;
+/**
+ * When set, each GET /app/api/trash answer is built when asked and then
+ * waits here, in request order, until the test calls it: a listing read
+ * before Empty trash's answer can arrive after it.
+ */
+let parkedTrash: Array<() => void> | null = null;
 /** Every token value the fake handed out. */
 const issued: string[] = [];
 
@@ -418,7 +424,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     const pageCount = Math.max(1, Math.ceil(total / pageSize));
     const page = Math.min(Math.max(Number(url.searchParams.get("page") ?? 1), 1), pageCount);
     const newestFirst = [...state.trash].sort((a, b) => b.trashedAt.localeCompare(a.trashedAt));
-    return json(200, {
+    const answer = json(200, {
       models: newestFirst.slice((page - 1) * pageSize, page * pageSize),
       readAt: state.now,
       page,
@@ -428,6 +434,9 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
       emptying,
       purging: state.trash.filter((m) => m.purgeStarted).length,
     });
+    if (parkedTrash === null) return answer;
+    const queue = parkedTrash;
+    return new Promise<Response>((resolve) => queue.push(() => resolve(answer)));
   }
   // Empty trash purges only the models trashed at or before the cutoff it is
   // sent, as the server does: a model trashed after the page read the list
@@ -438,12 +447,15 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     if (Number.isNaN(cutoff) || cutoff > Date.parse(state.now)) {
       return json(400, { error: "bad_request" });
     }
-    // The server marks the models and queues the job; it answers at once.
+    // The server marks the models and queues the job; it answers at once,
+    // with its clock read after the marks commit, which every listing read
+    // since then answers as readAt or later. Marking nothing queues no job.
     // The job is the test's to finish (finishEmptying).
     const asked = state.trash.filter((m) => Date.parse(m.trashedAt) <= cutoff);
     state.trash = state.trash.map((m) => (asked.includes(m) ? { ...m, purgeStarted: true } : m));
-    emptying = true;
-    return json(202, { queued: asked.length });
+    if (asked.length > 0) emptying = true;
+    state.now = new Date(Date.parse(state.now) + 1000).toISOString();
+    return json(202, { queued: asked.length, at: state.now });
   }
   if (method === "POST" && seg[0] === "trash" && seg[2] === "restore") {
     if (!state.trash.some((m) => m.id === seg[1])) return json(404, { error: "not_found" });
@@ -635,6 +647,7 @@ beforeEach(() => {
   emptying = false;
   slicerDown = false;
   parked = null;
+  parkedTrash = null;
   vi.stubGlobal("fetch", vi.fn(fakeApi));
   dialogs = {
     confirm: vi.spyOn(window, "confirm").mockImplementation(() => true),
@@ -2253,6 +2266,69 @@ describe("the trash", () => {
         "Deleted 1 model for good. 1 model could not be deleted and stays in the trash; the next purge tries again.",
       ]);
       expect(document.activeElement).toBe(document.body);
+    });
+
+    test("a listing read before Empty trash answered, arriving after it, does not end the job", async () => {
+      state.trash = trashOf(101);
+      await show("/trash", <TrashPage />);
+      const recorded = recordStatus();
+      // A restore reads the page again; that listing, read before Empty
+      // trash marks anything, says no job is running and is held back.
+      parkedTrash = [];
+      await click(button("Restore Model 0"));
+      expect(parkedTrash).toHaveLength(1);
+      await confirmEmpty();
+      // The read that follows Empty trash's answer is held back too.
+      expect(parkedTrash).toHaveLength(2);
+      await act(async () => parkedTrash?.[0]?.());
+      await settle();
+      expect(statusLine()?.textContent).toBe(EMPTYING);
+      await act(async () => parkedTrash?.[1]?.());
+      await settle();
+      parkedTrash = null;
+      expect(statusLine()?.textContent).toBe(EMPTYING);
+      finishEmptying();
+      await pollOnce();
+      recorded.stop();
+      expect(recorded.seen.filter((line) => line.startsWith("Deleted"))).toEqual([
+        "Deleted 100 models for good.",
+      ]);
+      expect(statusLine()?.textContent).toBe("Deleted 100 models for good.");
+    });
+
+    test("when the read right after Empty trash fails, a later read still ends the job", async () => {
+      await show("/trash", <TrashPage />);
+      failing.add("GET /app/api/trash");
+      await confirmEmpty();
+      expect(statusLine()?.textContent).toBe(EMPTYING);
+      failing.delete("GET /app/api/trash");
+      const failedAt = reads();
+      await pollOnce();
+      expect(reads()).toBe(failedAt + 1);
+      expect(statusLine()?.textContent).toBe(EMPTYING);
+      finishEmptying();
+      await pollOnce();
+      expect(statusLine()?.textContent).toBe("Deleted 2 models for good.");
+    });
+
+    test("when Empty trash marked nothing, it says so, follows no job and reads the list once", async () => {
+      await show("/trash", <TrashPage />);
+      const recorded = recordStatus();
+      // Another tab restores everything after the page read the list.
+      state.trash = [];
+      await confirmEmpty();
+      const afterConfirm = reads();
+      await pollOnce();
+      await pollOnce();
+      recorded.stop();
+      expect(recorded.seen).toEqual([
+        "",
+        "Nothing was deleted: the models listed had already left the trash.",
+      ]);
+      expect(document.activeElement).toBe(statusLine());
+      expect(text()).toContain("The trash is empty.");
+      expect(reads()).toBe(afterConfirm);
+      expect(callsTo("GET", "/app/api/trash")).toHaveLength(2);
     });
 
     test("a page opened with no job running says nothing", async () => {

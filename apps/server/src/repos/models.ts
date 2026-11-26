@@ -872,8 +872,9 @@ export function modelsRepo(db: Kysely<DB>) {
 
     /**
      * Brings a trashed model back; false when it is unknown, not trashed, or
-     * a purge of it has begun (purge_started_at is set: some of its objects
-     * may already be gone, so only a purge may finish it, and the
+     * its purge has been committed to (purge_started_at is set: a purge of it
+     * has begun, so some of its objects may already be gone, or Empty trash
+     * was confirmed for it; only a purge may finish it, and the
      * models_purge_only_trashed check would refuse the update anyway).
      * library/trash.ts's restoreModel tells that last case apart and throws
      * PurgeStarted; this answers false for it, never a database error.

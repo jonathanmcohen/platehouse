@@ -1263,7 +1263,7 @@ describe("the trash", () => {
 
     const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: readAt } });
     expect(res.status, res.text).toBe(202);
-    expect(res.json()).toEqual({ queued: ids.length });
+    expect(res.json()).toEqual({ queued: ids.length, at: expect.any(String) });
 
     await untilPurged([a.model.id, b.model.id], async () => {
       expect((await listedTrash()).ids).toEqual([]);
@@ -1294,7 +1294,7 @@ describe("the trash", () => {
         json: { cutoff: (await listedTrash()).readAt },
       });
       expect(res.status, res.text).toBe(202);
-      expect(res.json()).toEqual({ queued: 2 });
+      expect(res.json()).toEqual({ queued: 2, at: expect.any(String) });
 
       // pg-boss retries the job and then marks it failed; the other model is gone.
       await untilPurged([done.model.id], async () => {
@@ -1320,7 +1320,7 @@ describe("the trash", () => {
       json: { cutoff: (await listedTrash()).readAt },
     });
     expect(retry.status, retry.text).toBe(202);
-    expect(retry.json()).toEqual({ queued: 1 });
+    expect(retry.json()).toEqual({ queued: 1, at: expect.any(String) });
     await untilPurged([failing.model.id], async () => {
       expect((await listedTrash()).ids).toEqual([]);
     });
@@ -1351,7 +1351,7 @@ describe("the trash", () => {
         json: { cutoff: (await listedTrash()).readAt },
       });
       expect(res.status, res.text).toBe(202);
-      expect(res.json()).toEqual({ queued: 2 });
+      expect(res.json()).toEqual({ queued: 2, at: expect.any(String) });
 
       const running = (await call("GET", "/app/api/trash")).json();
       expect(running).toMatchObject({ emptying: true, purging: 2, total: 2 });
@@ -1387,7 +1387,7 @@ describe("the trash", () => {
 
     const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: readAt } });
     expect(res.status, res.text).toBe(202);
-    expect(res.json()).toEqual({ queued: 1 });
+    expect(res.json()).toEqual({ queued: 1, at: expect.any(String) });
     await untilPurged([shown.model.id]);
     expect((await env.repos.models.get(unseen.model.id))?.trashedAt).not.toBeNull();
     expect(await env.store.listPrefix(`models/${unseen.model.id}/`)).not.toEqual([]);
@@ -1467,7 +1467,7 @@ describe("the trash", () => {
 
     const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: first.readAt } });
     expect(res.status, res.text).toBe(202);
-    expect(res.json()).toEqual({ queued: 3 });
+    expect(res.json()).toEqual({ queued: 3, at: expect.any(String) });
     await untilPurged(seeded, async () => {
       expect((await listedTrash()).ids).toEqual([unseen.model.id]);
     });
@@ -1484,7 +1484,7 @@ describe("the trash", () => {
 
     const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: second.readAt } });
     expect(res.status, res.text).toBe(202);
-    expect(res.json()).toEqual({ queued: 3 });
+    expect(res.json()).toEqual({ queued: 3, at: expect.any(String) });
     await untilPurged(seeded, async () => {
       expect((await listedTrash()).ids).toEqual([unseen.model.id]);
     });
@@ -1504,7 +1504,7 @@ describe("the trash", () => {
       json: { cutoff: "2026-11-10T10:00:00.123Z" },
     });
     expect(res.status, res.text).toBe(202);
-    expect(res.json()).toEqual({ queued: 1 });
+    expect(res.json()).toEqual({ queued: 1, at: expect.any(String) });
     await untilPurged([inside.model.id], async () => {
       expect((await listedTrash()).ids).toEqual([after.model.id]);
     });

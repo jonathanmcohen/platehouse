@@ -14,7 +14,7 @@
 //   POST   /app/api/models/:id/trash                  move to the trash
 //   GET    /app/api/trash                             {models: [... purgeAt], readAt, emptying, purging}
 //   POST   /app/api/trash/:id/restore                 204 | 404 | 409 purge began
-//   POST   /app/api/trash/empty  {cutoff}             202 {queued}
+//   POST   /app/api/trash/empty  {cutoff}             202 {queued, at}
 //   POST   /app/api/bulk/add-tags {ids, tags, view}   {changed, unchanged, failed, notInView, tags}
 //   POST   /app/api/bulk/remove-tag {ids, tag, view}  {changed, unchanged, failed, notInView, tag}
 //   POST   /app/api/bulk/add-to-collection {ids, collection, view}
@@ -81,12 +81,15 @@
 // trashed_at, so a browser's clock never matters), and the page sends it back
 // as the cutoff. The route marks every model trashed at or before that
 // millisecond in one statement (the library's requestPurge), queues an
-// empty-trash job on the maintenance queue, and answers 202 {queued}, the
-// number it marked, at once; the job purges them (the library's
-// purgeMarked). A model another tab or browser trashed after the page read
-// the list is not marked, and can be restored. The body is one timestamp
-// however long the trash is. A cutoff that is not in readAt's form, or is
-// later than the database's clock, is refused with 400.
+// empty-trash job on the maintenance queue, and answers 202 {queued, at} at
+// once: queued is the number it marked, at the database's time read after
+// the marks commit. The job purges them (the library's purgeMarked). The
+// page treats a listing as news of the job only when its readAt is at or
+// after at: a listing read before the commit can arrive after the 202, and
+// would say no job is running. A model another tab or browser trashed after
+// the page read the list is not marked, and can be restored. The body is one
+// timestamp however long the trash is. A cutoff that is not in readAt's
+// form, or is later than the database's clock, is refused with 400.
 //
 // The races, under Postgres's READ COMMITTED. A restore that holds a model's
 // row (restoreModel locks it FOR UPDATE) makes the marking statement wait;
@@ -707,13 +710,17 @@ export async function registerOrganiseApi(
       async (request, reply) => {
         const { db, trash, boss } = need(deps);
         const { cutoff } = request.body;
-        const at = Date.parse(cutoff);
+        const cutoffMs = Date.parse(cutoff);
         // Only readAt's own form: a date alone, an offset, or a day that
         // Date rolls over (February 30) is refused, not guessed at.
-        if (!ISO_MILLIS.test(cutoff) || Number.isNaN(at) || new Date(at).toISOString() !== cutoff) {
+        if (
+          !ISO_MILLIS.test(cutoff) ||
+          Number.isNaN(cutoffMs) ||
+          new Date(cutoffMs).toISOString() !== cutoff
+        ) {
           return refuse(reply, 400, "bad_request", STALE_TRASH, { code: "stale_trash" });
         }
-        if (at > (await databaseNow(db)).getTime()) {
+        if (cutoffMs > (await databaseNow(db)).getTime()) {
           return refuse(reply, 400, "bad_request", STALE_TRASH, { code: "stale_trash" });
         }
         // The marks and their job commit together. A job already queued
@@ -722,7 +729,7 @@ export async function registerOrganiseApi(
         // when it starts, so it is not sent twice.
         let queued = 0;
         await db.transaction().execute(async (trx) => {
-          queued = await trash.requestPurge(new Date(at), trx);
+          queued = await trash.requestPurge(new Date(cutoffMs), trx);
           if (queued > 0) {
             const { rows: waiting } = await sql<{ id: string }>`
               select id from ${BOSS_JOB}
@@ -739,7 +746,11 @@ export async function registerOrganiseApi(
             }
           }
         });
-        return reply.code(202).send({ queued });
+        // Read after the commit, and rounded up past its millisecond (the
+        // driver drops the microseconds), so a listing whose readAt is at or
+        // after it was read after the marks and their job were visible.
+        const at = new Date((await databaseNow(db)).getTime() + 1).toISOString();
+        return reply.code(202).send({ queued, at });
       },
     );
   });

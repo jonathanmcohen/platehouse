@@ -112,7 +112,7 @@ async function emptyTrash(
   options: { cutoff?: string } = {},
 ): Promise<{
   status: number;
-  body: { queued: number };
+  body: { queued: number; at: string };
   runJob: () => Promise<{ purged: string[] }>;
 }> {
   const app = await organiseApp(trash);
@@ -836,7 +836,7 @@ describe("Empty trash (POST /app/api/trash/empty)", () => {
     const again = await emptyTrash(trash);
     expect({ status: again.status, body: again.body }).toEqual({
       status: 202,
-      body: { queued: 0 },
+      body: { queued: 0, at: expect.any(String) },
     });
     expect(await createdEmptyTrashJobs()).toBe(1);
   });
@@ -1082,5 +1082,75 @@ describe("Empty trash (POST /app/api/trash/empty)", () => {
     await result.runJob();
     expect(await rowCounts(env.db, inside.model.id)).toMatchObject({ models: 0 });
     expect(await trash.restoreModel(after.model.id)).toBe(true);
+  });
+
+  test("the answer says when the marks committed, and a listing read since then shows the job", async () => {
+    const { model } = await seedStoredModel(env);
+    const trash = trashFor();
+    await trash.trashModel(model.id);
+    await clearCreatedEmptyTrashJobs();
+    const cutoff = await databaseCutoff();
+
+    const result = await emptyTrash(trash, { cutoff });
+
+    expect(result.status).toBe(202);
+    expect(result.body.at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    // The database's time after the commit, past the marking's own time.
+    const markedAt = await purgeStartedAt(model.id);
+    expect(markedAt).toBeInstanceOf(Date);
+    expect(Date.parse(result.body.at)).toBeGreaterThan((markedAt as Date).getTime());
+    expect(Date.parse(result.body.at)).toBeGreaterThan(Date.parse(cutoff));
+
+    // at is rounded up past its millisecond, so a listing read in that same
+    // millisecond is not yet one the page trusts; read one later.
+    await sleep(5);
+    const app = await organiseApp(trash);
+    try {
+      const listing = (await app.inject({ method: "GET", url: "/app/api/trash" })).json() as {
+        readAt: string;
+        emptying: boolean;
+      };
+      expect(Date.parse(listing.readAt)).toBeGreaterThanOrEqual(Date.parse(result.body.at));
+      expect(listing.emptying).toBe(true);
+    } finally {
+      await app.close();
+    }
+    expect((await result.runJob()).purged).toContain(model.id);
+  });
+
+  test("the job leaves a trashed model whose marker is gone by the time it locks the row", async () => {
+    const first = await seedStoredModel(env);
+    const second = await seedStoredModel(env);
+    const trash = trashFor();
+    for (const m of [first, second]) await trash.trashModel(m.model.id);
+    // first is purged before second: the job takes the oldest first.
+    await trashDaysAgo(env.db, first.model.id, 2);
+    await trashDaysAgo(env.db, second.model.id, 1);
+    expect((await emptyTrash(trash)).status).toBe(202);
+
+    // While first is purged, second's marker is cleared, as nothing in the
+    // app does: the job listed second as marked, but must not purge it now.
+    const clearing: PurgeStore = {
+      async listPrefix(p) {
+        if (p === prefix(first.model.id)) {
+          await env.db
+            .updateTable("models")
+            .set({ purgeStartedAt: null })
+            .where("id", "=", second.model.id)
+            .execute();
+        }
+        return env.store.listPrefix(p);
+      },
+      deleteBlobs: (keys) => env.store.deleteBlobs(keys),
+    };
+    const { purged } = await trashFor(clearing).purgeMarked();
+
+    expect(purged).toContain(first.model.id);
+    expect(purged).not.toContain(second.model.id);
+    expect(await rowCounts(env.db, second.model.id)).toMatchObject({ models: 1, blobs: 2 });
+    expect(await env.store.listPrefix(prefix(second.model.id))).toHaveLength(2);
+    expect(await purgeStartedAt(second.model.id)).toBeNull();
+    // Unmarked, it can be restored.
+    expect(await trash.restoreModel(second.model.id)).toBe(true);
   });
 });
