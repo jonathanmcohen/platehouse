@@ -14,6 +14,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 - The docs site now publishes when a release is tagged, so it describes the latest release and not unreleased work. A docs fix between releases is published by hand ([#499](https://github.com/jonathanmcohen/platehouse/issues/499)).
 - The weekly base image update checks the signature on Node's checksum list against the Node release keys before it proposes a new Node version ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
+- Interrupted downloads can be resumed: file downloads, slicer links, pictures and the API's file download (`GET /api/v1/files/{id}/content`) answer requests for part of a file. The API reference documents the new answers ([#463](https://github.com/jonathanmcohen/platehouse/issues/463)).
 
 ### Fixed
 

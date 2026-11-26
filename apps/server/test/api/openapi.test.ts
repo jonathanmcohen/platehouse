@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { PLATE_NUMBERS_DOC, registerOpenApi } from "../../src/api/openapi.js";
+import { EXAMPLE_IDS, PLATE_NUMBERS_DOC, registerOpenApi } from "../../src/api/openapi.js";
 import { TOKEN_PREFIX } from "../../src/api/tokens.js";
 import { apiUploadHook, refusingApi, registerV1 } from "../../src/api/v1.js";
 import type {
@@ -96,6 +96,9 @@ const shapesAgree: [
 
 /** The origin every example and the web app's copy use; never a real host. */
 const EXAMPLE_ORIGIN = "https://platehouse.example.com";
+
+/** The answers only a GET with a Range gives; a HEAD ignores Range. */
+const RANGE_ANSWERS = ["206", "416"];
 
 let app: FastifyInstance;
 let tmp: string;
@@ -199,9 +202,14 @@ describe("the OpenAPI document", () => {
       if (get === undefined || head === undefined) continue;
       expect(head.summary, path).not.toBe(get.summary);
       expect(head.description, path).toMatch(/no body/i);
-      // Same answers, each with the GET's headers and no body (issue #261).
-      expect(Object.keys(head.responses ?? {}), path).toEqual(Object.keys(get.responses ?? {}));
+      // Same answers but a range's, each with the GET's headers and no body
+      // (issue #261): a HEAD ignores Range, so it never answers 206 or 416.
+      const getCodes = Object.keys(get.responses ?? {});
+      expect(Object.keys(head.responses ?? {}), path).toEqual(
+        getCodes.filter((code) => !RANGE_ANSWERS.includes(code)),
+      );
       for (const [code, answer] of Object.entries(get.responses ?? {})) {
+        if (RANGE_ANSWERS.includes(code)) continue;
         const headAnswer = head.responses?.[code];
         expect(headAnswer?.content, `HEAD ${path} ${code}`).toBeUndefined();
         expect(headAnswer?.headers, `HEAD ${path} ${code}`).toEqual(answer.headers);
@@ -211,8 +219,49 @@ describe("the OpenAPI document", () => {
     expect(Object.keys(content?.["200"]?.headers ?? {})).toEqual([
       "Content-Disposition",
       "Content-Length",
+      "Accept-Ranges",
+      "ETag",
     ]);
     expect(Object.keys(content?.["401"]?.headers ?? {})).toEqual(["WWW-Authenticate"]);
+    expect(doc.paths["/files/{id}/content"]?.head?.parameters ?? []).not.toContainEqual(
+      expect.objectContaining({ in: "header" }),
+    );
+  });
+
+  test("a file's content documents its range answers and the Range and If-Range headers", () => {
+    const get = doc.paths["/files/{id}/content"]?.get;
+    const partial = get?.responses?.["206"];
+    expect(partial?.description).toBe("Part of the file, for a Range request.");
+    expect(Object.keys(partial?.headers ?? {}).sort()).toEqual(
+      ["Accept-Ranges", "Content-Disposition", "Content-Length", "Content-Range", "ETag"].sort(),
+    );
+    expect(partial?.content?.["application/octet-stream"]?.schema).toEqual({
+      type: "string",
+      format: "binary",
+    });
+    const refused = get?.responses?.["416"];
+    expect(refused?.description).toMatch(/at or past the end/);
+    expect(Object.keys(refused?.headers ?? {})).toEqual(["Content-Range"]);
+    expect(refused?.content).toBeUndefined();
+    for (const name of ["range", "if-range"]) {
+      const param = get?.parameters?.find((p) => p.name === name);
+      expect(param?.in, name).toBe("header");
+      expect(param?.description, name).toBeTruthy();
+      expect(param?.schema, name).toEqual({ type: "string" });
+      expect(param?.example, name).toBeDefined();
+    }
+    expect(get?.parameters?.find((p) => p.name === "range")?.example).toBe("bytes=0-1048575");
+    expect(get?.parameters?.find((p) => p.name === "if-range")?.example).toBe(
+      `"${EXAMPLE_IDS.blob}"`,
+    );
+    // The If-Range example is a blob id like the other example ids, and none of them.
+    const ids = Object.values(EXAMPLE_IDS);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(EXAMPLE_IDS.blob).toMatch(
+      /^0193a5c2-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(get?.description).toMatch(/416/);
+    expect(get?.description).toMatch(/If-Range/);
   });
 
   test("a response header written in the wrong form is caught", () => {
@@ -390,12 +439,16 @@ describe("the OpenAPI document", () => {
   });
 });
 
-/** The upload requests docs/api.md's "What each answer means" table lists, in its order. */
-const UPLOAD_OPERATIONS = [
+/**
+ * The requests docs/api.md's "What each answer means" table lists, in its
+ * order: the uploads and the file download.
+ */
+const TABLE_OPERATIONS = [
   ["POST", "/uploads"],
   ["HEAD", "/uploads/{id}"],
   ["PATCH", "/uploads/{id}"],
   ["GET", "/uploads/{id}/result"],
+  ["GET", "/files/{id}/content"],
 ] as const;
 
 /** The rows of the markdown table under a heading: each row's cells, trimmed, backticks off. */
@@ -429,9 +482,9 @@ function shBlocks(markdown: string): string[] {
 describe("docs/api.md", () => {
   const guide = readFileSync(join(ROOT, "docs/api.md"), "utf8");
 
-  test("its upload status table is every upload answer, in the OpenAPI document's words", () => {
+  test("its answers table is every upload and file content answer, in the OpenAPI document's words", () => {
     const expected: string[][] = [["Request", "Status", "What it means"]];
-    for (const [method, path] of UPLOAD_OPERATIONS) {
+    for (const [method, path] of TABLE_OPERATIONS) {
       const responses = doc.paths[path]?.[method.toLowerCase()]?.responses ?? {};
       expect(Object.keys(responses).length, `${method} ${path}`).toBeGreaterThan(3);
       for (const code of Object.keys(responses).sort()) {

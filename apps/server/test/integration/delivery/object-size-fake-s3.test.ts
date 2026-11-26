@@ -4,11 +4,12 @@
 // against the storage tests' scripted fake endpoint, so this file needs no
 // Docker, and for a stream the store did not open.
 //
-// A Range request reads the object with getBlobRange, and the route mounted
-// here as the server mounts it answers 503 before any header when the store
-// ignored the range (RangeIgnored) or its Content-Range gives a total that is
-// not the record (SizeMismatch): the bytes sent are exactly the range of
-// the recorded object, or none.
+// A Range request reads the object with getBlobRange, and the routes mounted
+// here as the server mounts them (the download, a blob and the API's file
+// content) answer 503 before any header when the store ignored the range
+// (RangeIgnored) or its Content-Range gives a total that is not the record
+// (SizeMismatch): the bytes sent are exactly the range of the recorded
+// object, or none.
 //
 // Every value here is synthetic, joined from parts so that no source line
 // looks like a credential.
@@ -17,7 +18,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import { FILE_UNAVAILABLE_MESSAGE, type FileHead, readStored } from "../../../src/api/v1.js";
+import { createTokens } from "../../../src/api/tokens.js";
+import {
+  FILE_UNAVAILABLE_MESSAGE,
+  type FileHead,
+  readStored,
+  refusingApi,
+} from "../../../src/api/v1.js";
 import { buildApp } from "../../../src/app.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import type { DeliveryDeps } from "../../../src/delivery/download.js";
@@ -29,7 +36,7 @@ import {
 } from "../../../src/storage/s3.js";
 import { createUploads } from "../../../src/uploads/tus.js";
 import { type Handler, startFakeS3 } from "../../storage/support/fake-s3.js";
-import { testAuth } from "../support/oidc-issuer.js";
+import { authTestApp, memoryTokenStore, testAuth } from "../support/oidc-issuer.js";
 
 const SECRET = ["synthetic", "secret", "never", "in", "an", "error", "7a2e"].join("-");
 const ACCESS = ["SYNTH", "ACCESS", "ID"].join("");
@@ -181,5 +188,86 @@ describe("a range answer the store did not honour, through the routes", () => {
       expect(res.body, url).toBe("0123456789");
       expect(res.headers["content-range"], url).toBe("bytes 0-9/100");
     }
+  });
+});
+
+describe("a range answer the store did not honour, through the API's file content", () => {
+  const FILE_ID = "0190f5a8-3c2e-7a4b-9c1d-2e3f4a5b6c90";
+  const BLOB_ID = "0190f5a8-3c2e-7a4b-9c1d-2e3f4a5b6c91";
+  /** The record: 100 bytes. */
+  const SIZE = 100;
+
+  /**
+   * GET /api/v1/files/:id/content with a bearer token and a Range of the
+   * first ten bytes, the library's openFile reading the record's object from
+   * the fake store with the real readStored.
+   */
+  async function rangedAnswer(handler: Handler) {
+    const store = await storeAt(handler);
+    const head: FileHead = {
+      name: "Part.3mf",
+      contentType: "model/3mf",
+      size: SIZE,
+      etag: `"${BLOB_ID}"`,
+    };
+    const tokens = createTokens({ store: memoryTokenStore() });
+    const library = {
+      ...refusingApi.library,
+      fileHead: async (id: string) => (id === FILE_ID ? head : undefined),
+      openFile: async (id: string, pick?: Parameters<typeof readStored>[3]) =>
+        id === FILE_ID ? readStored(store, KEY, head, pick) : undefined,
+    };
+    const t = await authTestApp({ api: { tokens, library } });
+    cleanups.push(() => t.close());
+    const { token } = await tokens.createToken("fake s3 range");
+    return t.app.inject({
+      method: "GET",
+      url: `/api/v1/files/${FILE_ID}/content`,
+      headers: { authorization: `Bearer ${token}`, range: "bytes=0-9" },
+    });
+  }
+
+  function expectUnavailable(res: Awaited<ReturnType<typeof rangedAnswer>>) {
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toEqual({ error: "unavailable", message: FILE_UNAVAILABLE_MESSAGE });
+    expect(res.headers["cache-control"]).toBe("no-store");
+    for (const header of ["content-range", "content-disposition", "accept-ranges", "etag"]) {
+      expect(res.headers[header], header).toBeUndefined();
+    }
+  }
+
+  it("a store that sends the whole object with no Content-Range is 503 (RangeIgnored)", async () => {
+    expectUnavailable(
+      await rangedAnswer(() => ({
+        status: 200,
+        headers: { "content-type": "application/octet-stream" },
+        body: "a".repeat(SIZE),
+      })),
+    );
+  });
+
+  it("a range whose Content-Range total is not the record is 503 (SizeMismatch)", async () => {
+    expectUnavailable(
+      await rangedAnswer(() => ({
+        status: 206,
+        headers: { "content-type": "application/octet-stream", "content-range": "bytes 0-9/101" },
+        body: "a".repeat(10),
+      })),
+    );
+  });
+
+  it("a store that honours the range with the record's total is 206 with those bytes", async () => {
+    const res = await rangedAnswer(() => ({
+      status: 206,
+      headers: { "content-type": "application/octet-stream", "content-range": "bytes 0-9/100" },
+      body: "0123456789",
+    }));
+    expect(res.statusCode).toBe(206);
+    expect(res.body).toBe("0123456789");
+    expect(res.headers["content-range"]).toBe("bytes 0-9/100");
+    expect(res.headers["content-length"]).toBe("10");
+    expect(res.headers["accept-ranges"]).toBe("bytes");
+    expect(res.headers.etag).toBe(`"${BLOB_ID}"`);
+    expect(res.headers["cache-control"]).toBe("private, no-store");
   });
 });

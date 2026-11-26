@@ -2368,7 +2368,7 @@
         "operationId": "getFileContent",
         "summary": "Download a file",
         "tags": ["Files"],
-        "description": "The file's bytes, exactly as uploaded. Content-Disposition names the file (with its real extension, such as .3mf) and Content-Length is its size. HEAD answers the same headers with no body, after checking the bytes are in storage. A file of a model in the trash is 404.\n\nThis is the scripted download. The Open in Bambu Studio and Open in OrcaSlicer buttons on a model page use short-lived slicer links instead, made by the web app for a signed-in person; a token cannot make one.",
+        "description": "The file's bytes, exactly as uploaded. Content-Disposition names the file (with its real extension, such as .3mf) and Content-Length is its size. HEAD answers the same headers with no body, after checking the bytes are in storage. A file of a model in the trash is 404.\n\nAn interrupted download can be resumed with a Range header: one byte range per request, answered 206 with that part. Several ranges in one Range header are answered 200 with the whole file. If-Range takes the ETag only, not a date, and the range is used only while the file's bytes are unchanged. A range that starts at or past the end of the file is 416. HEAD ignores Range.\n\nThis is the scripted download. The Open in Bambu Studio and Open in OrcaSlicer buttons on a model page use short-lived slicer links instead, made by the web app for a signed-in person; a token cannot make one.",
         "parameters": [
           {
             "schema": {
@@ -2380,6 +2380,26 @@
             "name": "id",
             "required": true,
             "description": "The file's id"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "example": "bytes=0-1048575",
+            "in": "header",
+            "name": "range",
+            "required": false,
+            "description": "One byte range, such as bytes=0-1048575. Multi-range is answered 200 in full."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "example": "\"0193a5c2-8f20-7d53-b2c4-6e7f8091a2b3\"",
+            "in": "header",
+            "name": "if-range",
+            "required": false,
+            "description": "The ETag from an earlier answer. The range is used only while the file's bytes are unchanged; otherwise the answer is 200 in full."
           }
         ],
         "responses": {
@@ -2397,6 +2417,61 @@
                   "type": "integer"
                 },
                 "description": "The file's size in bytes"
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes"
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The file's current bytes, as a strong tag for If-Range"
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "Part of the file, for a Range request.",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes start-end/size"
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "The part's length in bytes"
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "attachment, with the file's name"
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes"
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The file's current bytes, as a strong tag for If-Range"
               }
             },
             "content": {
@@ -2494,6 +2569,17 @@
               }
             }
           },
+          "416": {
+            "description": "The range starts at or past the end of the file. Content-Range gives the size.",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes */ and the file's size"
+              }
+            }
+          },
           "500": {
             "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
             "content": {
@@ -2551,7 +2637,7 @@
         "operationId": "getFileContent-head",
         "summary": "Download a file (headers only)",
         "tags": ["Files"],
-        "description": "The same status and headers as the GET, with no body. The file's bytes, exactly as uploaded. Content-Disposition names the file (with its real extension, such as .3mf) and Content-Length is its size. HEAD answers the same headers with no body, after checking the bytes are in storage. A file of a model in the trash is 404.\n\nThis is the scripted download. The Open in Bambu Studio and Open in OrcaSlicer buttons on a model page use short-lived slicer links instead, made by the web app for a signed-in person; a token cannot make one.",
+        "description": "The same status and headers as the GET, with no body. The file's bytes, exactly as uploaded. Content-Disposition names the file (with its real extension, such as .3mf) and Content-Length is its size. HEAD answers the same headers with no body, after checking the bytes are in storage. A file of a model in the trash is 404.\n\nAn interrupted download can be resumed with a Range header: one byte range per request, answered 206 with that part. Several ranges in one Range header are answered 200 with the whole file. If-Range takes the ETag only, not a date, and the range is used only while the file's bytes are unchanged. A range that starts at or past the end of the file is 416. HEAD ignores Range.\n\nThis is the scripted download. The Open in Bambu Studio and Open in OrcaSlicer buttons on a model page use short-lived slicer links instead, made by the web app for a signed-in person; a token cannot make one.",
         "parameters": [
           {
             "schema": {
@@ -2580,6 +2666,18 @@
                   "type": "integer"
                 },
                 "description": "The file's size in bytes"
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes"
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The file's current bytes, as a strong tag for If-Range"
               }
             }
           },
