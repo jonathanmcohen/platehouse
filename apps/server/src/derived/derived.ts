@@ -224,6 +224,7 @@ import {
   CONVERT_EXPIRE_SECONDS,
   DERIVED_MESSAGES,
   isRetryable,
+  LEGACY_SANDBOX_OFF_KERNEL,
   PREVIOUS_RENDERS_SENTENCE,
   RENDER_TIMEOUT_MS,
   RENDER_UPLOAD_TIMEOUT_MS,
@@ -2616,7 +2617,9 @@ export function createDerived(deps: DerivedDeps) {
           ? [DERIVED_MESSAGES.sandboxOffKernel, DERIVED_MESSAGES.sandboxOffCheck]
           : [DERIVED_MESSAGES.convertSandboxOffKernel, DERIVED_MESSAGES.convertSandboxOffCheck];
       const lead = PREVIOUS_RENDERS_SENTENCE[kind];
-      return [kernel, check, `${lead} ${kernel}`, `${lead} ${check}`];
+      // 0.1.1's kernel sentence, which a server still running during the upgrade can write.
+      const legacy = LEGACY_SANDBOX_OFF_KERNEL[kind];
+      return [kernel, check, legacy, `${lead} ${kernel}`, `${lead} ${check}`, `${lead} ${legacy}`];
     };
     const wanted: ("scad" | "step")[] = [
       ...(scad ? (["scad"] as const) : []),

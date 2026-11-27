@@ -15,7 +15,11 @@ import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { PreviewFailureReason } from "../../../src/db/types.js";
-import { PREVIOUS_RENDERS_SENTENCE, TempFileError } from "../../../src/derived/client.js";
+import {
+  LEGACY_SANDBOX_OFF_KERNEL,
+  PREVIOUS_RENDERS_SENTENCE,
+  TempFileError,
+} from "../../../src/derived/client.js";
 import {
   BACKFILL_LOCK_KEY,
   createDerived,
@@ -977,6 +981,22 @@ describe("files a slicer with its sandbox off refused", () => {
     );
     expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(3);
     for (const id of [plain, led, stepLed]) expect(await jobsOf(id)).toHaveLength(1);
+  });
+
+  test("0.1.1's kernel sentence, alone and after the previous-renders sentence, is still queued", async () => {
+    const plain = await refused("scad", LEGACY_SANDBOX_OFF_KERNEL.scad);
+    const led = await refused(
+      "scad",
+      `${PREVIOUS_RENDERS_SENTENCE.scad} ${LEGACY_SANDBOX_OFF_KERNEL.scad}`,
+    );
+    const queued = await derivedReporting(ON).requeueSandboxOff(new Date());
+    expect(queued, `requeueSandboxOff queued ${queued} of the 2 files with the old sentence`).toBe(
+      2,
+    );
+    for (const id of [plain, led]) {
+      const jobs = await jobsOf(id);
+      expect(jobs, `jobs for ${id}: ${JSON.stringify(jobs)}`).toHaveLength(1);
+    }
   });
 
   test("a program's message that ends with a sandbox sentence is never queued", async () => {

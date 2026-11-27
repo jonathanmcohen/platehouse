@@ -1103,6 +1103,36 @@ describe("a description re-conversion on the Activity page", () => {
       });
     });
 
+    test("carries the kernel cause when the sandbox is off with one", async () => {
+      const slicer = await slicerBlock(
+        healthWith({
+          state: "off",
+          reason: "old_kernel",
+          detail: "x",
+          allowUnsandboxed: false,
+          kernel: "landlock_fix_missing",
+        }),
+      );
+      expect(slicer.sandboxKernel).toBe("landlock_fix_missing");
+    });
+
+    test("has no kernel cause when the slicer sends none, or the sandbox is on or failed its check", async () => {
+      const noCause = await slicerBlock(
+        healthWith({ state: "off", reason: "old_kernel", detail: "x", allowUnsandboxed: false }),
+      );
+      const on = await slicerBlock(
+        healthWith({ state: "on", reason: null, detail: null, allowUnsandboxed: false }),
+      );
+      const check = await slicerBlock(
+        healthWith({ state: "off", reason: "check_failed", detail: "x", allowUnsandboxed: false }),
+      );
+      expect([noCause.sandboxKernel, on.sandboxKernel, check.sandboxKernel]).toEqual([
+        null,
+        null,
+        null,
+      ]);
+    });
+
     test("never carries the slicer's own detail", async () => {
       const slicer = await slicerBlock(
         healthWith({
@@ -1121,6 +1151,7 @@ describe("a description re-conversion on the Activity page", () => {
         reachable: false,
         sandbox: null,
         sandboxReason: null,
+        sandboxKernel: null,
         unsandboxed: null,
       });
     });

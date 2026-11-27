@@ -18,6 +18,8 @@ import {
   DERIVED_MESSAGES,
   ERROR_ANSWER_MAX_BYTES,
   isRetryable,
+  LEGACY_SANDBOX_OFF_KERNEL,
+  PREVIOUS_RENDERS_SENTENCE,
   postRender,
   RenderFailed,
   type RenderRequest,
@@ -28,6 +30,7 @@ import {
   type SlicerTarget,
   SlicerUnreachable,
   sandboxMessage,
+  splitDerivedMessage,
   TempFileError,
 } from "../../src/derived/client.js";
 
@@ -370,16 +373,33 @@ describe("a slicer whose sandbox is off", () => {
 
   test("the four sentences are the ones users read", () => {
     expect(DERIVED_MESSAGES.sandboxOffKernel).toBe(
-      "Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12.",
+      "Pictures and OpenSCAD renders are off on this server: its kernel does not offer the sandbox they need. Activity says why.",
     );
     expect(DERIVED_MESSAGES.sandboxOffCheck).toBe(
       "Pictures and OpenSCAD renders are off on this server: its sandbox check failed.",
     );
     expect(DERIVED_MESSAGES.convertSandboxOffKernel).toBe(
-      "STEP previews are off on this server: its kernel is older than Linux 6.12.",
+      "STEP previews are off on this server: its kernel does not offer the sandbox they need. Activity says why.",
     );
     expect(DERIVED_MESSAGES.convertSandboxOffCheck).toBe(
       "STEP previews are off on this server: its sandbox check failed.",
     );
+  });
+
+  test("0.1.1's kernel sentences still decode, alone and after their lead-in", () => {
+    const scad =
+      "Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12.";
+    const step = "STEP previews are off on this server: its kernel is older than Linux 6.12.";
+    expect(LEGACY_SANDBOX_OFF_KERNEL).toEqual({ scad, step });
+    expect(splitDerivedMessage(scad)).toEqual({ codes: ["sandboxOffKernel"], detail: null });
+    expect(splitDerivedMessage(step)).toEqual({ codes: ["convertSandboxOffKernel"], detail: null });
+    expect(splitDerivedMessage(`${PREVIOUS_RENDERS_SENTENCE.scad} ${scad}`)).toEqual({
+      codes: ["previousScad", "sandboxOffKernel"],
+      detail: null,
+    });
+    expect(splitDerivedMessage(`${PREVIOUS_RENDERS_SENTENCE.step} ${step}`)).toEqual({
+      codes: ["previousStep", "convertSandboxOffKernel"],
+      detail: null,
+    });
   });
 });

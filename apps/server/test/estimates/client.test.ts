@@ -68,6 +68,22 @@ describe("slicer client", () => {
     expect(profiles.filaments).toEqual(STUB_FILAMENTS);
   });
 
+  test("health asks for the kernel cause and parses an answer that carries it", async () => {
+    stub.setSandbox({
+      state: "off",
+      reason: "old_kernel",
+      detail: "x",
+      allowUnsandboxed: false,
+      kernel: "too_old",
+    });
+    const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
+    const health = await client.health();
+    expect(stub.healthSearches.at(-1), `searches: ${JSON.stringify(stub.healthSearches)}`).toBe(
+      "?kernel=1",
+    );
+    expect(health.sandbox).toMatchObject({ state: "off", kernel: "too_old" });
+  });
+
   test("an ok slice returns its numbers and the preset used for each slot", async () => {
     const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
     const file = build3mf({ plates: 2 });

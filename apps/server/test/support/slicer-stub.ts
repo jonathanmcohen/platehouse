@@ -258,6 +258,8 @@ export interface SlicerStub {
   calls: StubCall[];
   /** How many times GET /v1/profiles was asked. */
   readonly profileRequests: number;
+  /** The query string of every GET /v1/health, as sent ("" for none, "?kernel=1" for the kernel cause). */
+  readonly healthSearches: string[];
   /** The Orca version /v1/health, /v1/profiles and every slice report. */
   setOrca(version: string): void;
   /** The sandbox state /v1/health reports; "on" with no reason is the default. */
@@ -349,6 +351,7 @@ export async function startSlicerStub(
   const filaments = opts.filaments ?? STUB_FILAMENTS;
   const calls: StubCall[] = [];
   let profileRequests = 0;
+  const healthSearches: string[] = [];
   let decide: (call: StubCall, n: number) => StubOutcome = () => ({ kind: "ok" });
   let gate: Promise<void> | null = null;
   const sockets = new Set<Socket>();
@@ -535,6 +538,7 @@ export async function startSlicerStub(
       }
       switch (route) {
         case "GET /v1/health":
+          healthSearches.push(url.search);
           return sendJson(
             res,
             200,
@@ -593,6 +597,7 @@ export async function startSlicerStub(
     url: `http://127.0.0.1:${port}`,
     renders,
     calls,
+    healthSearches,
     get profileRequests() {
       return profileRequests;
     },

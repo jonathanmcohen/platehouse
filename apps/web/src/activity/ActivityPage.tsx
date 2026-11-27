@@ -136,6 +136,7 @@ export interface ActivityView {
     /** The slicer's sandbox; null when it did not answer. */
     sandbox: "checking" | "on" | "off" | null;
     sandboxReason: "old_kernel" | "check_failed" | null;
+    sandboxKernel: "too_old" | "landlock_off" | "landlock_fix_missing" | "unknown" | null;
     unsandboxed: boolean | null;
     /** The default printer of My printers, and its full name. */
     printerId: string;

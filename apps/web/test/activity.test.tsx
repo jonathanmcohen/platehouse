@@ -68,6 +68,7 @@ function emptyView(): ActivityView {
       openscad: "2026.10.01",
       sandbox: "on",
       sandboxReason: null,
+      sandboxKernel: null,
       unsandboxed: false,
       printerId: P1S,
       printerName: P1S_NAME,
@@ -140,6 +141,7 @@ function busyView(): ActivityView {
     openscad: "2026.10.01",
     sandbox: "on",
     sandboxReason: null,
+    sandboxKernel: null,
     unsandboxed: false,
     printerId: P1S,
     printerName: P1S_NAME,
@@ -536,6 +538,7 @@ describe("the page", () => {
         openscad: null,
         sandbox: null,
         sandboxReason: null,
+        sandboxKernel: null,
         unsandboxed: null,
         printerId: P1S,
         printerName: P1S_NAME,
@@ -583,6 +586,7 @@ describe("the page", () => {
       const t = await renderWith({
         sandbox: "off",
         sandboxReason: "old_kernel",
+        sandboxKernel: null,
         unsandboxed: false,
       });
       expect(t).toContain(OFF_KERNEL);
@@ -593,6 +597,7 @@ describe("the page", () => {
       const t = await renderWith({
         sandbox: "off",
         sandboxReason: "check_failed",
+        sandboxKernel: null,
         unsandboxed: false,
       });
       expect(t).toContain(OFF_CHECK);
@@ -604,6 +609,7 @@ describe("the page", () => {
       const t = await renderWith({
         sandbox: "off",
         sandboxReason: "old_kernel",
+        sandboxKernel: null,
         unsandboxed: true,
       });
       expect(t).toContain(OFF_KERNEL_SHORT);
@@ -616,6 +622,7 @@ describe("the page", () => {
       const t = await renderWith({
         sandbox: "off",
         sandboxReason: "check_failed",
+        sandboxKernel: null,
         unsandboxed: true,
       });
       expect(t).toContain(OFF_CHECK_SHORT);
@@ -630,6 +637,7 @@ describe("the page", () => {
         busy: null,
         sandbox: null,
         sandboxReason: null,
+        sandboxKernel: null,
         unsandboxed: null,
       });
       expect(t).not.toContain("Sandbox");

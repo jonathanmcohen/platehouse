@@ -30,7 +30,7 @@
 import type { BigIntStats } from "node:fs";
 import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { Health } from "@platehouse/slicer-contract";
+import type { Health, KernelCause } from "@platehouse/slicer-contract";
 import type { FastifyInstance } from "fastify";
 import type { Kysely } from "kysely";
 import type { PgBoss } from "pg-boss";
@@ -228,6 +228,8 @@ export interface ActivityView {
     /** The slicer's sandbox; null when it did not answer. Its own detail is never sent. */
     sandbox: "checking" | "on" | "off" | null;
     sandboxReason: "old_kernel" | "check_failed" | null;
+    /** Why the kernel cannot give the sandbox; null unless it is off for that reason and the slicer said why. */
+    sandboxKernel: KernelCause | null;
     /** True when the sandbox is off and the slicer is set to run estimates and STEP previews without it. */
     unsandboxed: boolean | null;
     /** The default printer (My printers), and its full name. */
@@ -790,6 +792,7 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
           openscad: health?.openscad ?? null,
           sandbox: health?.sandbox.state ?? null,
           sandboxReason: health?.sandbox.reason ?? null,
+          sandboxKernel: health?.sandbox.state === "off" ? (health.sandbox.kernel ?? null) : null,
           unsandboxed: health
             ? health.sandbox.state === "off" && health.sandbox.allowUnsandboxed
             : null,

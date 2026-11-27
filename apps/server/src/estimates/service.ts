@@ -433,10 +433,17 @@ const DOWN_AFTER_LOST_DETAIL =
  * outage, and the poll waits on the sandbox, not on the slicer answering.
  */
 export const SANDBOX_OFF_KERNEL_DETAIL =
+  "Estimates are off on this server: its kernel does not offer the sandbox they need. Activity says why.";
+/** 0.1.1's sentence, which a server still running during the upgrade can write. */
+export const LEGACY_SANDBOX_OFF_KERNEL_DETAIL =
   "Estimates are off on this server: its kernel is older than Linux 6.12.";
 export const SANDBOX_OFF_CHECK_DETAIL =
   "Estimates are off on this server: its sandbox check failed.";
-export const SANDBOX_OFF_DETAILS = [SANDBOX_OFF_KERNEL_DETAIL, SANDBOX_OFF_CHECK_DETAIL];
+export const SANDBOX_OFF_DETAILS = [
+  SANDBOX_OFF_KERNEL_DETAIL,
+  LEGACY_SANDBOX_OFF_KERNEL_DETAIL,
+  SANDBOX_OFF_CHECK_DETAIL,
+];
 
 /** The most sandbox-off estimates one poll queues again, so the shared slicer queue is not flooded. */
 const SANDBOX_REQUEUE_LIMIT = 50;

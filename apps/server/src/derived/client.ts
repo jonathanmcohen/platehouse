@@ -125,17 +125,17 @@ export const DERIVED_MESSAGES = {
     "Platehouse could not write a temporary file; it will be tried again automatically.",
   /**
    * The slicer's sandbox is off (HTTP 503 sandbox_off), so it refuses
-   * pictures and OpenSCAD renders: its kernel is too old, or its check
-   * failed. Recorded once with the real reason; the file is queued again
+   * pictures and OpenSCAD renders: its kernel does not offer the sandbox, or
+   * its check failed (Activity says which). Recorded once with the real reason; the file is queued again
    * when the slicer says the sandbox is on (requeueSandboxOff).
    */
   sandboxOffKernel:
-    "Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12.",
+    "Pictures and OpenSCAD renders are off on this server: its kernel does not offer the sandbox they need. Activity says why.",
   sandboxOffCheck:
     "Pictures and OpenSCAD renders are off on this server: its sandbox check failed.",
   /** The same for a STEP conversion, which can also run unsandboxed when the slicer allows it. */
   convertSandboxOffKernel:
-    "STEP previews are off on this server: its kernel is older than Linux 6.12.",
+    "STEP previews are off on this server: its kernel does not offer the sandbox they need. Activity says why.",
   convertSandboxOffCheck: "STEP previews are off on this server: its sandbox check failed.",
   /**
    * A held replacement the slicer refused because its sandbox is off. Not in
@@ -149,6 +149,17 @@ export const DERIVED_MESSAGES = {
   stlTooLarge:
     "This STL file is larger than the 256 MiB the preview renderer takes, so it has no preview picture.",
 } as const;
+
+/**
+ * The kernel sentences 0.1.1 stored, before they stopped naming a version.
+ * Migration 0017 rewrites stored rows to the new sentences, but a 0.1.1
+ * server still running during the upgrade can write these again, so they
+ * still decode and are still re-queued.
+ */
+export const LEGACY_SANDBOX_OFF_KERNEL: Readonly<Record<"scad" | "step", string>> = {
+  scad: "Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12.",
+  step: "STEP previews are off on this server: its kernel is older than Linux 6.12.",
+};
 
 /** The lead-ins the slicer starts a program's own words with, and the sentences above end with. */
 const LEAD_INS = ["OpenSCAD said:", "The converter said:"] as const;
@@ -178,14 +189,18 @@ export const DERIVED_SENTENCES: Readonly<Record<string, string>> = Object.freeze
 });
 
 /** The sentences longest first, so "... OpenSCAD said:" wins over the sentence it starts with. */
-const BY_LENGTH = Object.entries(DERIVED_SENTENCES).sort((a, b) => b[1].length - a[1].length);
+const BY_LENGTH = [
+  ...Object.entries(DERIVED_SENTENCES),
+  ["sandboxOffKernel", LEGACY_SANDBOX_OFF_KERNEL.scad],
+  ["convertSandboxOffKernel", LEGACY_SANDBOX_OFF_KERNEL.step],
+].sort((a, b) => (b[1] as string).length - (a[1] as string).length) as [string, string][];
 
 /**
  * A stored message split into Platehouse's own sentences at its start, by
  * code, and what follows them (the program's own words), so the page can
  * write the sentences in its language. A message whose start is no known
  * sentence (one cut short at its start by the scrub's length limit, or an
- * older wording) gives no codes, and the page shows it as it is. The codes
+ * older wording; 0.1.1's kernel sentences are the two known ones, and decode) gives no codes, and the page shows it as it is. The codes
  * and the detail joined with spaces give back the message.
  */
 export function splitDerivedMessage(message: string): { codes: string[]; detail: string | null } {

@@ -346,7 +346,7 @@ export function createSlicerClient(opts: SlicerClientOptions): SlicerClient {
   }
 
   return {
-    health: () => get("/v1/health", slicerContract.health),
+    health: () => get("/v1/health?kernel=1", slicerContract.health),
     profiles: () => get("/v1/profiles", slicerContract.profiles),
     async slice({ printerId, plate, body, size, timeouts }) {
       // The slicer would answer 400 bad_request for this; no upload is worth it.

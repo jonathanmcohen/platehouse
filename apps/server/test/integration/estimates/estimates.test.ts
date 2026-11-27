@@ -21,6 +21,7 @@ import { OTHER_PRINTER_LABEL } from "../../../src/estimates/display.js";
 import {
   createEstimates,
   type Estimates,
+  LEGACY_SANDBOX_OFF_KERNEL_DETAIL,
   libraryPlatesFor,
   MAX_MY_PRINTERS,
   PrinterListRefused,
@@ -783,6 +784,30 @@ describe("estimates", () => {
     await drain();
     expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
     expect(stub.calls.length - before).toBe(2);
+  });
+
+  test("an estimate that 0.1.1 failed with its old kernel sentence is queued again once the sandbox is on", async () => {
+    stub.onSlice(() => sandboxOff("old_kernel"));
+    stub.setSandbox({ state: "off", reason: "old_kernel", detail: "old", allowUnsandboxed: false });
+    const { plates } = await upload({ plates: 1 });
+    const id = plateId(plates, 1);
+    await until(
+      () => platehouseRows(id),
+      (rows) => rows[0]?.status === "failed",
+    );
+    await env.db
+      .updateTable("estimates")
+      .set({ failureDetail: LEGACY_SANDBOX_OFF_KERNEL_DETAIL })
+      .where("plateId", "=", id)
+      .execute();
+    stub.onSlice(() => ({ kind: "ok" }));
+    stub.setSandbox({ state: "on", reason: null, detail: null, allowUnsandboxed: false });
+    await estimates.pollOrca();
+    await drain();
+    const rows = await platehouseRows(id);
+    expect(rows, `estimate rows after the poll: ${JSON.stringify(rows)}`).toEqual([
+      expect.objectContaining({ status: "ok" }),
+    ]);
   });
 
   test("the sandbox requeue takes only estimates of live models, so refused estimates in the trash never hold back a live one", async () => {
