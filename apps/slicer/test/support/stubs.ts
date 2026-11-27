@@ -208,6 +208,8 @@ export function fakeLandrun(
   argsLog: string;
   runsLog: string;
   abiLog: string;
+  /** One line per sibling-folder read: "644" if the copy had mode 0644, else "other". */
+  siblingLog: string;
   setProbe: (probe: ProbeMode) => void;
   setAbi: (abi: AbiMode) => void;
   setRenderDelay: (ms: number) => void;
@@ -215,6 +217,7 @@ export function fakeLandrun(
   const argsLog = join(dir, "landrun.log");
   const runsLog = join(dir, "landrun-runs.log");
   const abiLog = join(dir, "landrun-abi.log");
+  const siblingLog = join(dir, "landrun-sibling-mode.log");
   const probeFile = join(dir, "landrun-probe-mode");
   const abiFile = join(dir, "landrun-abi-mode");
   const delayFile = join(dir, "landrun-render-delay");
@@ -291,7 +294,10 @@ fi
   case "$line" in
     'import("'*)
       path=$(printf '%s\\n' "$line" | sed -n 's/^import("\\(.*\\)");$/\\1/p')
-      if [ "$(dirname "$(dirname "$path")")" = "$(dirname "$rw")" ]; then which=read-sibling; else which=read; fi ;;
+      if [ "$(dirname "$(dirname "$path")")" = "$(dirname "$rw")" ]; then which=read-sibling; else which=read; fi
+      if [ "$which" = read-sibling ]; then
+        if [ -n "$(find "$path" -perm 644 -print 2>/dev/null)" ]; then printf '644\\n' >> '${siblingLog}'; else printf 'other\\n' >> '${siblingLog}'; fi
+      fi ;;
     'include <'*)
       path=$(printf '%s\\n' "$line" | sed -n 's/^include <\\(.*\\)>$/\\1/p')
       which=read-include ;;
@@ -369,7 +375,7 @@ while [ $# -gt 0 ]; do
 done
 ${probe}${tail}`,
   );
-  return { bin, argsLog, runsLog, abiLog, setProbe, setAbi, setRenderDelay };
+  return { bin, argsLog, runsLog, abiLog, siblingLog, setProbe, setAbi, setRenderDelay };
 }
 
 /**

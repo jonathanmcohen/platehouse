@@ -1128,9 +1128,11 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     // Queued under shorter limits than the slicer has now, pg-boss could
     // expire this job while it is slicing: send it again with the expiry the
     // limits need, and leave the slicer alone.
-    if (estimateExpireSeconds((await slicerState.current()).timeouts) > job.expireInSeconds) {
+    const neededExpiry = estimateExpireSeconds((await slicerState.current()).timeouts);
+    if (neededExpiry > job.expireInSeconds) {
       await backToPending(estimate.id);
       await sendSlice(full, job.priority, carried);
+      console.warn(`estimates: estimate ${estimate.id} sent again with a ${neededExpiry} s expiry`);
       return;
     }
     // started_at is when this attempt began work (0011): finished_at minus it

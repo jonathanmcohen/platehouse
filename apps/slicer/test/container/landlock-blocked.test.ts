@@ -1,5 +1,5 @@
-// A host whose seccomp profile blocks the Landlock system calls, as Docker
-// Engine before 20.10.18 does: landrun sees no Landlock at all (ABI 0), the
+// A host whose seccomp profile blocks the Landlock system calls: landrun sees
+// no Landlock at all (ABI 0), the
 // start-up self-test turns the sandbox off as old_kernel, and ?kernel=1 gives
 // the cause landlock_off. The profile allows everything else, so the only
 // difference from the other container tests is the three blocked calls.
@@ -75,6 +75,28 @@ describe("the slicer on a host whose seccomp blocks Landlock", () => {
 
   // The ABI check is landrun's own refusal: with the Landlock calls failing,
   // go-landlock reports ABI v0.
+  // With the sandbox off a job is refused before its body is read, so no
+  // program runs and the heavy-job lock is never taken for work.
+  test.each([
+    { path: "/v1/step/glb", body: "ISO-10303-21;\nEND-ISO-10303-21;\n" },
+    { path: "/v1/scad/stl", body: "cube([10, 10, 10]);\n" },
+  ])(
+    "POST $path is refused 503 sandbox_off with old_kernel, and no job runs",
+    async ({ path, body }) => {
+      const res = await fetch(`${slicer.base}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body,
+      });
+      const text = await res.text();
+      expect(res.status, `${path} answered ${res.status}: ${text}`).toBe(503);
+      const parsed = slicerContract.sandboxOff.parse(JSON.parse(text));
+      expect(parsed.reason, text).toBe("old_kernel");
+      const after = slicerContract.health.parse(await health());
+      expect(after.busy, `health after ${path}: ${JSON.stringify(after)}`).toBe(false);
+    },
+  );
+
   test("a strict landrun here is refused with Got Landlock ABI v0", () => {
     const args = landrunArgs({
       rules: sandboxRules("openscad", { ...IMAGE_PATHS, dir: "/work" }),

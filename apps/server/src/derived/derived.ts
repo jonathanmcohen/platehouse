@@ -1983,8 +1983,11 @@ export function createDerived(deps: DerivedDeps) {
       // replacement stays until it renders, unless the outage has lasted
       // past the job's deadline, which ends the render.
       // The slicer's sandbox is off: recorded once with its real reason, no
-      // wait and no retry. requeueSandboxOff and the preview backfill pick
-      // the file up again when the slicer says the sandbox is on.
+      // wait and no retry. A refused first render is queued again by
+      // requeueSandboxOff and the preview backfill when the slicer says the
+      // sandbox is on. A refused replacement stores a replace sentence that
+      // is deliberately not among the stored forms they look for, so it is
+      // not queued again: the previous version stays.
       if (error instanceof SandboxOff) {
         await commitSlicerError(
           job.kind,

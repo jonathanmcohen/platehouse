@@ -245,7 +245,8 @@ and carries fixes in its own updates, so `uname -r` cannot tell you; the slicer'
 ### Which case it is
 
 Activity names the cause in the **Slicer** section, under **Sandbox**. The slicer's self-test
-line names it too, with the kernel release and, when it could read them, the security modules:
+line names it too: the kernel release and, when Landlock is turned off, whether `landlock` is among
+the kernel's security modules:
 
 ```sh
 docker logs platehouse-slicer 2>&1 | grep 'sandbox self-test'

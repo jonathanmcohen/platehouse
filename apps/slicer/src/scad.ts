@@ -10,6 +10,7 @@
 // over it that gets through anyway is refused.
 import {
   accessSync,
+  chmodSync,
   closeSync,
   constants,
   copyFileSync,
@@ -339,7 +340,12 @@ export async function sandboxSelfTest(
     };
   }
   const sibling = join(inputs.siblingDir, basename(probe));
-  copyFileSync(probe, sibling);
+  // The folder is fresh, so the copy must not replace anything. It is made
+  // 0644 and checked readable, whatever the probe's mode: a copy its owner
+  // cannot read would make OpenSCAD fail to open it with or without Landlock.
+  copyFileSync(probe, sibling, constants.COPYFILE_EXCL);
+  chmodSync(sibling, 0o644);
+  accessSync(sibling, constants.R_OK);
 
   const abiRun = await runSandboxed(config, dir, [config.openscadBin, "--version"], {
     timeoutMs: ABI_CHECK_SECONDS * 1000,

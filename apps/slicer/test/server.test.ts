@@ -823,6 +823,18 @@ describe("sandbox self-test", () => {
     },
   );
 
+  // copyFileSync copies the probe's mode. A probe the slicer user can read
+  // only as "other" (owner bits 0) would give a sibling copy it cannot read,
+  // and the sibling case would pass without Landlock. The copy is made 0644.
+  test("the self-test's sibling copy is readable by its owner whatever the probe's mode", async () => {
+    const s = setup();
+    chmodSync(s.config.sandboxProbe, 0o444);
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    await start({ ...s.config, landrunBin: lr.bin });
+    const seen = readFileSync(lr.siblingLog, "utf8").trim().split("\n");
+    expect(seen, "the sibling read ran once, with the copy's mode").toEqual(["644"]);
+  });
+
   test("OpenSCAD's colour codes and direction overrides never reach the log line of a passed self-test", async () => {
     const s = setup();
     const lr = fakeLandrun(

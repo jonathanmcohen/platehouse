@@ -36,7 +36,7 @@ All notable changes to Platehouse are recorded here. The format follows
 ### Security
 
 - Sign out everywhere can also revoke the API tokens made before Platehouse 0.1.1, whose maker is unknown, with a second box in its dialog. Ticking it needs a sign-in from the last 5 minutes, also when signing yourself out, because those tokens may be anyone's. Cutting someone off no longer needs a hand step for them.
-- The slicer reads OrcaSlicer's results in a way a leftover process cannot redirect.
+- The slicer reads OrcaSlicer's results in a way a leftover process cannot redirect ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
 - The slicer's start-up check now also proves that a render cannot read another job's folder or the slicer's process information, and the STEP converter may run only the system libraries it needs ([#492](https://github.com/jonathanmcohen/platehouse/issues/492), [#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
 
 ## [0.1.1] - 2026-11-24
