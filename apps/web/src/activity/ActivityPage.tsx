@@ -468,6 +468,41 @@ function Schedules({ schedules }: { schedules: ScheduleRow[] }) {
   );
 }
 
+/**
+ * The message for the slicer's sandbox state, or null when the slicer did not
+ * answer. Off with unsandboxed runs allowed, estimates and STEP previews still
+ * run, so the off line gives only the reason (the Short form) and the
+ * unsandboxed line below the list says what runs. A slicer from 0.1.1 sends no
+ * cause, and gets the wording that names no kernel version.
+ */
+export function sandboxKey(
+  slicer: Pick<
+    ActivityView["slicer"],
+    "sandbox" | "sandboxReason" | "sandboxKernel" | "unsandboxed"
+  >,
+): MessageKey | null {
+  if (slicer.sandbox === null) return null;
+  if (slicer.sandbox === "on") return "activity.slicer.sandboxOn";
+  if (slicer.sandbox === "checking") return "activity.slicer.sandboxChecking";
+  const short = slicer.unsandboxed === true;
+  if (slicer.sandboxReason !== "old_kernel") {
+    return short ? "activity.slicer.sandboxOffCheckShort" : "activity.slicer.sandboxOffCheck";
+  }
+  const byCause = {
+    too_old: short ? "activity.slicer.sandboxOffKernelShort" : "activity.slicer.sandboxOffKernel",
+    landlock_off: short
+      ? "activity.slicer.sandboxOffLandlockShort"
+      : "activity.slicer.sandboxOffLandlock",
+    landlock_fix_missing: short
+      ? "activity.slicer.sandboxOffFixShort"
+      : "activity.slicer.sandboxOffFix",
+    unknown: short
+      ? "activity.slicer.sandboxOffNoLandlockShort"
+      : "activity.slicer.sandboxOffNoLandlock",
+  } as const;
+  return byCause[slicer.sandboxKernel ?? "unknown"];
+}
+
 function Slicer({ slicer }: { slicer: ActivityView["slicer"] }) {
   const i18n = useI18n();
   const { t } = i18n;
@@ -476,25 +511,7 @@ function Slicer({ slicer }: { slicer: ActivityView["slicer"] }) {
     : slicer.busy
       ? t("activity.slicer.busy")
       : t("activity.slicer.idle");
-  // Off with unsandboxed runs allowed, estimates and STEP previews still
-  // run, so the off line gives only the reason and the unsandboxed line
-  // below says what runs.
-  const offKey =
-    slicer.sandboxReason === "old_kernel"
-      ? slicer.unsandboxed
-        ? "activity.slicer.sandboxOffKernelShort"
-        : "activity.slicer.sandboxOffKernel"
-      : slicer.unsandboxed
-        ? "activity.slicer.sandboxOffCheckShort"
-        : "activity.slicer.sandboxOffCheck";
-  const sandbox =
-    slicer.sandbox === "on"
-      ? t("activity.slicer.sandboxOn")
-      : slicer.sandbox === "checking"
-        ? t("activity.slicer.sandboxChecking")
-        : slicer.sandbox === "off"
-          ? t(offKey)
-          : null;
+  const sandboxMessage = sandboxKey(slicer);
   return (
     <Section title={t("model.numbers.slicer")}>
       {slicer.reachable ? null : (
@@ -509,8 +526,13 @@ function Slicer({ slicer }: { slicer: ActivityView["slicer"] }) {
         <dd>{slicer.openscad ?? t("activity.slicer.unknown")}</dd>
         <dt>{t("activity.slicer.defaultPrinter")}</dt>
         <dd>{printerNameIn(i18n, slicer.printerName)}</dd>
+        {sandboxMessage === null ? null : (
+          <>
+            <dt>{t("activity.slicer.sandbox")}</dt>
+            <dd>{t(sandboxMessage)}</dd>
+          </>
+        )}
       </dl>
-      {sandbox === null ? null : <p>{sandbox}</p>}
       {slicer.unsandboxed ? <p>{t("activity.slicer.sandboxUnsandboxed")}</p> : null}
     </Section>
   );

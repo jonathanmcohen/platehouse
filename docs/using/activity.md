@@ -43,15 +43,17 @@ stored error text before showing it.
 - **OrcaSlicer** and **OpenSCAD**: the versions in the slicer image, or **Unknown**.
 - **Default printer**: the printer the Estimates section and the API answer for, the default in
   [My printers](./printers-and-estimates.md#my-printers).
-- The sandbox, on a line of its own:
-  - **Sandbox: on**: everything runs inside the slicer's sandbox, as it should.
-  - **Sandbox: checking**: the slicer has not finished checking its sandbox yet, as just after it
-    starts.
-  - **Sandbox: off.** with the reason: the server's kernel is older than Linux 6.12, or the
-    sandbox check failed. Pictures, OpenSCAD renders, STEP previews and estimates are then off.
-    With `SLICER_ALLOW_UNSANDBOXED=true` on the slicer, a second line says that estimates and STEP
-    previews still run, without the sandbox, while pictures and OpenSCAD renders stay off. On a
-    kernel of Linux 6.12 or newer the reason can be wrong; see
+- **Sandbox**, the last entry of the list:
+  - **On**: everything runs inside the slicer's sandbox, as it should.
+  - **Checking**: the slicer has not finished checking its sandbox yet, as just after it starts.
+  - **Off.** with the reason. When the cause is the kernel, Activity says which: the server's
+    kernel is older than Linux 6.12; Landlock is turned off in the kernel or the container
+    runtime blocks it; or the kernel lacks the 2025 Landlock fix. When the slicer cannot say
+    which, the line says only that the kernel does not offer the sandbox it needs. Otherwise the sandbox check
+    failed. Pictures, OpenSCAD renders, STEP previews and estimates are then off. With
+    `SLICER_ALLOW_UNSANDBOXED=true` on the slicer, a line below the list says that estimates and
+    STEP previews still run, without the sandbox, while pictures and OpenSCAD renders stay off.
+    For a kernel cause, see
     [The sandbox is off on a new kernel](../troubleshooting.md#the-sandbox-is-off-on-a-new-kernel).
 
   The slicer reports itself healthy whether its sandbox is on or off, so this line, not

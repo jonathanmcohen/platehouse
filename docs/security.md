@@ -330,7 +330,7 @@ container, the slicer, which is locked down.
 - **The sandbox is checked first.** At start-up the slicer checks that the sandbox really blocks a
   render from reading a file outside its job folder, another job's folder, or the slicer's process
   information under `/proc`, by an import, an include or `surface()`. It runs no render, slice or
-  STEP conversion until that check passes. It needs Linux 6.12 or newer (Landlock ABI 6). The
+  STEP conversion until that check passes. It needs Linux 6.12.24, 6.13.12, 6.14.3 or 6.15 and later (Landlock ABI 6). The
   sandbox can also be off on a newer kernel; see
   [The sandbox is off on a new kernel](./troubleshooting.md#the-sandbox-is-off-on-a-new-kernel). On
   an older kernel, or while the check fails, renders and STL pictures are off. Slices and STEP

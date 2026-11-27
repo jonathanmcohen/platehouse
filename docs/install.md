@@ -17,8 +17,8 @@ This page walks through a first install with the example files in the repository
 - **CPU and memory.** The example gives the slicer 4 CPUs and 4 GiB, and the app 2 CPUs and
   2 GiB, plus whatever Postgres needs. The heaviest plate measured so far used about 2.5 GiB of
   memory while slicing.
-- **A Linux kernel with Landlock ABI 6 or newer.** That is Linux 6.12 or newer, updated: 6.12.24,
-  6.13.12, 6.14.3, or 6.15 and later. Landlock must be turned on (`/sys/kernel/security/lsm` lists
+- **A Linux kernel with Landlock ABI 6 or newer.** That is Linux 6.12.24, 6.13.12, 6.14.3 or 6.15 and
+  later. Landlock must be turned on (`/sys/kernel/security/lsm` lists
   `landlock`), on Docker Engine 20.10.18 or newer. `uname -r` shows the kernel version, but a
   distribution kernel can carry the fix under an older-looking version, so the Activity page is the
   real check. Pictures of STL and STEP files, OpenSCAD renders, STEP conversions (for the 3D
@@ -154,11 +154,12 @@ Then, in **Settings**:
 - check that there is no red banner about bucket versioning (see [Storage](./storage.md));
 - create an API token if you want to use the API.
 
-Then open **Activity** and look at the **Slicer** section. It should say **Sandbox: on**. If it
-says **Sandbox: off.**, the line says why: a kernel older than Linux 6.12, or a failed sandbox
-check. Pictures, OpenSCAD renders, STEP conversions and estimates are then off; see
+Then open **Activity** and look at the **Slicer** section. It should show **Sandbox**: **On**. If it
+shows **Sandbox**: **Off.**, the line says why: a kernel older than Linux 6.12, Landlock turned off
+in the kernel or blocked by the container runtime, a kernel without the 2025 Landlock fix, or a
+failed sandbox check. Pictures, OpenSCAD renders, STEP conversions and estimates are then off; see
 [What you need](#what-you-need) and [Troubleshooting](./troubleshooting.md#renders-and-step-files).
-**Sandbox: checking** means the slicer has not finished its check yet; look again in a minute.
+**Sandbox**: **Checking** means the slicer has not finished its check yet; look again in a minute.
 
 ## Running it without the example
 

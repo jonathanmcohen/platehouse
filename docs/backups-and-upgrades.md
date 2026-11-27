@@ -158,8 +158,8 @@ Before and after the steps above, when you go from 0.1.0 to 0.1.1:
   shows the slicer as **Not reachable**, and preview pictures wait for the slicer for up to 2
   hours (see [Troubleshooting](./troubleshooting.md#estimates)).
 - **Check the host's kernel** with `uname -r` before you upgrade. 0.1.1 runs estimates and STEP
-  conversions inside the slicer's sandbox too, which needs Linux 6.12 or newer. On an older
-  kernel, pictures and OpenSCAD renders are off, and estimates and STEP conversions stop unless
+  conversions inside the slicer's sandbox too, which needs a kernel with Landlock ABI 6 (see
+  [What you need](./install.md#what-you-need)). On a kernel without it, pictures and OpenSCAD renders are off, and estimates and STEP conversions stop unless
   `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer (see [Security](./security.md#the-slicer-sandbox)
   for what that gives up). The example Compose file shipped with 0.1.1 has that line commented
   out, so to set it, add this line under the `platehouse-slicer` service's `environment:` in
@@ -203,8 +203,8 @@ app image, and that version tag is the pin. `orca-X.Y.Z` follows the newest buil
 OrcaSlicer version from main or a release, never a release candidate, and `stable` the newest such
 build of any OrcaSlicer version. You move to a new release with the Upgrading steps above, which
 change both tags together. From 0.1.1 on, upgrade them together in any case: the 0.1.1 app refuses
-an older slicer, pictures and OpenSCAD renders need Linux 6.12 or newer, and on Linux older than
-6.12 estimates and STEP conversions stop unless `SLICER_ALLOW_UNSANDBOXED=true` is set on the
+an older slicer, pictures and OpenSCAD renders need a kernel with Landlock ABI 6 (see
+[What you need](./install.md#what-you-need)), and without one estimates and STEP conversions stop unless `SLICER_ALLOW_UNSANDBOXED=true` is set on the
 slicer. See [Upgrading to 0.1.1](#upgrading-to-011).
 
 When the slicer's OrcaSlicer version changes, Platehouse re-estimates the library in the

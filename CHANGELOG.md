@@ -17,6 +17,7 @@ All notable changes to Platehouse are recorded here. The format follows
 - Interrupted downloads can be resumed: file downloads, slicer links, pictures and the API's file download (`GET /api/v1/files/{id}/content`) answer requests for part of a file. The API reference documents the new answers ([#463](https://github.com/jonathanmcohen/platehouse/issues/463)).
 - Empty trash answers at once and deletes the models in the background. The Trash page shows them as being deleted until they are gone. A model can no longer be restored once Empty trash is confirmed ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
 - When the slicer runs out of memory, the kernel now stops the render, slice or conversion, not the slicer itself ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
+- When the slicer's sandbox is off because of the kernel, Activity now says which cause it is: a kernel older than Linux 6.12, Landlock turned off in the kernel or blocked by the container runtime, or a 6.12 kernel without the 2025 Landlock fix. Pictures, renders and estimates turned off for this reason now say the kernel does not offer the sandbox they need, and point to Activity ([#498](https://github.com/jonathanmcohen/platehouse/issues/498)).
 
 ### Fixed
 
@@ -30,6 +31,7 @@ All notable changes to Platehouse are recorded here. The format follows
 - Putting a file back under an imported file's name in the inbox checks that the file it copies is the one it found, so a file swapped in at that moment is not copied ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
 - An estimate or STEP preview queued while the slicer was unreachable could be failed by the job queue while it was still slicing ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
 - Trying a refused render again could re-queue a file in a model being deleted, or overwrite a file that had since rendered ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
+- Activity shows the slicer's sandbox state as part of the slicer's details ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
 
 ### Security
 
