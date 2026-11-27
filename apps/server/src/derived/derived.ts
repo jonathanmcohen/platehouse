@@ -443,9 +443,9 @@ const TOO_LARGE: Partial<Record<DerivableKind, { limit: number; message: string 
 };
 
 /**
- * The advisory lock a preview backfill run holds from its check for waiting
- * jobs until its batch is queued, so a second run at the same moment waits
- * and then sees the first run's jobs queued (backfillPreviews).
+ * The advisory lock a preview backfill run takes, or skips the run when
+ * another run holds it, from its check for waiting jobs until its batch is
+ * queued, so a second run at the same moment queues nothing (backfillPreviews).
  */
 export const BACKFILL_LOCK_KEY = 4_280_316;
 
@@ -2532,10 +2532,13 @@ export function createDerived(deps: DerivedDeps) {
   async function backfillPreviews(now: Date): Promise<BackfillResult> {
     // The lock is held by this transaction until the batch is queued (each
     // file's own transaction commits before it ends), and is released when
-    // it ends, so a run at the same moment waits here and then finds the
-    // first run's jobs waiting.
+    // it ends. A run at the same moment does not wait: it skips, and the
+    // next scheduled run (or nextBackfillBatch) picks the work up.
     return db.transaction().execute(async (lock) => {
-      await sql`select pg_advisory_xact_lock(${BACKFILL_LOCK_KEY}::bigint)`.execute(lock);
+      const got = await sql<{
+        locked: boolean;
+      }>`select pg_try_advisory_xact_lock(${BACKFILL_LOCK_KEY}::bigint) as locked`.execute(lock);
+      if (got.rows[0]?.locked !== true) return { queued: [] };
       return backfillBatchLocked(now);
     });
   }
@@ -2544,7 +2547,7 @@ export function createDerived(deps: DerivedDeps) {
    * Issue #417: when a backfill picture is done and none is still queued,
    * sends a backfill-previews maintenance job at once, so the next batch
    * does not wait for the 5-minute schedule. The job runs backfillPreviews,
-   * which holds BACKFILL_LOCK_KEY and queues nothing while a backfill job is
+   * which takes BACKFILL_LOCK_KEY, or skips the run when another run holds it, and queues nothing while a backfill job is
    * queued, so one batch at a time still holds and a duplicate is a no-op.
    * Returns whether it sent a job.
    */

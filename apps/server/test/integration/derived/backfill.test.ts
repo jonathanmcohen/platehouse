@@ -219,7 +219,7 @@ describe("the preview backfill (issue #316)", () => {
     for (const id of ours) expect(await previewJobs(id)).toHaveLength(1);
   });
 
-  test("a run waits while another holds the backfill lock, then queues its batch", async () => {
+  test("a run while another holds the backfill lock returns at once with nothing queued", async () => {
     // Jobs held an hour, so the batch stays queued until the test cancels it.
     const send: PgBoss["send"] = async (...args: unknown[]) => {
       const [name, data, options] = args as [string, object, Record<string, unknown>];
@@ -262,24 +262,38 @@ describe("the preview backfill (issue #316)", () => {
       });
     await holds;
 
-    let settled = false;
-    const run = batched.backfillPreviews(later()).finally(() => {
-      settled = true;
-    });
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      expect(settled).toBe(false);
-      for (const id of ours) expect(await previewJobs(id)).toHaveLength(0);
+      const started = Date.now();
+      const skipped = await batched.backfillPreviews(later());
+      const took = Date.now() - started;
+      expect(
+        took,
+        `the run took ${took} ms while another held the lock; it should return at once`,
+      ).toBeLessThan(2000);
+      expect(
+        skipped.queued,
+        `the run queued ${JSON.stringify(skipped.queued)} while another held the lock`,
+      ).toEqual([]);
+      for (const id of ours) {
+        const jobs = await previewJobs(id);
+        expect(
+          jobs.length,
+          `file ${id} has ${jobs.length} preview jobs after the skipped run`,
+        ).toBe(0);
+      }
 
       release();
       await holder;
-      const result = await run;
-      expect(result.queued.filter((id) => ours.includes(id)).sort()).toEqual([...ours].sort());
+      const after = await batched.backfillPreviews(later());
+      const mine = after.queued.filter((id) => ours.includes(id)).sort();
+      expect(mine, `a run after the holder ended queued ${JSON.stringify(after.queued)}`).toEqual(
+        [...ours].sort(),
+      );
     } finally {
-      // Harmless a second time. Neither promise may reject unobserved, or
+      // Harmless a second time. The holder may not reject unobserved, or
       // after the env has stopped.
       release();
-      await Promise.allSettled([holder, run]);
+      await Promise.allSettled([holder]);
       for (const f of files) {
         for (const job of await previewJobs(f.fileId)) {
           await env.boss.cancel(QUEUE.slicer, job.id);
