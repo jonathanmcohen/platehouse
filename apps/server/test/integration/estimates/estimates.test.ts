@@ -12,14 +12,16 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { SlicerTimeouts } from "@platehouse/slicer-contract";
 import { sql } from "kysely";
-import type { PgBoss } from "pg-boss";
+import type { JobWithMetadata, PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { createSlicerClient, type SlicerClient } from "../../../src/estimates/client.js";
 import { OTHER_PRINTER_LABEL } from "../../../src/estimates/display.js";
 import {
   createEstimates,
   type Estimates,
+  LEGACY_SANDBOX_OFF_KERNEL_DETAIL,
   libraryPlatesFor,
   MAX_MY_PRINTERS,
   PrinterListRefused,
@@ -33,9 +35,15 @@ import {
   STORE_DOWN_DETAIL,
   UnknownPrinter,
 } from "../../../src/estimates/service.js";
+import {
+  defaultTimeouts,
+  estimateExpireSeconds,
+  SLICER_MARGIN_SECONDS,
+  type SlicerSnapshot,
+} from "../../../src/estimates/slicer-state.js";
 import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
-import { MAINTENANCE_TASKS, QUEUE, startQueues } from "../../../src/jobs/queues.js";
+import { MAINTENANCE_TASKS, QUEUE, type SlicerJob, startQueues } from "../../../src/jobs/queues.js";
 import { BOSS_JOB } from "../../../src/repos/activity.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import {
@@ -776,6 +784,30 @@ describe("estimates", () => {
     await drain();
     expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
     expect(stub.calls.length - before).toBe(2);
+  });
+
+  test("an estimate that 0.1.1 failed with its old kernel sentence is queued again once the sandbox is on", async () => {
+    stub.onSlice(() => sandboxOff("old_kernel"));
+    stub.setSandbox({ state: "off", reason: "old_kernel", detail: "old", allowUnsandboxed: false });
+    const { plates } = await upload({ plates: 1 });
+    const id = plateId(plates, 1);
+    await until(
+      () => platehouseRows(id),
+      (rows) => rows[0]?.status === "failed",
+    );
+    await env.db
+      .updateTable("estimates")
+      .set({ failureDetail: LEGACY_SANDBOX_OFF_KERNEL_DETAIL })
+      .where("plateId", "=", id)
+      .execute();
+    stub.onSlice(() => ({ kind: "ok" }));
+    stub.setSandbox({ state: "on", reason: null, detail: null, allowUnsandboxed: false });
+    await estimates.pollOrca();
+    await drain();
+    const rows = await platehouseRows(id);
+    expect(rows, `estimate rows after the poll: ${JSON.stringify(rows)}`).toEqual([
+      expect.objectContaining({ status: "ok" }),
+    ]);
   });
 
   test("the sandbox requeue takes only estimates of live models, so refused estimates in the trash never hold back a live one", async () => {
@@ -1848,6 +1880,158 @@ describe("My printers", () => {
     ).toMatchObject({ removed: [], added: [{ printerId: X1C }] });
     await estimates.pollOrca();
     await drain();
+  });
+});
+
+// Issue #480: a slice job is sent with the expiry the slicer's limits give
+// then. One queued under shorter limits than it finds when it runs is sent
+// again with the right expiry, before it calls the slicer.
+describe("a slice job's expiry", () => {
+  const larger: SlicerTimeouts = { ...defaultTimeouts(5), sliceSeconds: 900 };
+
+  /** Estimates whose sends are held an hour, with the limits and slicer given. */
+  function heldEstimates(
+    limits: () => SlicerTimeouts,
+    slicerClient: SlicerClient = slicer,
+  ): Estimates {
+    const heldBoss = new Proxy(boss, {
+      get(target, prop) {
+        if (prop === "send") {
+          return (name: string, data: object, options: object) =>
+            target.send(name, data, { ...options, startAfter: 3600 });
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const snapshot = (): SlicerSnapshot => ({ timeouts: limits(), sandbox: null });
+    return createEstimates({
+      db: env.db,
+      boss: heldBoss,
+      slicer: slicerClient,
+      store: env.store,
+      jobOptions: { retryDelay: 1, retryDelayMax: 1 },
+      slicerState: { current: async () => snapshot() },
+    });
+  }
+
+  /** A plate with no estimate of its own, and the Orca version to queue it for. */
+  async function barePlate() {
+    const { plates } = await upload({ plates: 1 });
+    await drain();
+    const plate = plates[0];
+    if (plate === undefined) throw new Error("no plate");
+    await sql`delete from estimates where plate_id = ${plate.id} and source = 'platehouse'`.execute(
+      env.db,
+    );
+    const orca = (await env.repos.settings.get()).lastOrcaVersion ?? "";
+    return { plateId: plate.id, orca };
+  }
+
+  async function sliceJobsOf(estimateId: string) {
+    return boss.findJobs<SlicerJob & { estimateId: string }>(QUEUE.slicer, {
+      data: { kind: SLICE_JOB_KIND, estimateId },
+    });
+  }
+
+  /** Cancels every job of the plate's estimates and removes them, so the queue is clear for the next test. */
+  async function clear(plateId: string): Promise<void> {
+    for (const row of await platehouseRows(plateId)) {
+      for (const job of await sliceJobsOf(row.id)) await boss.cancel(QUEUE.slicer, job.id);
+    }
+    await sql`delete from estimates where plate_id = ${plateId} and source = 'platehouse'`.execute(
+      env.db,
+    );
+    await drain();
+  }
+
+  test("a slice job sent with a lower expiry than the slicer's limits need is sent again, and the slicer is not called", async () => {
+    const { plateId, orca } = await barePlate();
+    let limits = defaultTimeouts(5);
+    const held = heldEstimates(() => limits);
+    try {
+      const estimate = await held.enqueuePlate(plateId, P1S, orca);
+      if (estimate === null) throw new Error("enqueuePlate queued nothing");
+      const [first] = await sliceJobsOf(estimate.id);
+      if (first === undefined) throw new Error("no slice job was sent");
+      expect(first.expireInSeconds, "expiry of the first send").toBe(
+        estimateExpireSeconds(defaultTimeouts(5)),
+      );
+      await boss.cancel(QUEUE.slicer, first.id);
+
+      limits = larger;
+      const before = stub.calls.length;
+      const handler = held.slicerJobs[SLICE_JOB_KIND];
+      if (handler === undefined) throw new Error("no slice handler");
+      await handler({
+        ...first,
+        retryCount: 1,
+        data: { ...first.data, retriesUsed: 1, requeues: 2, lostConnections: 1 },
+      } as unknown as JobWithMetadata<SlicerJob>);
+
+      const resent = (await sliceJobsOf(estimate.id)).filter((j) => j.id !== first.id);
+      expect(
+        resent.map((j) => [j.state, j.expireInSeconds, j.priority]),
+        "the jobs sent after the first",
+      ).toEqual([["created", estimateExpireSeconds(larger), first.priority]]);
+      expect(resent[0]?.data, "the resent job's data").toMatchObject({
+        estimateId: estimate.id,
+        retriesUsed: 2,
+        requeues: 2,
+        lostConnections: 1,
+      });
+      expect(stub.calls.length - before, "slice requests the stub saw").toBe(0);
+      const [row] = await platehouseRows(plateId);
+      expect(row?.status, "the estimate's status").toBe("pending");
+    } finally {
+      await clear(plateId);
+    }
+  });
+
+  test("the estimate expiry at send follows slicerState", async () => {
+    const { plateId, orca } = await barePlate();
+    try {
+      const estimate = await heldEstimates(() => larger).enqueuePlate(plateId, P1S, orca);
+      if (estimate === null) throw new Error("enqueuePlate queued nothing");
+      const jobs = await sliceJobsOf(estimate.id);
+      expect(
+        jobs.map((j) => j.expireInSeconds),
+        "expiry of each job sent",
+      ).toEqual([estimateExpireSeconds(larger)]);
+    } finally {
+      await clear(plateId);
+    }
+  });
+
+  test("slice() is given the timers from slicerState", async () => {
+    const { plateId, orca } = await barePlate();
+    const seen: Array<{ uploadMs: number; answerMs: number } | undefined> = [];
+    const recordingSlicer: SlicerClient = {
+      ...slicer,
+      slice: (request) => {
+        seen.push(request.timeouts);
+        return slicer.slice(request);
+      },
+    };
+    const held = heldEstimates(() => larger, recordingSlicer);
+    try {
+      const estimate = await held.enqueuePlate(plateId, P1S, orca);
+      if (estimate === null) throw new Error("enqueuePlate queued nothing");
+      const [job] = await sliceJobsOf(estimate.id);
+      if (job === undefined) throw new Error("no slice job was sent");
+      await boss.cancel(QUEUE.slicer, job.id);
+      const handler = held.slicerJobs[SLICE_JOB_KIND];
+      if (handler === undefined) throw new Error("no slice handler");
+      await handler(job as unknown as JobWithMetadata<SlicerJob>);
+      expect(seen, "timers slice() was given").toEqual([
+        {
+          uploadMs: larger.uploadSeconds * 1000,
+          answerMs: (larger.sliceSeconds + SLICER_MARGIN_SECONDS) * 1000,
+        },
+      ]);
+    } finally {
+      await clear(plateId);
+    }
   });
 });
 

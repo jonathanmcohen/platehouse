@@ -48,7 +48,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { LIMITS } from "@platehouse/slicer-contract";
-import { launcherEnv, scratchEnv } from "./orca.js";
+import { launcherEnv, scratchEnv } from "./orca-env.js";
 
 /**
  * Paths each sandboxed program may run code from, besides its own tree
@@ -68,6 +68,25 @@ import { launcherEnv, scratchEnv } from "./orca.js";
  * PNG renders, slices and STEP conversions still work with only these.
  */
 const SYSTEM_EXEC = ["/usr/lib/x86_64-linux-gnu", "/lib64/ld-linux-x86-64.so.2"];
+/**
+ * The only system files the STEP worker may run: the loader and the seven
+ * libraries Node links (what `ldd /opt/node/bin/node` lists), each by its
+ * name in the image, so a link is followed to its file. Not the folder: the
+ * worker needs none of the helpers SYSTEM_EXEC's folder holds (WebKit's and
+ * GStreamer's among them), and no binary that could run a shell (issue #480).
+ * A container test proves every library Node links is here and every entry
+ * exists in the image.
+ */
+export const NODE_LIBS: readonly string[] = Object.freeze([
+  "/lib64/ld-linux-x86-64.so.2",
+  "/usr/lib/x86_64-linux-gnu/libc.so.6",
+  "/usr/lib/x86_64-linux-gnu/libm.so.6",
+  "/usr/lib/x86_64-linux-gnu/libstdc++.so.6",
+  "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+  "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+  "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+  "/usr/lib/x86_64-linux-gnu/libatomic.so.1",
+]);
 /**
  * Read-only data OpenSCAD needs, which Orca gets too: fonts; for PNG
  * renders EGL's glvnd vendor files (how libEGL finds Mesa) and Mesa's driver
@@ -110,6 +129,8 @@ export interface SandboxPaths {
 /** The server's settings every sandboxed run needs: the two wrappers and the image's folders. */
 export interface SandboxConfig extends Omit<SandboxPaths, "dir"> {
   landrunBin: string;
+  /** util-linux choom, which raises each program's OOM score before it runs. */
+  choomBin: string;
   /** util-linux prlimit, which sets each program's resource limits. */
   prlimitBin: string;
 }
@@ -140,9 +161,10 @@ export interface SandboxRules {
 /**
  * Each program's rules. Every one may write only paths.dir (its job folder,
  * or for Orca its own folder inside it), runs code only from its own tree,
- * the multiarch library folder and the loader (SYSTEM_EXEC), and gets no
- * network rule, so landrun refuses it every TCP bind and connect (Landlock
- * does not cover UDP; the container's internal network does):
+ * the multiarch library folder and the loader (SYSTEM_EXEC; the STEP worker
+ * gets only NODE_LIBS), and gets no network rule, so landrun refuses it every
+ * TCP bind and connect (Landlock does not cover UDP; the container's internal
+ * network does):
  *
  * - openscad: reads READ_ONLY. These rules are exactly the ones the slicing
  *   gate and the container tests proved, and a unit test pins them.
@@ -151,7 +173,7 @@ export interface SandboxRules {
  *   driver config and the locale data). Its presets and process_full are in
  *   its own tree. Its environment is scratchEnv's (HOME, TMPDIR and the XDG
  *   folders all in its own folder) plus what its AppImage launcher would set
- *   (launcherEnv in orca.ts, which says why Orca runs without the launcher).
+ *   (launcherEnv in orca-env.ts, which says why Orca runs without the launcher).
  *   It needs nothing under /etc but the fonts' config, and nothing under
  *   /proc or /sys: OrcaSlicer 2.5.0's command line reads /proc/self/statm
  *   and /proc/version only for its log, and goes on without them
@@ -160,8 +182,11 @@ export interface SandboxRules {
  *   are /usr/share/glib-2.0/schemas, /proc/self and /etc/ld.so.cache;
  *   landrun logs each denial with LANDRUN_LOG_LEVEL=debug.
  * - step: reads the app, where step.js and occt-import-js are, and runs
- *   Node from its own folder. OPENSSL_CONF is set empty, so Node loads no
- *   OpenSSL config file (Node's documented way past one it cannot read) and
+ *   Node from its own folder and only the loader and libraries in NODE_LIBS,
+ *   not the multiarch folder: unlike OpenSCAD and Orca it loads no plug-in
+ *   and no helper, so it needs no more than Node links (issue #480).
+ *   OPENSSL_CONF is set empty, so Node loads no OpenSSL config file (Node's
+ *   documented way past one it cannot read) and
  *   needs nothing under /etc. Without it Node opens /etc/ssl/openssl.cnf at
  *   start-up, and when the file exists but cannot be read it exits with
  *   "OpenSSL configuration error ... Permission denied" (CI run
@@ -187,7 +212,7 @@ export function sandboxRules(program: SandboxedProgram, paths: SandboxPaths): Sa
       };
     case "step":
       return {
-        rox: [paths.nodeDir, ...SYSTEM_EXEC],
+        rox: [paths.nodeDir, ...NODE_LIBS],
         ro: [paths.appDir],
         rw: [dir],
         env: {
@@ -409,6 +434,21 @@ export function prlimitCommand(opts: {
         ]
       : command),
   ];
+}
+
+/**
+ * The command every sandboxed program starts as: choom sets its OOM score
+ * to 1000 and runs prlimit in its place, so prlimit, landrun and the
+ * program inherit it. When memory runs out the kernel stops the program
+ * first, not the slicer server, whose own score stays 0. choom is outside
+ * the sandbox and only raises a score. No path leaves it out: with no
+ * choom the run fails.
+ */
+export function oomFirst(
+  config: Pick<SandboxConfig, "choomBin" | "prlimitBin">,
+  prlimitArgs: string[],
+): { bin: string; args: string[] } {
+  return { bin: config.choomBin, args: ["-n", "1000", "--", config.prlimitBin, ...prlimitArgs] };
 }
 
 /** What readOutputFile found. */
@@ -679,7 +719,9 @@ export function leftoverProcesses(procDir: string, selfPid: number): number[] {
  * subtree is known only once every parent is read), so each pass reads it
  * first. To keep the gap between looking at a process and signalling it
  * short, each one is read again just before its signal, and is signalled
- * only if it is still there, still live and still outside the spared set.
+ * only if it is still there, still live, not parented by 0 (docker exec's
+ * own processes, whose parent 0 is how the scan spares them) and still
+ * outside the spared set.
  *
  * When the last pass still finds processes it has not signalled before, the
  * clean-up has not finished, and onOutrun runs: by default it logs one line
@@ -711,7 +753,8 @@ export function reapLeftovers(
     for (const pid of fresh) {
       tried.add(pid);
       const now = readStat(procDir, pid);
-      if (!now || now.state === "Z" || now.state === "X" || spared.has(now.ppid)) continue;
+      if (!now || now.state === "Z" || now.state === "X" || now.ppid === 0 || spared.has(now.ppid))
+        continue;
       try {
         kill(pid, "SIGKILL");
         killed.push(pid);
@@ -794,7 +837,10 @@ export function ledInMessage(leadIn: string, text: string, lines = 20, chars = 2
     .slice(-lines)
     .join(" / ");
   if (one.length === 0) return "";
-  return `${leadIn}${one.length > chars ? one.slice(one.length - chars) : one}`;
+  if (one.length <= chars) return `${leadIn}${one}`;
+  // The cut counts UTF-16 units, so it can land between the halves of a pair;
+  // a low surrogate left at the front would be a lone, unprintable half.
+  return `${leadIn}${one.slice(one.length - chars).replace(/^[\uDC00-\uDFFF]/, "")}`;
 }
 
 export type ScadOutput = "stl" | "png";

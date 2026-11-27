@@ -1,5 +1,6 @@
 // A real slice in the built image (the printer menu, the container's limits,
-// and the release workflow's smoke fixture): buildSliceable's two plates, two PLA filaments each, on the P1S
+// and the release workflow's smoke fixture): buildSliceable's two plates, two
+// PLA filaments each, on the P1S
 // and on the A1, each with Bambu's own PLA preset for that printer loaded and
 // reported in filamentProfiles (the maintainer, 2026-11-08: Bambu's own filaments first).
 import { slicerContract } from "@platehouse/slicer-contract";

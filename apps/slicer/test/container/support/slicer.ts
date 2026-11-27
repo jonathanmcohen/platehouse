@@ -4,7 +4,8 @@
 // carries the same options), 4 CPUs
 // (fewer if the host has fewer), 4 GB of memory with no swap, a 1024 process
 // and thread cap, no core files, no capabilities and no-new-privileges
-// (test/harness.test.ts checks these against the compose file). Uses the docker CLI rather than testcontainers, which has
+// (test/harness.test.ts checks these against the compose file). Uses the docker
+// CLI rather than testcontainers, which has
 // no read-only-root option. The port is published on 127.0.0.1 only so the
 // tests can reach the HTTP contract.
 //
@@ -79,14 +80,14 @@ export function ensureImage(): void {
 
 /**
  * Runs one program in a fresh throwaway container from the slicer image, as
- * root with Docker's default capabilities, and removes the container after.
+ * root (or opts.user) with Docker's default capabilities, and removes the container after.
  * For checks of what is in the image itself, which do not need the hardened
  * runtime startSlicer gives: root there has no capabilities, so it cannot
  * read every folder in the image.
  */
-export function runInImage(program: string, args: string[]): Run {
+export function runInImage(program: string, args: string[], opts: { user?: string } = {}): Run {
   ensureImage();
-  return docker(["run", "--rm", "-u", "0", "--entrypoint", program, IMAGE, ...args]);
+  return docker(["run", "--rm", "-u", opts.user ?? "0", "--entrypoint", program, IMAGE, ...args]);
 }
 
 export interface RunningSlicer {
@@ -147,14 +148,21 @@ export function slicerRunArgs(hostCpus: number): string[] {
   ];
 }
 
-export async function startSlicer(): Promise<RunningSlicer> {
+/**
+ * Starts the slicer container. extraRunArgs go into docker run just before
+ * the image name, for a test that changes the runtime (a seccomp profile);
+ * slicerRunArgs itself stays what the compose file says.
+ */
+export async function startSlicer(extraRunArgs: string[] = []): Promise<RunningSlicer> {
   ensureImage();
   const info = docker(["info", "--format", "{{.NCPU}}"]);
   const hostCpus = Number(info.stdout.trim());
   if (info.code !== 0 || !Number.isFinite(hostCpus) || hostCpus < 1) {
     throw new Error(`docker info gave no CPU count: ${info.stderr}${info.stdout}`);
   }
-  const run = docker(slicerRunArgs(hostCpus));
+  const runArgs = slicerRunArgs(hostCpus);
+  runArgs.splice(runArgs.length - 1, 0, ...extraRunArgs);
+  const run = docker(runArgs);
   if (run.code !== 0) throw new Error(`docker run failed: ${run.stderr}`);
   const id = run.stdout.trim();
   const stop = () => {

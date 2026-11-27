@@ -433,10 +433,17 @@ const DOWN_AFTER_LOST_DETAIL =
  * outage, and the poll waits on the sandbox, not on the slicer answering.
  */
 export const SANDBOX_OFF_KERNEL_DETAIL =
+  "Estimates are off on this server: its kernel does not offer the sandbox they need. Activity says why.";
+/** 0.1.1's sentence, which a server still running during the upgrade can write. */
+export const LEGACY_SANDBOX_OFF_KERNEL_DETAIL =
   "Estimates are off on this server: its kernel is older than Linux 6.12.";
 export const SANDBOX_OFF_CHECK_DETAIL =
   "Estimates are off on this server: its sandbox check failed.";
-export const SANDBOX_OFF_DETAILS = [SANDBOX_OFF_KERNEL_DETAIL, SANDBOX_OFF_CHECK_DETAIL];
+export const SANDBOX_OFF_DETAILS = [
+  SANDBOX_OFF_KERNEL_DETAIL,
+  LEGACY_SANDBOX_OFF_KERNEL_DETAIL,
+  SANDBOX_OFF_CHECK_DETAIL,
+];
 
 /** The most sandbox-off estimates one poll queues again, so the shared slicer queue is not flooded. */
 const SANDBOX_REQUEUE_LIMIT = 50;
@@ -1110,14 +1117,6 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         .execute();
       return;
     }
-    // started_at is when this attempt began work (0011): finished_at minus it
-    // is the slicer's time on the plate, which the settings page's rate is
-    // measured from (rate.ts). A retry or a requeue sets it again here.
-    await db
-      .updateTable("estimates")
-      .set({ status: "running", attempts: sql`attempts + 1`, startedAt: sql`now()` })
-      .where("id", "=", estimate.id)
-      .execute();
     const full: Estimate = { ...estimate, filaments: [] };
     // Retries this estimate has used so far, and the connections it lost,
     // its earlier jobs' included.
@@ -1126,6 +1125,24 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       requeues: job.data.requeues ?? 0,
       lostConnections: job.data.lostConnections ?? 0,
     };
+    // Queued under shorter limits than the slicer has now, pg-boss could
+    // expire this job while it is slicing: send it again with the expiry the
+    // limits need, and leave the slicer alone.
+    const neededExpiry = estimateExpireSeconds((await slicerState.current()).timeouts);
+    if (neededExpiry > job.expireInSeconds) {
+      await backToPending(estimate.id);
+      await sendSlice(full, job.priority, carried);
+      console.warn(`estimates: estimate ${estimate.id} sent again with a ${neededExpiry} s expiry`);
+      return;
+    }
+    // started_at is when this attempt began work (0011): finished_at minus it
+    // is the slicer's time on the plate, which the settings page's rate is
+    // measured from (rate.ts). A retry or a requeue sets it again here.
+    await db
+      .updateTable("estimates")
+      .set({ status: "running", attempts: sql`attempts + 1`, startedAt: sql`now()` })
+      .where("id", "=", estimate.id)
+      .execute();
     const waitUntil = Date.now() + slicerDown.waitMs;
     for (;;) {
       try {

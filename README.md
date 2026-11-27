@@ -35,8 +35,9 @@ Documentation: <https://jonathanmcohen.github.io/platehouse/>. Start with [Insta
 ## What you need
 
 - A Linux amd64 host with Docker Compose v2.
-- Linux 6.12 or newer (Landlock ABI 6) for the slicer's sandbox. On an older kernel, preview
-  pictures and OpenSCAD renders stay off.
+- Linux 6.12.24, 6.13.12, 6.14.3 or 6.15 and later (Landlock ABI 6) for the slicer's
+  sandbox; see [What you need](docs/install.md#what-you-need). Without it, preview pictures and
+  OpenSCAD renders stay off.
 - CPU and memory: the example gives the slicer 4 CPUs and 4 GiB, and the app 2 CPUs and 2 GiB,
   plus what Postgres needs.
 - An S3-compatible bucket.

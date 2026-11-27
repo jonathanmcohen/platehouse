@@ -89,6 +89,8 @@ const DERIVED_KEYS: Readonly<Record<string, MessageKey>> = {
   sandboxOffCheck: "derived.sandboxOffCheck",
   convertSandboxOffKernel: "derived.convertSandboxOffKernel",
   convertSandboxOffCheck: "derived.convertSandboxOffCheck",
+  replaceSandboxOffKernel: "derived.replaceSandboxOffKernel",
+  replaceSandboxOffCheck: "derived.replaceSandboxOffCheck",
 };
 
 /**

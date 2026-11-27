@@ -1,12 +1,14 @@
 // The slicer server: Slicer HTTP contract v2 on port
 // 8080, inside the slicer container. It sits on the internal network only,
-// has no auth and holds no secrets, because it opens untrusted files: the app sends it a file and gets
+// has no auth and holds no secrets, because it opens untrusted files: the app
+// sends it a file and gets
 // numbers, a render or a mesh back. Plain node:http, no web framework: the
 // surface is seven routes, and the container opens untrusted files, so it
 // carries as little as it can.
 //
 // - One heavy job at a time: a slice, an OpenSCAD render (a .scad's, or an
-//   STL's preview picture) or a STEP conversion. The container's 4g is sized from a single slice, so a
+//   STL's preview picture) or a STEP conversion. The container's 4g is sized
+//   from a single slice, so a
 //   request for any of them while one runs is 409 busy, answered before its
 //   body is read and with the connection closed, so no socket waits. The
 //   close lingers (closeLingering, guard.ts): the server drains a body still
@@ -33,10 +35,11 @@
 //   is set (sandboxGate).
 // - Every external program runs in its own process group, killed whole at
 //   its time cap (SLICE_TIMEOUT_SECONDS, default SLICE_PLATE_SECONDS + 60).
-//   OpenSCAD, OrcaSlicer and the STEP worker each run under prlimit and
+//   OpenSCAD, OrcaSlicer and the STEP worker each start as choom, which
+//   makes them the kernel's first OOM victim, then run under prlimit and
 //   landrun with their own rules (sandbox.ts); a slice or conversion that
 //   SLICER_ALLOW_UNSANDBOXED lets run while the sandbox is off runs under
-//   prlimit alone.
+//   choom and prlimit alone.
 // - An error in a request costs that request, never the process (guard.ts):
 //   it is answered 500, or its connection is closed, and its job is undone
 //   (program killed, folder deleted, lock freed). The 500 closes with the
@@ -58,6 +61,7 @@ import { fileURLToPath } from "node:url";
 import {
   CONTRACT_VERSION,
   type ErrorBody,
+  type KernelCause,
   LIMITS,
   type Limits,
   type SandboxOffBody,
@@ -67,6 +71,7 @@ import {
 import { readProject } from "@platehouse/threemf";
 import { z } from "zod";
 import { closeLingering, guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
+import { type KernelInfo, readKernelInfo } from "./kernel.js";
 import {
   bedTooSmall,
   isCleanOffBed,
@@ -77,6 +82,7 @@ import {
 } from "./orca.js";
 import { loadProfiles } from "./profiles.js";
 import {
+  oomFirst,
   prlimitCommand,
   reapLeftovers,
   runGroup,
@@ -101,7 +107,7 @@ export interface SlicerConfig {
   profilesDir: string;
   /**
    * OrcaSlicer's own binary, bin/orca-slicer in its AppImage tree, run with
-   * its launcher's environment (launcherEnv in orca.ts), not AppRun.
+   * its launcher's environment (launcherEnv in orca-env.ts), not AppRun.
    */
   orcaBin: string;
   /** OrcaSlicer's extracted AppImage tree, which its sandbox may run code from. */
@@ -111,6 +117,11 @@ export interface SlicerConfig {
   openscadBin: string;
   openscadDir: string;
   landrunBin: string;
+  /**
+   * util-linux choom, which makes each sandboxed program the kernel's first
+   * OOM victim (sandbox.ts).
+   */
+  choomBin: string;
   /** util-linux prlimit, which sets each sandboxed program's resource limits (sandbox.ts). */
   prlimitBin: string;
   /** A file outside every job folder that the sandbox self-test imports. */
@@ -140,6 +151,11 @@ export interface SlicerConfig {
    * conversion still runs (without the sandbox); renders never do.
    */
   allowUnsandboxed: boolean;
+  /**
+   * The kernel's release and security modules, read when the check finds an
+   * old kernel. Default readKernelInfo.
+   */
+  kernelInfo?: () => KernelInfo;
   /** The start-up check's retry delays; tests shorten them. Default SANDBOX_RETRY. */
   sandboxRetry?: SandboxRetry;
   /**
@@ -148,10 +164,10 @@ export interface SlicerConfig {
    * server runs under tini as in the image (runsUnderTini), never on a host
    * where PID 1 has children of its own.
    */
-  reapOrphans?: boolean;
+  reapLeftBehind?: boolean;
   /**
    * What release() runs to clean up processes left behind; tests pass a
-   * spy. Default: reapLeftovers when reapOrphans is on,
+   * spy. Default: reapLeftovers when reapLeftBehind is on,
    * nothing otherwise.
    */
   reap?: () => number[];
@@ -220,6 +236,7 @@ const envSchema = z.object({
   OPENSCAD_BIN: z.string().min(1).default("/opt/openscad/AppRun"),
   OPENSCAD_DIR: z.string().min(1).default("/opt/openscad"),
   LANDRUN_BIN: z.string().min(1).default("/usr/local/bin/landrun"),
+  CHOOM_BIN: z.string().min(1).default("/usr/bin/choom"),
   PRLIMIT_BIN: z.string().min(1).default("/usr/bin/prlimit"),
   SANDBOX_PROBE: z.string().min(1).default("/opt/platehouse/sandbox-probe.stl"),
   STEP_WORKER: z
@@ -351,7 +368,11 @@ export function loadConfig(
       `the folder of the Node that runs the slicer (two levels above its binary) ${nodeProblem}`,
     );
   }
-  if (!resolve(e.ORCA_BIN).startsWith(`${resolve(e.ORCA_DIR)}/`)) {
+  // By real path too: a link inside ORCA_DIR must not lead to a file outside it.
+  if (
+    !resolve(e.ORCA_BIN).startsWith(`${resolve(e.ORCA_DIR)}/`) ||
+    !realFolder(e.ORCA_BIN).startsWith(`${realFolder(e.ORCA_DIR)}/`)
+  ) {
     issues.push("ORCA_BIN: must be inside ORCA_DIR");
   }
   if (issues.length > 0) {
@@ -367,6 +388,7 @@ export function loadConfig(
     openscadBin: e.OPENSCAD_BIN,
     openscadDir: e.OPENSCAD_DIR,
     landrunBin: e.LANDRUN_BIN,
+    choomBin: e.CHOOM_BIN,
     prlimitBin: e.PRLIMIT_BIN,
     sandboxProbe: e.SANDBOX_PROBE,
     stepWorker: e.STEP_WORKER,
@@ -381,7 +403,7 @@ export function loadConfig(
     workMinFreeBytes: e.WORK_MIN_FREE_MIB * MIB,
     allowUnsandboxed: e.SLICER_ALLOW_UNSANDBOXED === "true",
     limits: LIMITS,
-    reapOrphans: runsUnderTini(),
+    reapLeftBehind: runsUnderTini(),
   };
 }
 
@@ -527,14 +549,17 @@ export function createSlicer(config: SlicerConfig): Slicer {
 
   const track = (): Tracker => {
     let current: (() => void) | null = null;
-    // Once killNow has run, the job is over: a program registered after it
-    // is killed at once, so nothing starts outside the lock.
+    // Once killNow has run, the job is over, and once close() has run the
+    // server is: a program registered after either is killed at once, so
+    // nothing starts outside the lock, and a self-test render that starts
+    // after the kill pass of close() does not run to its time cap. `closed`
+    // is declared further down and is read only when a program registers.
     let over = false;
     const set = (kill: (() => void) | null) => {
       if (current) running.delete(current);
       current = null;
       if (!kill) return;
-      if (over) {
+      if (over || closed) {
         kill();
         return;
       }
@@ -639,14 +664,14 @@ export function createSlicer(config: SlicerConfig): Slicer {
     return dir;
   };
 
-  const reap = config.reap ?? (config.reapOrphans ? () => reapLeftovers() : null);
+  const reap = config.reap ?? (config.reapLeftBehind ? () => reapLeftovers() : null);
 
   /**
    * Kills the processes left behind (reap), when the clean-up is on, and
    * logs what it killed. Run only by a job's release(), while that job
    * still holds the lock.
    */
-  const reapLeftBehind = (): void => {
+  const reapAfterJob = (): void => {
     if (!reap) return;
     const reaped = reap();
     if (reaped.length > 0) {
@@ -679,7 +704,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
           // A program that called setsid() left the group killNow kills and
           // was re-parented to tini; nothing of the job may outlive it, or a
           // sleeping process holds /work files open until a restart.
-          reapLeftBehind();
+          reapAfterJob();
           if (dir) removeJobDir(dir);
           if (holder === job) sweepJobDirs(dir);
         } finally {
@@ -729,7 +754,19 @@ export function createSlicer(config: SlicerConfig): Slicer {
   let checkFailures = 0;
   let sandboxCheck: Promise<void> = Promise.resolve();
 
+  // The kernel cause of an old_kernel; null otherwise. Health shows it only on ?kernel=1.
+  let kernelCauseOfOff: KernelCause | null = null;
+
   const sandboxState = (): SandboxState => ({ ...sandbox });
+
+  /** Adds the kernel cause on ?kernel=1, to the off state of an old_kernel only. */
+  const withKernelCause = (state: SandboxState, url: URL): SandboxState =>
+    url.searchParams.get("kernel") === "1" &&
+    state.state === "off" &&
+    state.reason === "old_kernel" &&
+    kernelCauseOfOff !== null
+      ? { ...state, kernel: kernelCauseOfOff }
+      : state;
 
   const sandboxOff = (): SandboxOffBody => ({
     error: "sandbox_off",
@@ -769,6 +806,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
   const failedCheck = (detail: string): SandboxCheck => ({
     ok: false,
     reason: "check_failed",
+    kernel: null,
     detail,
   });
 
@@ -785,6 +823,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
     log(`sandbox self-test: ${result.ok ? "ok" : "FAILED"}: ${result.detail}`);
     if (result.ok) {
       sandbox = { ...sandbox, state: "on", reason: null, detail: null };
+      kernelCauseOfOff = null;
       return;
     }
     sandbox = {
@@ -793,6 +832,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
       reason: result.reason ?? "check_failed",
       detail: result.detail,
     };
+    kernelCauseOfOff = result.reason === "old_kernel" ? result.kernel : null;
     // An old kernel stays old until a restart; anything else may pass later.
     if (result.reason !== "old_kernel") {
       checkFailures += 1;
@@ -803,9 +843,13 @@ export function createSlicer(config: SlicerConfig): Slicer {
   const runSandboxCheck = async (): Promise<void> => {
     if (closed) return;
     let job: Job | null = null;
+    // Another job's folder, beside the check's own, that the check may not
+    // read; "" until it is made.
+    let siblingDir = "";
     let result: SandboxCheck | null = null;
     try {
       job = takeJob();
+      if (job) siblingDir = jobDir();
     } catch (err) {
       result = failedCheck(
         `the self-test could not start: ${err instanceof Error ? err.message : String(err)}`,
@@ -815,7 +859,16 @@ export function createSlicer(config: SlicerConfig): Slicer {
       // A retry that falls due while a job runs waits for it, shortly.
       if (!job) return scheduleSandboxCheck(retry.busyMs);
       try {
-        result = await sandboxSelfTest(config, job.dir, config.sandboxProbe, job.track);
+        result = await sandboxSelfTest(
+          config,
+          job.dir,
+          {
+            probe: config.sandboxProbe,
+            siblingDir,
+            kernelInfo: config.kernelInfo ?? readKernelInfo,
+          },
+          job.track,
+        );
       } catch (err) {
         result = failedCheck(
           `the self-test could not run: ${err instanceof Error ? err.message : String(err)}`,
@@ -826,6 +879,8 @@ export function createSlicer(config: SlicerConfig): Slicer {
       // A check cut short by close() says nothing about the sandbox.
       if (!closed) recordSandboxCheck(result);
     } finally {
+      // removeJobDir never throws, so the lock is always freed after it.
+      if (siblingDir) removeJobDir(siblingDir);
       job?.release();
     }
   };
@@ -903,23 +958,27 @@ export function createSlicer(config: SlicerConfig): Slicer {
         filamentFiles: picks.map((p) => p?.file ?? ""),
         input,
       });
-      // prlimit, then GNU time, outside the sandbox so it can write its
+      // choom, then prlimit, then GNU time, outside the sandbox so it can write its
       // report to the job folder, then landrun with Orca's rules, then Orca
-      // (prlimitCommand). Unsandboxed, landrun is left out. Orca's
+      // (oomFirst, prlimitCommand). Unsandboxed, landrun is left out. Orca's
       // environment (its rules' env: scratchEnv plus its launcher's) is
       // what landrun passes it, and what it inherits without landrun.
-      // prlimit and GNU time see its LD_LIBRARY_PATH too: both link glibc,
-      // which the AppImage never bundles (Orca's appimage_lib_policy.sh),
-      // and prlimit also util-linux's libsmartcols; landrun is static.
+      // choom, prlimit and GNU time see its LD_LIBRARY_PATH too: all link
+      // glibc, which the AppImage never bundles (Orca's
+      // appimage_lib_policy.sh), and prlimit also util-linux's
+      // libsmartcols; landrun is static.
       const rules = sandboxRules("orca", sandboxPaths(config, box));
-      const command = prlimitCommand({
-        program: "orca",
-        timeoutSeconds: config.sliceTimeoutSeconds,
-        outside: [config.timeBin, "-v", "-o", timeFile],
-        landrun: gate === "run" ? { bin: config.landrunBin, rules } : null,
-        command: [config.orcaBin, ...args],
-      });
-      const run = await runGroup(config.prlimitBin, command, {
+      const { bin, args: command } = oomFirst(
+        config,
+        prlimitCommand({
+          program: "orca",
+          timeoutSeconds: config.sliceTimeoutSeconds,
+          outside: [config.timeBin, "-v", "-o", timeFile],
+          landrun: gate === "run" ? { bin: config.landrunBin, rules } : null,
+          command: [config.orcaBin, ...args],
+        }),
+      );
+      const run = await runGroup(bin, command, {
         cwd: box,
         env: rules.env,
         timeoutMs: config.sliceTimeoutSeconds * 1000,
@@ -1017,7 +1076,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
           orca: config.orcaVersion,
           openscad: config.openscadVersion,
           busy: holder !== null,
-          sandbox: sandboxState(),
+          sandbox: withKernelCause(sandboxState(), url),
           timeouts: {
             sliceSeconds: config.sliceTimeoutSeconds,
             scadSeconds: config.scadTimeoutSeconds,
@@ -1137,8 +1196,8 @@ export function createSlicer(config: SlicerConfig): Slicer {
  * 1, the image's own entrypoint; an init added in front of it (Compose's
  * init: true, docker run --init) turns it off.
  */
-export function reapOffNotice(config: Pick<SlicerConfig, "reapOrphans">): string | null {
-  if (config.reapOrphans) return null;
+export function reapOffNotice(config: Pick<SlicerConfig, "reapLeftBehind">): string | null {
+  if (config.reapLeftBehind) return null;
   return "the clean-up of processes left behind by a job is off: the server is not running under tini as PID 1, the image's own entrypoint";
 }
 

@@ -17,7 +17,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { LIMITS } from "@platehouse/slicer-contract";
+import { LIMITS, type SlicerTimeouts } from "@platehouse/slicer-contract";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { CONVERT_EXPIRE_SECONDS } from "../../../src/derived/client.js";
@@ -32,6 +32,11 @@ import {
   type DerivedStore,
   RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
+import {
+  convertExpireSeconds,
+  defaultTimeouts,
+  type SlicerSnapshot,
+} from "../../../src/estimates/slicer-state.js";
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
 import { memoryGate } from "../../../src/memory/gate.js";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../../../src/storage/s3.js";
@@ -1227,7 +1232,11 @@ describe("a STEP conversion's job expiry", () => {
   }
 
   /** Takes the file's one held conversion off the queue and runs it as its first attempt. */
-  async function runHeldConversion(fileId: string, derived: Derived) {
+  async function runHeldConversion(
+    fileId: string,
+    derived: Derived,
+    sentExpiry: number = CONVERT_EXPIRE_SECONDS,
+  ) {
     const held = (await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })).filter(
       (j) => j.state === "created",
     );
@@ -1236,9 +1245,14 @@ describe("a STEP conversion's job expiry", () => {
     if (!job) throw new Error("no held job");
     expect(job.data.kind).toBe(DERIVED_KINDS.convertStep);
     // pg-boss keeps the expiry the send gave.
-    expect(job.expireInSeconds).toBe(CONVERT_EXPIRE_SECONDS);
+    expect(job.expireInSeconds, "expiry pg-boss kept for the held job").toBe(sentExpiry);
     await env.boss.cancel(QUEUE.slicer, job.id);
-    return derived.runJob(job.data, { retryCount: 0, retryLimit: job.retryLimit });
+    return derived.runJob(job.data, {
+      retryCount: 0,
+      retryLimit: job.retryLimit,
+      expireInSeconds: job.expireInSeconds,
+      priority: job.priority,
+    });
   }
 
   async function nothingListening(): Promise<string> {
@@ -1304,5 +1318,58 @@ describe("a STEP conversion's job expiry", () => {
       sent.filter((s) => s.fileId === fileId).map((s) => [s.kind, s.options.expireInSeconds]);
     expect(ofFile(replaced)).toEqual([[DERIVED_KINDS.convertStep, CONVERT_EXPIRE_SECONDS]]);
     expect(ofFile(unqueued.fileId)).toEqual([[DERIVED_KINDS.convertStep, CONVERT_EXPIRE_SECONDS]]);
+  });
+
+  /** A slicerState stub whose limits the test changes between the send and the run. */
+  function limitsStub(get: () => SlicerTimeouts): NonNullable<DerivedDeps["slicerState"]> {
+    return {
+      current: async (): Promise<SlicerSnapshot> => ({ timeouts: get(), sandbox: null }),
+    };
+  }
+
+  const larger: SlicerTimeouts = { ...defaultTimeouts(5), stepSeconds: 400 };
+
+  test("a conversion sent with a lower expiry than the slicer's limits need is sent again, and the slicer is not called", async () => {
+    const fileId = await convertedStep("expiry, raised");
+    const sent: Sent[] = [];
+    let limits = defaultTimeouts(5);
+    const derived = recording(sent, { slicerState: limitsStub(() => limits) });
+    await derived.convertStep(fileId);
+    expect(sent[0]?.options.expireInSeconds, "expiry of the first send").toBe(
+      convertExpireSeconds(defaultTimeouts(5)),
+    );
+
+    limits = larger;
+    env.stub.renders.reset();
+    expect(
+      await runHeldConversion(fileId, derived, convertExpireSeconds(defaultTimeouts(5))),
+    ).toEqual({ status: "requeued", reason: "expiry_raised" });
+    expect(
+      sent.map((s) => [s.kind, s.options.expireInSeconds]),
+      "every send, in order",
+    ).toEqual([
+      [DERIVED_KINDS.convertStep, convertExpireSeconds(defaultTimeouts(5))],
+      [DERIVED_KINDS.convertStep, convertExpireSeconds(larger)],
+    ]);
+    expect(
+      env.stub.renders.callsTo("/v1/step/glb"),
+      "STEP requests the slicer stub saw",
+    ).toHaveLength(0);
+    // Leave no held job behind for the next test.
+    for (const job of await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })) {
+      if (job.state === "created") await env.boss.cancel(QUEUE.slicer, job.id);
+    }
+  });
+
+  test("the conversion expiry at send follows a non-default slicerState", async () => {
+    const fileId = await convertedStep("expiry, larger limits");
+    const sent: Sent[] = [];
+    await recording(sent, { slicerState: limitsStub(() => larger) }).convertStep(fileId);
+    expect(sent[0]?.options.expireInSeconds, "expiry of the first send").toBe(
+      convertExpireSeconds(larger),
+    );
+    for (const job of await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })) {
+      if (job.state === "created") await env.boss.cancel(QUEUE.slicer, job.id);
+    }
   });
 });

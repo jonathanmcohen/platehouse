@@ -353,6 +353,7 @@ describe("an empty library", () => {
       printerName: "Bambu Lab P1S, 0.4 mm nozzle",
       sandbox: "on",
       sandboxReason: null,
+      sandboxKernel: null,
       unsandboxed: false,
     });
   });
@@ -627,6 +628,7 @@ describe("the slicer's health", () => {
       printerName: "Bambu Lab P1S, 0.4 mm nozzle",
       sandbox: null,
       sandboxReason: null,
+      sandboxKernel: null,
       unsandboxed: null,
     });
   });

@@ -79,7 +79,7 @@ WORKDIR /dl
 # libexec/orca-slicer-env). AppRun is a bash launcher that execs
 # libexec/orca-slicer-env bin/orca-slicer. The server runs bin/orca-slicer
 # itself, in its sandbox, with the environment those two would set
-# (launcherEnv in apps/slicer/src/orca.ts). That environment is fixed only
+# (launcherEnv in apps/slicer/src/orca-env.ts). That environment is fixed only
 # while the AppImage bundles no WebKitGTK of its own, so the build fails if
 # it does. The AppImage ships its presets only as binary .opc caches; the
 # JSON comes from Orca's source next.
@@ -316,6 +316,7 @@ RUN source /usr/local/lib/need.sh \
  && need -x /opt/openscad/AppRun \
  && need -x /opt/openscad/usr/bin/openscad \
  && need -x /usr/local/bin/landrun \
+ && need -x /usr/bin/choom \
  && need -x /usr/bin/prlimit \
  && need -d /usr/lib/x86_64-linux-gnu \
  && need -f /lib64/ld-linux-x86-64.so.2 \

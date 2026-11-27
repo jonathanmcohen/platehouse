@@ -120,15 +120,42 @@ exit $st
 }
 
 /**
- * How the fake landrun answers the server's sandbox self-test (a .scad that
- * imports the sandbox probe):
- * - "blocked": a working sandbox. OpenSCAD's own warning naming the probe.
- * - "read": no sandbox. The import works and the render succeeds.
+ * How the fake landrun answers the server's sandbox self-test: a .scad whose
+ * first line is the self-test marker and whose second line is one case, an
+ * import() of the image's probe, an import() of the probe's copy in a sibling
+ * folder, an include of /proc/self/environ or a surface() of it.
+ * - "blocked": a working sandbox. Every case gets OpenSCAD's own warning
+ *   naming its path.
+ * - "read": the probe's import works and the render succeeds; the other
+ *   cases are blocked.
+ * - "read-sibling": the sibling copy's import works and the render succeeds.
+ * - "read-include": the include opens /proc/self/environ, which is not
+ *   OpenSCAD, so the parser fails, as it would on a readable environ.
+ * - "read-surface": the surface() works and the render succeeds.
+ * - "blocked-noisy": blocked, but each warning is wrapped in terminal colour
+ *   codes and followed by a line with a direction override (U+202E).
+ * - "blocked-elsewhere" and "blocked-within": noisy as above, and the warning
+ *   names another path that contains the case's own: the path with ".orig"
+ *   after it, or with "/elsewhere" before it. Such a file is refused with or
+ *   without a sandbox, so it proves nothing.
  * - "other": the render fails for a reason that proves nothing about the
  *   sandbox (here landrun failing to start).
  * - "hang": the render runs past the time cap and is killed.
  */
-export type ProbeMode = "blocked" | "read" | "other" | "hang";
+export type ProbeMode =
+  | "blocked"
+  | "read"
+  | "read-sibling"
+  | "read-include"
+  | "read-surface"
+  | "blocked-noisy"
+  | "blocked-elsewhere"
+  | "blocked-within"
+  | "other"
+  | "hang";
+
+/** The words of the self-test's marker line the fake landrun looks for. */
+const SELF_TEST_MARKER_TEXT = "platehouse sandbox self-test";
 
 /**
  * The kernel's Landlock ABI as the fake landrun reports it when it runs
@@ -150,11 +177,15 @@ export type AbiMode = number | "garbled";
  * landrun-runs.log counts the OpenSCAD runs it acts out, the self-test's
  * included, not the programs it runs in its place. A run without
  * --best-effort is the ABI check: it is counted in landrun-abi.log, not in
- * landrun.log or landrun-runs.log. "big" writes a sparse output file of
- * `bytes` bytes, so a test can pass the render output cap without filling the
- * disk. "fsize" acts out prlimit's file-size limit: it writes part of the
- * output, then dies of SIGXFSZ, as the kernel kills a program that writes
- * past RLIMIT_FSIZE.
+ * landrun.log or landrun-runs.log. setRenderDelay (or opts.renderDelayMs)
+ * makes every OpenSCAD run that is not the self-test sleep that long first.
+ * opts.abiLingerMs makes a passing ABI check leave a background sleep that
+ * long, holding its pipes, after it exits 0. The sleep is in its own process
+ * group (set -m), as a setsid() helper is, so the group kill at exit misses it.
+ * "big" writes a sparse output file of `bytes` bytes, so a test can pass the
+ * render output cap without filling the disk. "fsize" acts out prlimit's
+ * file-size limit: it writes part of the output, then dies of SIGXFSZ, as the
+ * kernel kills a program that writes past RLIMIT_FSIZE.
  */
 export function fakeLandrun(
   dir: string,
@@ -171,24 +202,31 @@ export function fakeLandrun(
      * body that reached the job folder.
      */
     | { kind: "inputs" },
-  opts: { probe?: ProbeMode; abi?: AbiMode } = {},
+  opts: { probe?: ProbeMode; abi?: AbiMode; renderDelayMs?: number; abiLingerMs?: number } = {},
 ): {
   bin: string;
   argsLog: string;
   runsLog: string;
   abiLog: string;
+  /** One line per sibling-folder read: "644" if the copy had mode 0644, else "other". */
+  siblingLog: string;
   setProbe: (probe: ProbeMode) => void;
   setAbi: (abi: AbiMode) => void;
+  setRenderDelay: (ms: number) => void;
 } {
   const argsLog = join(dir, "landrun.log");
   const runsLog = join(dir, "landrun-runs.log");
   const abiLog = join(dir, "landrun-abi.log");
+  const siblingLog = join(dir, "landrun-sibling-mode.log");
   const probeFile = join(dir, "landrun-probe-mode");
   const abiFile = join(dir, "landrun-abi-mode");
+  const delayFile = join(dir, "landrun-render-delay");
   const setProbe = (probe: ProbeMode) => writeFileSync(probeFile, probe);
   const setAbi = (abi: AbiMode) => writeFileSync(abiFile, String(abi));
+  const setRenderDelay = (ms: number) => writeFileSync(delayFile, String(ms / 1000));
   setProbe(opts.probe ?? "blocked");
   setAbi(opts.abi ?? 8);
+  setRenderDelay(opts.renderDelayMs ?? 0);
   let tail: string;
   switch (mode.kind) {
     case "ok":
@@ -225,6 +263,9 @@ exit 0
   }
   // landrun v0.1.17 without --best-effort, as it fails on an older kernel
   // (internal/log, go-landlock restrict.go).
+  // abiLingerMs: a strict run that passes still leaves a background sleep
+  // holding its pipes, so the caller sees the run end only after that long.
+  const abiLinger = opts.abiLingerMs ? `    ( set -m; sleep ${opts.abiLingerMs / 1000} & )\n` : "";
   const abiCheck = `strict=yes
 for a in "$@"; do [ "$a" = "--best-effort" ] && strict=no; done
 if [ "$strict" = yes ]; then
@@ -235,20 +276,37 @@ if [ "$strict" = yes ]; then
       printf '%s\\n' '[landrun:error] 2026/11/11 00:00:00 something else went wrong' >&2
       exit 1 ;;
   esac
-  if [ "$abi" -ge 9 ]; then exit 0; fi
+  if [ "$abi" -ge 9 ]; then
+${abiLinger}    exit 0
+  fi
   printf '[landrun:error] 2026/11/11 00:00:00 Failed to apply sandbox: failed to apply Landlock restrictions: missing kernel Landlock support. Got Landlock ABI v%s, wanted {Landlock V9; FS: all; Net: all; Scoped: all}\\n' "$abi" >&2
   exit 1
 fi
 `;
-  // A .scad that imports the sandbox probe is the server's self-test.
-  // OpenSCAD reports a file it cannot open (src/io/import_stl.cc) as
-  // "WARNING: Can't open import file '<path>', import() at line <n>".
-  const probe = `if grep -q sandbox-probe "$input"; then
-  path=$(sed -n 's/^import("\\(.*\\)");$/\\1/p' "$input")
-  case "$(cat '${probeFile}')" in
-    blocked)
-      printf "WARNING: Can't open import file '%s', import() at line 1\\n" "$path" >&2
-      exit 1 ;;
+  // A .scad that starts with the self-test marker is the server's
+  // self-test; its second line is the case. An import() is the sibling's
+  // when its path's grandparent is the job folder's parent (the folder after
+  // --rw), and the probe's otherwise. A blocked case gets OpenSCAD's own
+  // warning for a file it cannot open.
+  const probe = `if grep -q '${SELF_TEST_MARKER_TEXT}' "$input"; then
+  line=$(sed -n 2p "$input")
+  which=""; path=""
+  case "$line" in
+    'import("'*)
+      path=$(printf '%s\\n' "$line" | sed -n 's/^import("\\(.*\\)");$/\\1/p')
+      if [ "$(dirname "$(dirname "$path")")" = "$(dirname "$rw")" ]; then which=read-sibling; else which=read; fi
+      if [ "$which" = read-sibling ]; then
+        if [ -n "$(find "$path" -perm 644 -print 2>/dev/null)" ]; then printf '644\\n' >> '${siblingLog}'; else printf 'other\\n' >> '${siblingLog}'; fi
+      fi ;;
+    'include <'*)
+      path=$(printf '%s\\n' "$line" | sed -n 's/^include <\\(.*\\)>$/\\1/p')
+      which=read-include ;;
+    'surface(file = "'*)
+      path=$(printf '%s\\n' "$line" | sed -n 's/^surface(file = "\\(.*\\)");$/\\1/p')
+      which=read-surface ;;
+  esac
+  mode=$(cat '${probeFile}')
+  case "$mode" in
     other)
       printf '%s\\n' 'landrun: failed to start: operation not permitted' >&2
       exit 1 ;;
@@ -256,6 +314,32 @@ fi
       sleep 30
       exit 1 ;;
   esac
+  if [ "$mode" = "$which" ]; then
+    if [ "$which" = read-include ]; then
+      printf 'ERROR: Parser error in file "%s", line 1: syntax error\\n' "$path" >&2
+      exit 1
+    fi
+  else
+    shown="$path"; on=""; off=""
+    case "$mode" in
+      blocked-elsewhere) shown="$path.orig" ;;
+      blocked-within) shown="/elsewhere$path" ;;
+    esac
+    case "$mode" in
+      blocked-noisy|blocked-elsewhere|blocked-within)
+        on=$(printf '\\033[33m'); off=$(printf '\\033[0m') ;;
+    esac
+    case "$which" in
+      read|read-sibling) printf "%sWARNING: Can't open import file '%s', import() at line 2%s\\n" "$on" "$shown" "$off" >&2 ;;
+      read-include) printf "%sWARNING: Can't open include file '%s'.%s\\n" "$on" "$shown" "$off" >&2 ;;
+      read-surface) printf "%sWARNING: The file '%s' couldn't be opened.%s\\n" "$on" "$shown" "$off" >&2 ;;
+    esac
+    [ -z "$on" ] || printf '\\342\\200\\256 noise\\n' >&2
+    exit 1
+  fi
+else
+  delay=$(cat '${delayFile}')
+  [ "$delay" = 0 ] || sleep "$delay"
 fi
 `;
   const bin = writeScript(
@@ -263,7 +347,7 @@ fi
     `#!/bin/sh
 ${abiCheck}input=""
 for a in "$@"; do input="$a"; done
-if ! grep -q sandbox-probe "$input" 2>/dev/null; then
+if ! grep -q '${SELF_TEST_MARKER_TEXT}' "$input" 2>/dev/null; then
   : > '${argsLog}'
   for a in "$@"; do printf '%s\\n' "$a" >> '${argsLog}'; done
 fi
@@ -283,14 +367,37 @@ if [ -n "$cmd" ] && [ -x "$cmd" ]; then
   exec "$@"
 fi
 printf 'run\\n' >> '${runsLog}'
-out=""
+out=""; rw=""
 while [ $# -gt 0 ]; do
   if [ "$1" = "-o" ]; then out="$2"; fi
+  if [ "$1" = "--rw" ]; then rw="$2"; fi
   shift
 done
 ${probe}${tail}`,
   );
-  return { bin, argsLog, runsLog, abiLog, setProbe, setAbi };
+  return { bin, argsLog, runsLog, abiLog, siblingLog, setProbe, setAbi, setRenderDelay };
+}
+
+/**
+ * A fake choom: "choom -n 1000 -- cmd ..." appends one line of its arguments
+ * to choom.log for every run, then runs cmd in its place, as choom does
+ * once it has set the OOM score. Any other first three arguments exit 97.
+ */
+export function fakeChoom(dir: string): { bin: string; argsLog: string } {
+  const argsLog = join(dir, "choom.log");
+  const bin = writeScript(
+    join(dir, "choom"),
+    `#!/bin/sh
+if [ "$1" != "-n" ] || [ "$2" != "1000" ] || [ "$3" != "--" ]; then
+  echo "fake choom: wrong arguments" >&2
+  exit 97
+fi
+printf '%s\\n' "$*" >> '${argsLog}'
+shift 3
+exec "$@"
+`,
+  );
+  return { bin, argsLog };
 }
 
 /**

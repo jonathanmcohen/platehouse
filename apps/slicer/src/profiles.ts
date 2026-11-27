@@ -309,8 +309,9 @@ function pickGeneric(candidates: string[], type: string): string | null {
 
 /**
  * Orca's Bambu generic filament profile for one filament type on one printer
- * (used when Bambu has no preset of its own for the type). Candidates: instantiable "Generic ..." presets whose
- * flattened filament_type is the type and whose compatible_printers names
+ * (used when Bambu has no preset of its own for the type). Candidates:
+ * instantiable "Generic ..." presets whose flattened filament_type is the
+ * type and whose compatible_printers names
  * the printer. Ranked: base name exactly "Generic <type>", then shorter
  * name, then name order.
  */
@@ -331,8 +332,9 @@ export function genericFilamentFor(
 
 /**
  * Bambu's own filament preset per filament type, preferred over the generic
- * one wherever Orca has it for the printer (the maintainer, 2026-11-08: "I use mostly Bambu Filaments"). The
- * mapping, which the maintainer may correct: this table is the one place it lives.
+ * one wherever Orca has it for the printer (the maintainer, 2026-11-08: "I use
+ * mostly Bambu Filaments"). The mapping, which the maintainer may correct:
+ * this table is the one place it lives.
  * Each value is a preset's base name, the part before " @".
  */
 export const BAMBU_FILAMENTS: Readonly<Record<string, string>> = Object.freeze({

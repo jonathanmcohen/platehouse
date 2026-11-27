@@ -16,6 +16,8 @@ import {
   leftoverProcesses,
   MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
+  NODE_LIBS,
+  oomFirst,
   prlimitArgs,
   prlimitCommand,
   readLandlockAbi,
@@ -248,6 +250,43 @@ describe("processes left behind by a job", () => {
     expect(killed).toEqual([42, 43, 44, 60, 99]);
     expect(out).toEqual([42, 43, 44, 60, 99]);
     expect(leftoverProcesses(dir, 7)).toEqual([]);
+  });
+
+  // The re-read before each kill: a process that changed between the scan and
+  // its turn is not signalled. Killing A rewrites B, as the world might.
+  describe("the re-read before each kill spares a process that changed", () => {
+    const TWO: Array<[number, string, number]> = [
+      [1, "tini", 0],
+      [7, "node", 1],
+      [42, "sleep", 1], // A
+      [43, "sleep", 1], // B
+    ];
+    const cases: Array<[string, (dir: string) => void]> = [
+      [
+        "its parent became 0",
+        (dir) => writeFileSync(join(dir, "43", "stat"), "43 (sleep) S 0 43 43 0 -1 4194560 0\n"),
+      ],
+      [
+        "it became a zombie",
+        (dir) => writeFileSync(join(dir, "43", "stat"), "43 (sleep) Z 1 43 43 0 -1 4194560 0\n"),
+      ],
+      ["its folder was removed", (dir) => rmSync(join(dir, "43"), { recursive: true })],
+    ];
+    for (const [name, change] of cases) {
+      test(`B is not killed when ${name}`, () => {
+        const dir = proc(TWO);
+        const killed: number[] = [];
+        const out = reapLeftovers({
+          procDir: dir,
+          selfPid: 7,
+          kill: killing(dir, killed, (pid) => {
+            if (pid === 42) change(dir);
+          }),
+        });
+        expect(killed).toEqual([42]);
+        expect(out).toEqual([42]);
+      });
+    }
   });
 
   /** A kill that leaves the process and starts one more orphan each time. */
@@ -537,7 +576,7 @@ test("OpenSCAD's landrun and prlimit arguments are exactly what they were", () =
 });
 
 // OrcaSlicer runs as bin/orca-slicer itself, with the environment its
-// AppImage launcher would set (launcherEnv in orca.ts says why), under the
+// AppImage launcher would set (launcherEnv in orca-env.ts says why), under the
 // same landrun as OpenSCAD: it may run code only from its own tree and the
 // system libraries, read the printer profiles and the read-only data
 // OpenSCAD reads, and write only its job folder. Node cannot run under these
@@ -636,7 +675,7 @@ describe("the STEP worker's sandbox", () => {
 
   test("its rules: Node and the system libraries to run, the app to read, the job folder to write, no OpenSSL config", () => {
     expect(rules).toEqual({
-      rox: ["/opt/node", "/usr/lib/x86_64-linux-gnu", "/lib64/ld-linux-x86-64.so.2"],
+      rox: ["/opt/node", ...NODE_LIBS],
       ro: ["/opt/platehouse/app"],
       rw: [DIR],
       env: {
@@ -649,12 +688,40 @@ describe("the STEP worker's sandbox", () => {
     });
   });
 
+  test("NODE_LIBS is the loader and Node's seven libraries, frozen", () => {
+    expect(NODE_LIBS).toEqual([
+      "/lib64/ld-linux-x86-64.so.2",
+      "/usr/lib/x86_64-linux-gnu/libc.so.6",
+      "/usr/lib/x86_64-linux-gnu/libm.so.6",
+      "/usr/lib/x86_64-linux-gnu/libstdc++.so.6",
+      "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+      "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+      "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+      "/usr/lib/x86_64-linux-gnu/libatomic.so.1",
+    ]);
+    expect(Object.isFrozen(NODE_LIBS)).toBe(true);
+  });
+
+  test("its rox holds no library folder: not the multiarch folder, and no path ending /", () => {
+    expect(rules.rox).not.toContain("/usr/lib/x86_64-linux-gnu");
+    expect(rules.rox.filter((p) => p.endsWith("/"))).toEqual([]);
+    expect(rules.rox.filter((p) => p.startsWith("/usr/lib/x86_64-linux-gnu/"))).toEqual(
+      NODE_LIBS.filter((p) => p.startsWith("/usr/lib/x86_64-linux-gnu/")),
+    );
+  });
+
+  test("OpenSCAD and Orca keep the multiarch folder", () => {
+    for (const program of ["openscad", "orca"] as const) {
+      expect(sandboxRules(program, PATHS).rox).toContain("/usr/lib/x86_64-linux-gnu");
+    }
+  });
+
   test("landrun's arguments carry those rules, best effort, then the command after --", () => {
     expect(landrunArgs({ rules, command })).toEqual([
       "--best-effort",
       "--ignore-missing",
       "--rox",
-      "/opt/node,/usr/lib/x86_64-linux-gnu,/lib64/ld-linux-x86-64.so.2",
+      ["/opt/node", ...NODE_LIBS].join(","),
       "--ro",
       "/opt/platehouse/app",
       "--rw",
@@ -893,5 +960,62 @@ describe("ledInMessage", () => {
     expect(long.length).toBe("X: ".length + 2000);
     expect(long.startsWith("X: a")).toBe(true);
     expect(long.endsWith(" / end")).toBe(true);
+  });
+
+  test("a cut that lands inside a surrogate pair leaves no lone low surrogate after the lead-in", () => {
+    // 50 emoji are 100 UTF-16 units; 99 kept units start on a pair's second half.
+    const out = ledInMessage("X: ", "\u{1F600}".repeat(50), 20, 99);
+    expect(out.startsWith("X: ")).toBe(true);
+    expect(out.slice("X: ".length)).not.toMatch(/^[\uDC00-\uDFFF]/);
+  });
+});
+
+// Every sandboxed program starts as choom, which sets its OOM score to 1000
+// and runs prlimit in its place. Only the program's own tree gets the high
+// score: the server stays at 0, so a memory shortage kills the program first.
+describe("oomFirst", () => {
+  const CHOOM = { choomBin: "/usr/bin/choom", prlimitBin: "/usr/bin/prlimit" };
+  const rules = sandboxRules("orca", PATHS);
+  const time = ["/usr/bin/time", "-v", "-o", `${DIR}/time.txt`];
+  const landrun = { bin: "/usr/local/bin/landrun", rules };
+  const cases = [
+    {
+      name: "openscad with landrun",
+      opts: { program: "openscad", timeoutSeconds: 30, landrun, command: [OPENSCAD] },
+    },
+    {
+      name: "openscad without landrun",
+      opts: { program: "openscad", timeoutSeconds: 30, landrun: null, command: [OPENSCAD] },
+    },
+    {
+      name: "orca with landrun and GNU time outside",
+      opts: { program: "orca", timeoutSeconds: 180, outside: time, landrun, command: ["/orca"] },
+    },
+    {
+      name: "orca without landrun",
+      opts: {
+        program: "orca",
+        timeoutSeconds: 180,
+        outside: time,
+        landrun: null,
+        command: ["/orca"],
+      },
+    },
+    {
+      name: "step with landrun",
+      opts: { program: "step", timeoutSeconds: 120, landrun, command: ["/node", "/w.js"] },
+    },
+    {
+      name: "step without landrun",
+      opts: { program: "step", timeoutSeconds: 120, landrun: null, command: ["/node", "/w.js"] },
+    },
+  ] as const;
+
+  test.each(cases)("$name: choom -n 1000 -- prlimit, then prlimit's whole command", ({ opts }) => {
+    const limits = prlimitCommand({ ...opts, command: [...opts.command] });
+    expect(oomFirst(CHOOM, limits)).toEqual({
+      bin: "/usr/bin/choom",
+      args: ["-n", "1000", "--", "/usr/bin/prlimit", ...limits],
+    });
   });
 });

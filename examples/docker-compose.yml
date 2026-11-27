@@ -112,7 +112,8 @@ services:
     environment:
       # The same per-plate time cap the app uses.
       SLICE_PLATE_SECONDS: ${SLICE_PLATE_SECONDS:-120}
-      # On a kernel older than Linux 6.12 the sandbox is off; "true" still
+      # When the kernel does not offer the sandbox (see the install docs) it is
+      # off; "true" still
       # lets slices and STEP conversions run without it. See the Security
       # page first: upgrading the kernel is the fix.
       SLICER_ALLOW_UNSANDBOXED: ${SLICER_ALLOW_UNSANDBOXED:-false}

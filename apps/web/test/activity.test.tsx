@@ -15,6 +15,10 @@
 // with links to live models and the retry of a failed estimate; and the
 // refresh: every POLL_WORKING_MS while work is pending, every POLL_IDLE_MS
 // otherwise, none while the tab is hidden, and at once when it is shown.
+
+import { createTranslator, messagesOf } from "@platehouse/i18n";
+import en from "@platehouse/i18n/locales/en.json";
+import es from "@platehouse/i18n/locales/es.json";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
@@ -24,6 +28,7 @@ import {
   type ActivityView,
   POLL_IDLE_MS,
   POLL_WORKING_MS,
+  sandboxKey,
 } from "../src/activity/ActivityPage";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -68,6 +73,7 @@ function emptyView(): ActivityView {
       openscad: "2026.10.01",
       sandbox: "on",
       sandboxReason: null,
+      sandboxKernel: null,
       unsandboxed: false,
       printerId: P1S,
       printerName: P1S_NAME,
@@ -140,6 +146,7 @@ function busyView(): ActivityView {
     openscad: "2026.10.01",
     sandbox: "on",
     sandboxReason: null,
+    sandboxKernel: null,
     unsandboxed: false,
     printerId: P1S,
     printerName: P1S_NAME,
@@ -536,6 +543,7 @@ describe("the page", () => {
         openscad: null,
         sandbox: null,
         sandboxReason: null,
+        sandboxKernel: null,
         unsandboxed: null,
         printerId: P1S,
         printerName: P1S_NAME,
@@ -550,12 +558,28 @@ describe("the page", () => {
   });
 
   describe("sandbox", () => {
-    const OFF_KERNEL =
-      "Sandbox: off. This server's kernel is older than Linux 6.12, so pictures, OpenSCAD renders, STEP previews and estimates are off.";
+    const FULL = {
+      too_old:
+        "Off. This server's kernel is older than Linux 6.12, so pictures, OpenSCAD renders, STEP previews and estimates are off.",
+      landlock_off:
+        "Off. Landlock is turned off in this server's kernel, or the container runtime blocks it, so pictures, OpenSCAD renders, STEP previews and estimates are off.",
+      landlock_fix_missing:
+        "Off. This server's kernel lacks a 2025 Landlock fix; update the kernel. Until then pictures, OpenSCAD renders, STEP previews and estimates are off.",
+      unknown:
+        "Off. This server's kernel does not offer the sandbox it needs, so pictures, OpenSCAD renders, STEP previews and estimates are off.",
+    } as const;
+    const SHORT = {
+      too_old: "Off. This server's kernel is older than Linux 6.12.",
+      landlock_off:
+        "Off. Landlock is turned off in this server's kernel, or the container runtime blocks it.",
+      landlock_fix_missing:
+        "Off. This server's kernel lacks a 2025 Landlock fix; update the kernel.",
+      unknown: "Off. This server's kernel does not offer the sandbox it needs.",
+    } as const;
+    const CAUSES = ["too_old", "landlock_off", "landlock_fix_missing", "unknown"] as const;
     const OFF_CHECK =
-      "Sandbox: off. Its check failed, so pictures, OpenSCAD renders, STEP previews and estimates are off.";
-    const OFF_KERNEL_SHORT = "Sandbox: off. This server's kernel is older than Linux 6.12.";
-    const OFF_CHECK_SHORT = "Sandbox: off. Its check failed.";
+      "Off. Its check failed, so pictures, OpenSCAD renders, STEP previews and estimates are off.";
+    const OFF_CHECK_SHORT = "Off. Its check failed.";
     const UNSANDBOXED =
       "Estimates and STEP previews still run, without the sandbox, because SLICER_ALLOW_UNSANDBOXED is set. Pictures and OpenSCAD renders are off.";
 
@@ -566,73 +590,136 @@ describe("the page", () => {
         return v;
       };
       await render();
-      return text(section("Slicer"));
+      return section("Slicer");
     }
 
     test("says it is on", async () => {
-      const t = await renderWith({ sandbox: "on" });
-      expect(t).toContain("Sandbox: on");
-      expect(t).not.toContain("Sandbox: off");
+      expect(stat(await renderWith({ sandbox: "on" }), "Sandbox")).toBe("On");
     });
 
     test("says it is being checked", async () => {
-      expect(await renderWith({ sandbox: "checking" })).toContain("Sandbox: checking");
+      expect(stat(await renderWith({ sandbox: "checking" }), "Sandbox")).toBe("Checking");
     });
 
-    test("says it is off for an old kernel, and nothing more when not allowed", async () => {
-      const t = await renderWith({
+    test("puts the sandbox in the details list, after the default printer", async () => {
+      const s = await renderWith({ sandbox: "on" });
+      const labels = [...s.querySelectorAll("dl > dt")].map((d) => text(d));
+      expect(labels.at(-1)).toBe("Sandbox");
+      expect(labels).toContain("Default printer");
+    });
+
+    for (const cause of CAUSES) {
+      test(`says it is off for the cause ${cause}, and nothing more when not allowed`, async () => {
+        const s = await renderWith({
+          sandbox: "off",
+          sandboxReason: "old_kernel",
+          sandboxKernel: cause,
+          unsandboxed: false,
+        });
+        expect(stat(s, "Sandbox")).toBe(FULL[cause]);
+        expect(text(s)).not.toContain("SLICER_ALLOW_UNSANDBOXED");
+      });
+
+      test(`says what still runs when allowed to run without it, for the cause ${cause}`, async () => {
+        const s = await renderWith({
+          sandbox: "off",
+          sandboxReason: "old_kernel",
+          sandboxKernel: cause,
+          unsandboxed: true,
+        });
+        expect(stat(s, "Sandbox")).toBe(SHORT[cause]);
+        expect(text(s)).toContain(UNSANDBOXED);
+        expect(text(s)).not.toContain("estimates are off");
+      });
+    }
+
+    test("gives the no-Landlock sentence for an old kernel with no cause", async () => {
+      const s = await renderWith({
         sandbox: "off",
         sandboxReason: "old_kernel",
+        sandboxKernel: null,
         unsandboxed: false,
       });
-      expect(t).toContain(OFF_KERNEL);
-      expect(t).not.toContain("SLICER_ALLOW_UNSANDBOXED");
+      expect(stat(s, "Sandbox")).toBe(FULL.unknown);
     });
 
     test("says it is off for a failed check", async () => {
-      const t = await renderWith({
+      const s = await renderWith({
         sandbox: "off",
         sandboxReason: "check_failed",
+        sandboxKernel: null,
         unsandboxed: false,
       });
-      expect(t).toContain(OFF_CHECK);
+      expect(stat(s, "Sandbox")).toBe(OFF_CHECK);
     });
 
-    // Allowed to run without it, estimates and STEP previews are not off, so
-    // the off line gives only the reason, and the next line what still runs.
-    test("says what still runs when the slicer is allowed to run without it, for an old kernel", async () => {
-      const t = await renderWith({
-        sandbox: "off",
-        sandboxReason: "old_kernel",
-        unsandboxed: true,
-      });
-      expect(t).toContain(OFF_KERNEL_SHORT);
-      expect(t).toContain(UNSANDBOXED);
-      expect(t).not.toContain(OFF_KERNEL);
-      expect(t).not.toContain("estimates are off");
-    });
-
-    test("says what still runs when the slicer is allowed to run without it, for a failed check", async () => {
-      const t = await renderWith({
+    test("says what still runs for a failed check when allowed to run without it", async () => {
+      const s = await renderWith({
         sandbox: "off",
         sandboxReason: "check_failed",
+        sandboxKernel: null,
         unsandboxed: true,
       });
-      expect(t).toContain(OFF_CHECK_SHORT);
-      expect(t).toContain(UNSANDBOXED);
-      expect(t).not.toContain(OFF_CHECK);
-      expect(t).not.toContain("estimates are off");
+      expect(stat(s, "Sandbox")).toBe(OFF_CHECK_SHORT);
+      expect(text(s)).toContain(UNSANDBOXED);
     });
 
     test("says nothing about it when the slicer did not answer", async () => {
-      const t = await renderWith({
+      const s = await renderWith({
         reachable: false,
         busy: null,
         sandbox: null,
         sandboxReason: null,
+        sandboxKernel: null,
         unsandboxed: null,
       });
-      expect(t).not.toContain("Sandbox");
+      expect([...s.querySelectorAll("dt")].map((d) => text(d))).not.toContain("Sandbox");
+      expect(text(s)).not.toContain("Sandbox");
+    });
+
+    describe("sandboxKey", () => {
+      const base = { sandbox: "off", sandboxReason: "old_kernel", unsandboxed: false } as const;
+
+      test("is null when the slicer did not answer", () => {
+        expect(
+          sandboxKey({
+            sandbox: null,
+            sandboxReason: null,
+            sandboxKernel: null,
+            unsandboxed: null,
+          }),
+        ).toBeNull();
+      });
+
+      test("maps each cause to its key, full and short", () => {
+        const keys = [
+          ["too_old", "sandboxOffKernel"],
+          ["landlock_off", "sandboxOffLandlock"],
+          ["landlock_fix_missing", "sandboxOffFix"],
+          ["unknown", "sandboxOffNoLandlock"],
+          [null, "sandboxOffNoLandlock"],
+        ] as const;
+        for (const [cause, name] of keys) {
+          expect(sandboxKey({ ...base, sandboxKernel: cause })).toBe(`activity.slicer.${name}`);
+          expect(sandboxKey({ ...base, sandboxKernel: cause, unsandboxed: true })).toBe(
+            `activity.slicer.${name}Short`,
+          );
+        }
+      });
+
+      test("gives each cause's Spanish sentence", () => {
+        const i18n = createTranslator("es", messagesOf(es), messagesOf(en));
+        const said = CAUSES.map((cause) => {
+          const key = sandboxKey({ ...base, sandboxKernel: cause });
+          return key === null ? null : i18n.t(key);
+        });
+        expect(said).toEqual([
+          "Desactivado. El kernel de este servidor es anterior a Linux 6.12, por lo que las im\u00e1genes, los renderizados de OpenSCAD, las vistas previas de STEP y las estimaciones est\u00e1n desactivados.",
+          "Desactivado. Landlock est\u00e1 desactivado en el kernel de este servidor o el entorno de contenedores lo bloquea, por lo que las im\u00e1genes, los renderizados de OpenSCAD, las vistas previas de STEP y las estimaciones est\u00e1n desactivados.",
+          "Desactivado. Al kernel de este servidor le falta una correcci\u00f3n de Landlock de 2025; actualice el kernel. Hasta entonces, las im\u00e1genes, los renderizados de OpenSCAD, las vistas previas de STEP y las estimaciones est\u00e1n desactivados.",
+          "Desactivado. El kernel de este servidor no ofrece el entorno aislado que necesita, por lo que las im\u00e1genes, los renderizados de OpenSCAD, las vistas previas de STEP y las estimaciones est\u00e1n desactivados.",
+        ]);
+      });
     });
   });
 });

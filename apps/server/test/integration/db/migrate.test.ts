@@ -60,6 +60,7 @@ const SHIPPED = [
   "0014_description_source.sql",
   "0015_plate_mesh.sql",
   "0016_jobs_database.sql",
+  "0017_kernel_sandbox_message.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -1163,5 +1164,157 @@ describe("0016 jobs and database", () => {
         db,
       ),
     ).rejects.toThrow();
+  });
+});
+
+// Migration 0017 (0.1.2 step 4, #498) rewrites the kernel "sandbox off"
+// sentences 0.1.1 stored ("its kernel is older than Linux 6.12") to the ones
+// that name no version, and nothing else.
+describe("0017 kernel sandbox message", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 16,
+    );
+    expect(later).toContain("0017_kernel_sandbox_message.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const OLD_SCAD =
+    "Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12.";
+  const NEW_SCAD =
+    "Pictures and OpenSCAD renders are off on this server: its kernel does not offer the sandbox they need. Activity says why.";
+  const OLD_STEP = "STEP previews are off on this server: its kernel is older than Linux 6.12.";
+  const NEW_STEP =
+    "STEP previews are off on this server: its kernel does not offer the sandbox they need. Activity says why.";
+  const LEAD_SCAD =
+    "OpenSCAD rejected the current version of this file, so the STL and preview shown are from an earlier version.";
+  const LEAD_STEP =
+    "The STEP converter rejected the current version of this file, so the mesh shown is from an earlier version.";
+  const OLD_ESTIMATE = "Estimates are off on this server: its kernel is older than Linux 6.12.";
+  const NEW_ESTIMATE =
+    "Estimates are off on this server: its kernel does not offer the sandbox they need. Activity says why.";
+  const CHECK_SCAD =
+    "Pictures and OpenSCAD renders are off on this server: its sandbox check failed.";
+
+  // [name, stored derived_message, expected derived_message after]
+  const DERIVED: ReadonlyArray<readonly [string, string | null, string | null]> = [
+    ["scad alone", OLD_SCAD, NEW_SCAD],
+    ["step alone", OLD_STEP, NEW_STEP],
+    ["scad after the lead-in", `${LEAD_SCAD} ${OLD_SCAD}`, `${LEAD_SCAD} ${NEW_SCAD}`],
+    ["step after the lead-in", `${LEAD_STEP} ${OLD_STEP}`, `${LEAD_STEP} ${NEW_STEP}`],
+    ["check sentence", CHECK_SCAD, CHECK_SCAD],
+    ["program message ending with it", `OpenSCAD said: ${OLD_SCAD}`, `OpenSCAD said: ${OLD_SCAD}`],
+    [
+      "program message after the lead-in",
+      `${LEAD_SCAD} OpenSCAD said: ${OLD_SCAD}`,
+      `${LEAD_SCAD} OpenSCAD said: ${OLD_SCAD}`,
+    ],
+    ["new sentence already", NEW_SCAD, NEW_SCAD],
+    ["no message", null, null],
+  ];
+
+  test("rewrites each old stored form to the new sentence and touches no other message", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    const model = "0190a0b0-0000-7000-8000-000000000041";
+    const source = "0190a0b0-0000-7000-8000-000000000042";
+    await sql`insert into models (id, name) values (${model}, 'Synthetic kernel')`.execute(db);
+    await sql`
+      insert into blobs (id, model_id, key, kind, content_type)
+      values (${source}, ${model}, ${`models/${model}/${source}`}, 'source', 'model/stl')
+    `.execute(db);
+    const fileId = (i: number) => `0190a0b0-0000-7000-8000-0000000002${String(i).padStart(2, "0")}`;
+    for (const [i, [name, message]] of DERIVED.entries()) {
+      await sql`
+        insert into files (id, model_id, blob_id, name, original_name, kind, size, sha256,
+                           derived_status, derived_message)
+        values (${fileId(i)}, ${model}, ${source}, ${`${name}.scad`}, ${`${name}.scad`}, 'scad', 1,
+                ${Buffer.alloc(32)}, ${message === null ? "pending" : "failed"}, ${message})
+      `.execute(db);
+    }
+    // Picture failures: the old scad sentence (reason sandbox_off_kernel), the
+    // check sentence, and a program's message that ends with the old sentence.
+    const previews: ReadonlyArray<readonly [string, string, string]> = [
+      [OLD_SCAD, "sandbox_off_kernel", NEW_SCAD],
+      [CHECK_SCAD, "sandbox_off_check", CHECK_SCAD],
+      [`OpenSCAD said: ${OLD_SCAD}`, "render_failed", `OpenSCAD said: ${OLD_SCAD}`],
+    ];
+    const previewId = (i: number) =>
+      `0190a0b0-0000-7000-8000-0000000003${String(i).padStart(2, "0")}`;
+    for (const [i, [message, reason]] of previews.entries()) {
+      await sql`
+        insert into files (id, model_id, blob_id, name, original_name, kind, size, sha256,
+                           preview_failure_message, preview_failure_reason)
+        values (${previewId(i)}, ${model}, ${source}, ${`p${i}.stl`}, ${`p${i}.stl`}, 'stl', 1,
+                ${Buffer.alloc(32)}, ${message}, ${reason})
+      `.execute(db);
+    }
+    const plate = "0190a0b0-0000-7000-8000-000000000043";
+    await sql`
+      insert into plates (id, file_id, "index", object_count) values (${plate}, ${fileId(0)}, 1, 1)
+    `.execute(db);
+    const details: ReadonlyArray<readonly [string | null, string | null]> = [
+      [OLD_ESTIMATE, NEW_ESTIMATE],
+      [
+        "Estimates are off on this server: its sandbox check failed.",
+        "Estimates are off on this server: its sandbox check failed.",
+      ],
+      [`Orca said: ${OLD_ESTIMATE}`, `Orca said: ${OLD_ESTIMATE}`],
+      [null, null],
+    ];
+    const estimateId = (i: number) =>
+      `0190a0b0-0000-7000-8000-0000000004${String(i).padStart(2, "0")}`;
+    for (const [i, [detail]] of details.entries()) {
+      await sql`
+        insert into estimates (id, plate_id, source, printer_id, slicer, slicer_version, status,
+                               failure_reason, failure_detail)
+        values (${estimateId(i)}, ${plate}, 'platehouse', 'p1', 'OrcaSlicer', ${`v${i}`}, 'failed',
+                'slicer_error', ${detail})
+      `.execute(db);
+    }
+
+    await migrate(db);
+
+    const derived = (
+      await sql<{ id: string; derivedMessage: string | null }>`
+        select id, derived_message from files where id in (${sql.join(DERIVED.map((_, i) => fileId(i)))}) order by id
+      `.execute(db)
+    ).rows;
+    expect(
+      derived.map((r) => r.derivedMessage),
+      `derived_message after 0017 for [${DERIVED.map((d) => d[0]).join("; ")}]: ${JSON.stringify(derived)}`,
+    ).toEqual(DERIVED.map((d) => d[2]));
+
+    const pictures = (
+      await sql<{ id: string; previewFailureMessage: string; previewFailureReason: string }>`
+        select id, preview_failure_message, preview_failure_reason from files
+        where id in (${sql.join(previews.map((_, i) => previewId(i)))}) order by id
+      `.execute(db)
+    ).rows;
+    expect(pictures, `preview failures after 0017: ${JSON.stringify(pictures)}`).toEqual(
+      previews.map(([, reason, after], i) => ({
+        id: previewId(i),
+        previewFailureMessage: after,
+        previewFailureReason: reason,
+      })),
+    );
+
+    const estimates = (
+      await sql<{ id: string; failureDetail: string | null }>`
+        select id, failure_detail from estimates order by id
+      `.execute(db)
+    ).rows;
+    expect(
+      estimates.map((r) => r.failureDetail),
+      `failure_detail after 0017: ${JSON.stringify(estimates)}`,
+    ).toEqual(details.map((d) => d[1]));
   });
 });

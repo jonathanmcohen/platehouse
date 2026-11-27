@@ -18,6 +18,7 @@ import {
   DERIVED_KINDS,
   renderTarget,
   slicerSendOptions,
+  slicerTarget,
 } from "../../src/derived/derived.js";
 import { defaultTimeouts } from "../../src/estimates/slicer-state.js";
 import { SLICER_RETRY } from "../../src/jobs/queues.js";
@@ -125,4 +126,33 @@ describe("convertExpiryFor", () => {
   test("without a state, the fallback expiry stands", async () => {
     expect(await convertExpiryFor(DERIVED_KINDS.convertStep, undefined)).toBe(1050);
   });
+});
+
+describe("slicerTarget", () => {
+  const url = "http://slicer.test";
+
+  test("with no limits known, the render fallbacks", () => {
+    expect(slicerTarget(url, DERIVED_KINDS.renderScad, null, {})).toEqual({
+      baseUrl: url,
+      timeoutMs: RENDER_TIMEOUT_MS,
+      uploadTimeoutMs: RENDER_UPLOAD_TIMEOUT_MS,
+    });
+  });
+
+  test("with no limits known, a timer the deps set stays as set", () => {
+    expect(
+      slicerTarget(url, DERIVED_KINDS.convertStep, null, { timeoutMs: 5, uploadTimeoutMs: 6 }),
+    ).toEqual({ baseUrl: url, timeoutMs: 5, uploadTimeoutMs: 6 });
+  });
+
+  test.each([DERIVED_KINDS.renderScad, DERIVED_KINDS.convertStep])(
+    "with limits, a %s target is renderTarget's",
+    (kind) => {
+      const limits = { ...defaultTimeouts(120), stepSeconds: 400 };
+      expect(slicerTarget(url, kind, limits, {})).toEqual(renderTarget(url, kind, limits, {}));
+      expect(slicerTarget(url, kind, limits, { timeoutMs: 7 })).toEqual(
+        renderTarget(url, kind, limits, { timeoutMs: 7 }),
+      );
+    },
+  );
 });

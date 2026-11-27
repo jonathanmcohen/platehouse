@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ledInMessage,
+  oomFirst,
   prlimitCommand,
   readOutputFile,
   runGroup,
@@ -219,21 +220,21 @@ export async function runStepWorker(
   const output = join(dir, "output.glb");
   const rules = sandboxRules("step", sandboxPaths(opts, dir));
   const command = [process.execPath, opts.worker, input, output];
-  const run = await runGroup(
-    opts.prlimitBin,
+  const { bin, args } = oomFirst(
+    opts,
     prlimitCommand({
       program: "step",
       timeoutSeconds: opts.timeoutSeconds,
       landrun: opts.sandboxed ? { bin: opts.landrunBin, rules } : null,
       command,
     }),
-    {
-      cwd: dir,
-      env: rules.env,
-      timeoutMs: opts.timeoutSeconds * 1000,
-      ...(track ? { track } : {}),
-    },
   );
+  const run = await runGroup(bin, args, {
+    cwd: dir,
+    env: rules.env,
+    timeoutMs: opts.timeoutSeconds * 1000,
+    ...(track ? { track } : {}),
+  });
   const limitMib = Math.floor(opts.maxOutputBytes / MIB);
   if (run.timedOut) {
     return {

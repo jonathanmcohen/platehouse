@@ -90,7 +90,7 @@ test("the runtime stage strips setuid and setgid bits and checks none is left", 
 });
 
 // The server runs bin/orca-slicer itself with the environment Orca's
-// AppImage launcher would set (launcherEnv in src/orca.ts). That environment
+// AppImage launcher would set (launcherEnv in src/orca-env.ts). That environment
 // is fixed only while the AppImage bundles no WebKitGTK of its own; one that
 // did would make the launcher set GStreamer, GIO and WebKit paths too. The
 // Orca step fails the build if it does.

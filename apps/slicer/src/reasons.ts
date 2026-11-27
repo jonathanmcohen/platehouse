@@ -6,7 +6,8 @@
 // -50, -61, -63 to -65, -67 and -69 (empty plate, bed type, collisions,
 // vase mode, TPU count, mixed filament) are not among the legitimate
 // refusals (a process that does not fit the printer, a plate too big for its
-// bed, a dual-nozzle source on a single-nozzle printer). By the maintainer's decision (2026-11-08) they take the
+// bed, a dual-nozzle source on a single-nozzle printer). By the maintainer's
+// decision (2026-11-08) they take the
 // contract's "anything else" and are slicer_error, with Orca's message as
 // the detail.
 //

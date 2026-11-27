@@ -221,6 +221,122 @@ describe("startQueues", () => {
   });
 });
 
+// The sandbox requeue (#480) runs after every preview backfill, and a failure
+// of either never hides the other's.
+describe("the sandbox requeue after the preview backfill (#480)", () => {
+  const backfillJob = { data: { task: MAINTENANCE_TASKS.backfillPreviews } };
+
+  async function maintenance(over: Partial<QueueDeps>) {
+    const fake = fakeBoss();
+    await startQueues(fake.boss, deps(over));
+    const work = fake.handlers.get(QUEUE.maintenance);
+    if (work === undefined) throw new Error("no worker");
+    return work;
+  }
+
+  test("startQueues runs the requeue after the startup backfill", async () => {
+    const { boss } = fakeBoss();
+    const order: string[] = [];
+    await startQueues(
+      boss,
+      deps({
+        backfillPreviews: async () => {
+          order.push("backfill");
+        },
+        requeueSandboxOff: async () => {
+          order.push("requeue");
+        },
+      }),
+    );
+    expect(order).toEqual(["backfill", "requeue"]);
+  });
+
+  test("a startup requeue that throws is logged and does not stop the queues", async () => {
+    const { boss } = fakeBoss();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        startQueues(
+          boss,
+          deps({
+            backfillPreviews: async () => undefined,
+            requeueSandboxOff: async () => {
+              throw new Error("db gone");
+            },
+          }),
+        ),
+      ).resolves.toBeUndefined();
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining("startup sandbox requeue"));
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  test("the maintenance handler for backfill-previews calls both", async () => {
+    const backfillPreviews = vi.fn(async (_now: Date) => undefined);
+    const requeueSandboxOff = vi.fn(async (_now: Date) => undefined);
+    const work = await maintenance({ backfillPreviews, requeueSandboxOff });
+    backfillPreviews.mockClear();
+    requeueSandboxOff.mockClear();
+    await work([backfillJob]);
+    expect(backfillPreviews).toHaveBeenCalledTimes(1);
+    expect(requeueSandboxOff).toHaveBeenCalledTimes(1);
+  });
+
+  test("a backfill that throws still runs the requeue, and the handler rejects with the backfill's error", async () => {
+    let failing = false;
+    const requeueSandboxOff = vi.fn(async (_now: Date) => undefined);
+    const work = await maintenance({
+      backfillPreviews: async () => {
+        if (failing) throw new Error("backfill broke");
+      },
+      requeueSandboxOff,
+    });
+    requeueSandboxOff.mockClear();
+    failing = true;
+    await expect(work([backfillJob])).rejects.toThrow("backfill broke");
+    expect(requeueSandboxOff).toHaveBeenCalledTimes(1);
+  });
+
+  test("a requeue that throws after a good backfill is logged and the handler resolves", async () => {
+    let failing = false;
+    const work = await maintenance({
+      backfillPreviews: async () => undefined,
+      requeueSandboxOff: async () => {
+        if (failing) throw new Error("requeue broke");
+      },
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      failing = true;
+      await expect(work([backfillJob])).resolves.toBeUndefined();
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining("queues: sandbox requeue:"));
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  test("a backfill error is not replaced by a requeue error", async () => {
+    let failing = false;
+    const work = await maintenance({
+      backfillPreviews: async () => {
+        if (failing) throw new Error("backfill broke");
+      },
+      requeueSandboxOff: async () => {
+        if (failing) throw new Error("requeue broke");
+      },
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      failing = true;
+      await expect(work([backfillJob])).rejects.toThrow("backfill broke");
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining("queues: sandbox requeue:"));
+    } finally {
+      logged.mockRestore();
+    }
+  });
+});
+
 // The description re-conversion (#357) is a one-time step on upgrade, not a
 // schedule: startQueues sends it to the upgrade queue once the workers
 // are up, only while it has not finished, and the upgrade worker runs it.

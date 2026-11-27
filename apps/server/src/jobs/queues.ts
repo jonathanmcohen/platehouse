@@ -32,7 +32,7 @@
 //   their own, one job at a time, so duplicate jobs collapse and maintenance
 //   tasks never wait behind it.
 // The server (main.ts) passes a ServerQueueDeps, which requires
-// slicerJobs, pollOrca, onIngested, checkRenders and backfillPreviews, so it
+// slicerJobs, pollOrca, onIngested, checkRenders, backfillPreviews and requeueSandboxOff, so it
 // cannot leave a queue without its worker or those schedules without their handlers. The
 // session delete (purgeSessions) is optional in both; the server
 // test checks that the running server schedules and runs every maintenance
@@ -374,6 +374,7 @@ export type ServerQueueDeps = QueueDeps &
       | "reconvertDescriptions"
       | "reconvertPending"
       | "backfillPreviews"
+      | "requeueSandboxOff"
       | "emptyTrash"
     >
   >;
@@ -626,8 +627,19 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
           return;
         case MAINTENANCE_TASKS.backfillPreviews:
           if (!deps.backfillPreviews) throw new Error("No preview backfill is registered");
-          await deps.backfillPreviews(new Date());
-          await deps.requeueSandboxOff?.(new Date());
+          // The requeue always runs, so a backfill that keeps failing never
+          // leaves the sandbox-off rows waiting. Its own error is logged and
+          // never replaces the backfill's, which is rethrown last.
+          try {
+            await deps.backfillPreviews(new Date());
+          } finally {
+            try {
+              await deps.requeueSandboxOff?.(new Date());
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              console.error(`queues: sandbox requeue: ${message.slice(0, 200)}`);
+            }
+          }
           return;
         case ON_DEMAND_TASKS.emptyTrash: {
           if (!deps.emptyTrash) throw new Error("No Empty trash is registered");

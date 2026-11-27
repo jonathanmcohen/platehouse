@@ -224,11 +224,13 @@ import {
   CONVERT_EXPIRE_SECONDS,
   DERIVED_MESSAGES,
   isRetryable,
+  LEGACY_SANDBOX_OFF_KERNEL,
   PREVIOUS_RENDERS_SENTENCE,
   RENDER_TIMEOUT_MS,
   RENDER_UPLOAD_TIMEOUT_MS,
   RenderFailed,
   type RenderOutput,
+  replaceSandboxMessage,
   SandboxOff,
   SlicerDown,
   SlicerFault,
@@ -316,6 +318,26 @@ export function renderTarget(
   };
 }
 
+/**
+ * The target of a request to the slicer: renderTarget from its limits, or the
+ * render fallbacks (a timer the deps set stays as set) before any are known.
+ */
+export function slicerTarget(
+  baseUrl: string,
+  kind: DerivedKind,
+  timeouts: SlicerTimeouts | null,
+  fixed: { timeoutMs?: number | undefined; uploadTimeoutMs?: number | undefined },
+): SlicerTarget {
+  if (timeouts === null) {
+    return {
+      baseUrl,
+      timeoutMs: fixed.timeoutMs ?? RENDER_TIMEOUT_MS,
+      uploadTimeoutMs: fixed.uploadTimeoutMs ?? RENDER_UPLOAD_TIMEOUT_MS,
+    };
+  }
+  return renderTarget(baseUrl, kind, timeouts, fixed);
+}
+
 /** pg-boss job states in which a job still owns its file and source: queued or running. */
 const LIVE_STATES: ReadonlySet<string> = new Set(["created", "retry", "active"]);
 
@@ -357,7 +379,9 @@ export interface DerivedOutcome {
    * temp_failed: a preview picture's last attempt could not write in its
    * own temp folder (issue #415). failed with sandbox_off: the slicer's
    * sandbox is off, so it refused the job; the file shows why and is
-   * queued again once the sandbox is on.
+   * queued again once the sandbox is on. requeued with expiry_raised: a
+   * conversion was queued with a shorter expiry than the slicer's limits now
+   * need, so it was sent again with the right one before it called the slicer.
    */
   status: "ok" | "failed" | "skipped" | "requeued";
   reason?:
@@ -368,7 +392,8 @@ export interface DerivedOutcome {
     | "store_down"
     | "store_refused"
     | "temp_failed"
-    | "sandbox_off";
+    | "sandbox_off"
+    | "expiry_raised";
 }
 
 export type DerivedErrorCode =
@@ -400,25 +425,28 @@ const WRONG_TYPE_MESSAGE: Readonly<Record<DerivableKind, string>> = {
   step: "The replacement is not a STEP file; nothing was saved",
   stl: "The replacement is not an STL file; nothing was saved",
 };
-const TOO_LARGE_MESSAGE: Readonly<Record<"scad" | "step", string>> = {
-  scad: "The replacement is larger than the 1 MiB the renderer takes; nothing was saved",
-  step: "The replacement is larger than the 256 MiB the converter takes; nothing was saved",
-};
 /**
  * The renderer's limit for each kind's source (the contract's, which scad.ts
- * and step.ts enforce). An STL has none here: one over the preview limit is
- * still a whole STL with a 3D view, so a replacement over it is taken and
- * only its preview fails (DERIVED_MESSAGES.stlTooLarge).
+ * and step.ts enforce) and the sentence for a replacement over it. An STL has
+ * none here: one over the preview limit is still a whole STL with a 3D view,
+ * so a replacement over it is taken and only its preview fails
+ * (DERIVED_MESSAGES.stlTooLarge).
  */
-const BODY_LIMIT: Partial<Record<DerivableKind, number>> = {
-  scad: LIMITS.scadBodyBytes,
-  step: LIMITS.stepBodyBytes,
+const TOO_LARGE: Partial<Record<DerivableKind, { limit: number; message: string }>> = {
+  scad: {
+    limit: LIMITS.scadBodyBytes,
+    message: "The replacement is larger than the 1 MiB the renderer takes; nothing was saved",
+  },
+  step: {
+    limit: LIMITS.stepBodyBytes,
+    message: "The replacement is larger than the 256 MiB the converter takes; nothing was saved",
+  },
 };
 
 /**
- * The advisory lock a preview backfill run holds from its check for waiting
- * jobs until its batch is queued, so a second run at the same moment waits
- * and then sees the first run's jobs queued (backfillPreviews).
+ * The advisory lock a preview backfill run takes, or skips the run when
+ * another run holds it, from its check for waiting jobs until its batch is
+ * queued, so a second run at the same moment queues nothing (backfillPreviews).
  */
 export const BACKFILL_LOCK_KEY = 4_280_316;
 
@@ -755,18 +783,11 @@ export function createDerived(deps: DerivedDeps) {
   /** The slicer's limits now, or the fallbacks before health has answered. */
   const limits = async (): Promise<SlicerTimeouts | null> =>
     deps.slicerState ? (await deps.slicerState.current()).timeouts : null;
-  const targetFor = async (kind: DerivedKind): Promise<SlicerTarget> => {
-    const timeouts = await limits();
-    const fixed = { timeoutMs: deps.requestTimeoutMs, uploadTimeoutMs: deps.uploadTimeoutMs };
-    if (timeouts === null) {
-      return {
-        baseUrl: deps.slicerUrl,
-        timeoutMs: fixed.timeoutMs ?? RENDER_TIMEOUT_MS,
-        uploadTimeoutMs: fixed.uploadTimeoutMs ?? RENDER_UPLOAD_TIMEOUT_MS,
-      };
-    }
-    return renderTarget(deps.slicerUrl, kind, timeouts, fixed);
-  };
+  const targetFor = async (kind: DerivedKind): Promise<SlicerTarget> =>
+    slicerTarget(deps.slicerUrl, kind, await limits(), {
+      timeoutMs: deps.requestTimeoutMs,
+      uploadTimeoutMs: deps.uploadTimeoutMs,
+    });
   const convertExpiry = (kind: DerivedKind): Promise<number> =>
     convertExpiryFor(kind, deps.slicerState);
   const retry = {
@@ -881,6 +902,9 @@ export function createDerived(deps: DerivedDeps) {
     try {
       return await db.transaction().execute(async (trx) => {
         if (requeue !== undefined) {
+          // The model lock first, the order lockFor and a purge take locks
+          // in: a model trashed or being purged since the check gets nothing.
+          if (!(await lockModel(trx, file.modelId, true))) return null;
           const locked = await trx
             .selectFrom("files")
             .select(["derivedStatus", "derivedMessage", "blobId"])
@@ -924,12 +948,16 @@ export function createDerived(deps: DerivedDeps) {
     } catch (error) {
       // The queueing error is the one rethrown. If the database is what
       // failed, this write fails too and the file keeps derived_status null
-      // with no job; the render check (checkRenders) queues it later.
-      await commitQueueFailed(file.id, job.kind).catch((statusError) => {
-        console.error(
-          `derived: file ${file.id} left for the render check: ${describe(statusError)}`,
-        );
-      });
+      // with no job; the render check (checkRenders) queues it later. A
+      // requeue never writes the failure: the file keeps the sentence it was
+      // chosen for, and the next run tries it again.
+      if (requeue === undefined) {
+        await commitQueueFailed(file.id, job.kind).catch((statusError) => {
+          console.error(
+            `derived: file ${file.id} left for the render check: ${describe(statusError)}`,
+          );
+        });
+      }
       throw error;
     }
   }
@@ -989,14 +1017,10 @@ export function createDerived(deps: DerivedDeps) {
       throw new DerivedError("wrong_type", WRONG_TYPE_MESSAGE[kind]);
     }
     // One the renderer would refuse could never render, so it is refused
-    // here, before anything is stored. An STL has no such limit (BODY_LIMIT).
-    const limit = BODY_LIMIT[kind];
-    if (limit !== undefined && size > limit) {
-      // BODY_LIMIT and TOO_LARGE_MESSAGE have the same two kinds.
-      throw new DerivedError(
-        "too_large",
-        TOO_LARGE_MESSAGE[kind as keyof typeof TOO_LARGE_MESSAGE],
-      );
+    // here, before anything is stored. An STL has no such limit (TOO_LARGE).
+    const tooLarge = TOO_LARGE[kind];
+    if (tooLarge !== undefined && size > tooLarge.limit) {
+      throw new DerivedError("too_large", tooLarge.message);
     }
 
     const blobId = uuidv7();
@@ -1776,7 +1800,13 @@ export function createDerived(deps: DerivedDeps) {
    */
   async function runJob(
     job: DerivedJob,
-    attempt: { retryCount: number; retryLimit: number; jobId?: string },
+    attempt: {
+      retryCount: number;
+      retryLimit: number;
+      jobId?: string;
+      expireInSeconds?: number;
+      priority?: number;
+    },
   ): Promise<DerivedOutcome> {
     const outcome = await runJobOnce(job, attempt);
     // Returned, not thrown: the picture's transaction has committed.
@@ -1792,7 +1822,13 @@ export function createDerived(deps: DerivedDeps) {
 
   async function runJobOnce(
     job: DerivedJob,
-    attempt: { retryCount: number; retryLimit: number; jobId?: string },
+    attempt: {
+      retryCount: number;
+      retryLimit: number;
+      jobId?: string;
+      expireInSeconds?: number;
+      priority?: number;
+    },
   ): Promise<DerivedOutcome> {
     const selfJobId = attempt.jobId;
     const kind = Object.hasOwn(FILE_KIND_OF, job.kind) ? FILE_KIND_OF[job.kind] : undefined;
@@ -1842,6 +1878,33 @@ export function createDerived(deps: DerivedDeps) {
     if (replacing && !(await newerThan(source.id, file.blobId))) {
       await discardStaged(source.id);
       return staleOut();
+    }
+
+    // A conversion queued under shorter limits than the slicer has now would
+    // be expired by pg-boss while it is still at work: send it again, with
+    // the expiry the limits need, before anything is called or written.
+    if (job.kind === DERIVED_KINDS.convertStep && deps.slicerState !== undefined) {
+      const needed = convertExpireSeconds((await deps.slicerState.current()).timeouts);
+      if (attempt.expireInSeconds !== undefined && needed > attempt.expireInSeconds) {
+        const id = await deps.queue.send(
+          QUEUE.slicer,
+          job,
+          slicerSendOptions(
+            job.kind,
+            {
+              ...retry,
+              retryLimit: Math.max(0, attempt.retryLimit - attempt.retryCount),
+              ...(attempt.priority === undefined ? {} : { priority: attempt.priority }),
+            },
+            needed,
+          ),
+        );
+        if (id === null) throw new Error("pg-boss created no job");
+        console.warn(
+          `derived: file ${job.fileId} sent again with a ${needed} s expiry for the slicer's limits`,
+        );
+        return { status: "requeued", reason: "expiry_raised" };
+      }
     }
 
     // The job's own temp folder: every slicer answer is streamed to a file
@@ -1920,15 +1983,20 @@ export function createDerived(deps: DerivedDeps) {
       // replacement stays until it renders, unless the outage has lasted
       // past the job's deadline, which ends the render.
       // The slicer's sandbox is off: recorded once with its real reason, no
-      // wait and no retry. requeueSandboxOff and the preview backfill pick
-      // the file up again when the slicer says the sandbox is on.
+      // wait and no retry. A refused first render is queued again by
+      // requeueSandboxOff and the preview backfill when the slicer says the
+      // sandbox is on. A refused replacement stores a replace sentence that
+      // is deliberately not among the stored forms they look for, so it is
+      // not queued again: the previous version stays.
       if (error instanceof SandboxOff) {
         await commitSlicerError(
           job.kind,
           file,
           source,
           replacing,
-          sandboxMessage(SANDBOX_KIND[job.kind], error.reason),
+          replacing
+            ? replaceSandboxMessage(error.reason)
+            : sandboxMessage(SANDBOX_KIND[job.kind], error.reason),
           error.reason === "old_kernel" ? "sandbox_off_kernel" : "sandbox_off_check",
           selfJobId,
         );
@@ -2468,10 +2536,13 @@ export function createDerived(deps: DerivedDeps) {
   async function backfillPreviews(now: Date): Promise<BackfillResult> {
     // The lock is held by this transaction until the batch is queued (each
     // file's own transaction commits before it ends), and is released when
-    // it ends, so a run at the same moment waits here and then finds the
-    // first run's jobs waiting.
+    // it ends. A run at the same moment does not wait: it skips, and the
+    // next scheduled run (or nextBackfillBatch) picks the work up.
     return db.transaction().execute(async (lock) => {
-      await sql`select pg_advisory_xact_lock(${BACKFILL_LOCK_KEY}::bigint)`.execute(lock);
+      const got = await sql<{
+        locked: boolean;
+      }>`select pg_try_advisory_xact_lock(${BACKFILL_LOCK_KEY}::bigint) as locked`.execute(lock);
+      if (got.rows[0]?.locked !== true) return { queued: [] };
       return backfillBatchLocked(now);
     });
   }
@@ -2480,7 +2551,7 @@ export function createDerived(deps: DerivedDeps) {
    * Issue #417: when a backfill picture is done and none is still queued,
    * sends a backfill-previews maintenance job at once, so the next batch
    * does not wait for the 5-minute schedule. The job runs backfillPreviews,
-   * which holds BACKFILL_LOCK_KEY and queues nothing while a backfill job is
+   * which takes BACKFILL_LOCK_KEY, or skips the run when another run holds it, and queues nothing while a backfill job is
    * queued, so one batch at a time still holds and a duplicate is a no-op.
    * Returns whether it sent a job.
    */
@@ -2549,7 +2620,9 @@ export function createDerived(deps: DerivedDeps) {
           ? [DERIVED_MESSAGES.sandboxOffKernel, DERIVED_MESSAGES.sandboxOffCheck]
           : [DERIVED_MESSAGES.convertSandboxOffKernel, DERIVED_MESSAGES.convertSandboxOffCheck];
       const lead = PREVIOUS_RENDERS_SENTENCE[kind];
-      return [kernel, check, `${lead} ${kernel}`, `${lead} ${check}`];
+      // 0.1.1's kernel sentence, which a server still running during the upgrade can write.
+      const legacy = LEGACY_SANDBOX_OFF_KERNEL[kind];
+      return [kernel, check, legacy, `${lead} ${kernel}`, `${lead} ${check}`, `${lead} ${legacy}`];
     };
     const wanted: ("scad" | "step")[] = [
       ...(scad ? (["scad"] as const) : []),
@@ -2614,6 +2687,8 @@ export function derivedJobHandlers(derived: Pick<Derived, "runJob">): SlicerJobH
       retryCount: job.retryCount,
       retryLimit: job.retryLimit,
       jobId: job.id,
+      expireInSeconds: job.expireInSeconds,
+      priority: job.priority,
     });
   return {
     [DERIVED_KINDS.renderScad]: handle,

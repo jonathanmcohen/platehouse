@@ -16,6 +16,8 @@ All notable changes to Platehouse are recorded here. The format follows
 - The weekly base image update checks the signature on Node's checksum list against the Node release keys before it proposes a new Node version ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
 - Interrupted downloads can be resumed: file downloads, slicer links, pictures and the API's file download (`GET /api/v1/files/{id}/content`) answer requests for part of a file. The API reference documents the new answers ([#463](https://github.com/jonathanmcohen/platehouse/issues/463)).
 - Empty trash answers at once and deletes the models in the background. The Trash page shows them as being deleted until they are gone. A model can no longer be restored once Empty trash is confirmed ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
+- When the slicer runs out of memory, the kernel now stops the render, slice or conversion, not the slicer itself ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
+- When the slicer's sandbox is off because of the kernel, Activity now says which cause it is: a kernel older than Linux 6.12, Landlock turned off in the kernel or blocked by the container runtime, or a 6.12 kernel without the 2025 Landlock fix. Pictures, renders and estimates turned off for this reason now say the kernel does not offer the sandbox they need, and point to Activity ([#498](https://github.com/jonathanmcohen/platehouse/issues/498)).
 
 ### Fixed
 
@@ -27,10 +29,15 @@ All notable changes to Platehouse are recorded here. The format follows
   - how to tell which, from the slicer's log.
 - A server whose web build is replaced while it runs (a rebuilt or bind-mounted build) serves the new pages without a restart ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
 - Putting a file back under an imported file's name in the inbox checks that the file it copies is the one it found, so a file swapped in at that moment is not copied ([#492](https://github.com/jonathanmcohen/platehouse/issues/492)).
+- An estimate or STEP preview queued while the slicer was unreachable could be failed by the job queue while it was still slicing ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
+- Trying a refused render again could re-queue a file in a model being deleted, or overwrite a file that had since rendered ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
+- Activity shows the slicer's sandbox state as part of the slicer's details ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
 
 ### Security
 
 - Sign out everywhere can also revoke the API tokens made before Platehouse 0.1.1, whose maker is unknown, with a second box in its dialog. Ticking it needs a sign-in from the last 5 minutes, also when signing yourself out, because those tokens may be anyone's. Cutting someone off no longer needs a hand step for them.
+- The slicer reads OrcaSlicer's results in a way a leftover process cannot redirect ([#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
+- The slicer's start-up check now also proves that a render cannot read another job's folder or the slicer's process information, and the STEP converter may run only the system libraries it needs ([#492](https://github.com/jonathanmcohen/platehouse/issues/492), [#480](https://github.com/jonathanmcohen/platehouse/issues/480)).
 
 ## [0.1.1] - 2026-11-24
 

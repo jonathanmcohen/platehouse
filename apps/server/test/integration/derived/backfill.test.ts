@@ -15,7 +15,11 @@ import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { PreviewFailureReason } from "../../../src/db/types.js";
-import { PREVIOUS_RENDERS_SENTENCE, TempFileError } from "../../../src/derived/client.js";
+import {
+  LEGACY_SANDBOX_OFF_KERNEL,
+  PREVIOUS_RENDERS_SENTENCE,
+  TempFileError,
+} from "../../../src/derived/client.js";
 import {
   BACKFILL_LOCK_KEY,
   createDerived,
@@ -219,7 +223,7 @@ describe("the preview backfill (issue #316)", () => {
     for (const id of ours) expect(await previewJobs(id)).toHaveLength(1);
   });
 
-  test("a run waits while another holds the backfill lock, then queues its batch", async () => {
+  test("a run while another holds the backfill lock returns at once with nothing queued", async () => {
     // Jobs held an hour, so the batch stays queued until the test cancels it.
     const send: PgBoss["send"] = async (...args: unknown[]) => {
       const [name, data, options] = args as [string, object, Record<string, unknown>];
@@ -262,24 +266,38 @@ describe("the preview backfill (issue #316)", () => {
       });
     await holds;
 
-    let settled = false;
-    const run = batched.backfillPreviews(later()).finally(() => {
-      settled = true;
-    });
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      expect(settled).toBe(false);
-      for (const id of ours) expect(await previewJobs(id)).toHaveLength(0);
+      const started = Date.now();
+      const skipped = await batched.backfillPreviews(later());
+      const took = Date.now() - started;
+      expect(
+        took,
+        `the run took ${took} ms while another held the lock; it should return at once`,
+      ).toBeLessThan(2000);
+      expect(
+        skipped.queued,
+        `the run queued ${JSON.stringify(skipped.queued)} while another held the lock`,
+      ).toEqual([]);
+      for (const id of ours) {
+        const jobs = await previewJobs(id);
+        expect(
+          jobs.length,
+          `file ${id} has ${jobs.length} preview jobs after the skipped run`,
+        ).toBe(0);
+      }
 
       release();
       await holder;
-      const result = await run;
-      expect(result.queued.filter((id) => ours.includes(id)).sort()).toEqual([...ours].sort());
+      const after = await batched.backfillPreviews(later());
+      const mine = after.queued.filter((id) => ours.includes(id)).sort();
+      expect(mine, `a run after the holder ended queued ${JSON.stringify(after.queued)}`).toEqual(
+        [...ours].sort(),
+      );
     } finally {
-      // Harmless a second time. Neither promise may reject unobserved, or
+      // Harmless a second time. The holder may not reject unobserved, or
       // after the env has stopped.
       release();
-      await Promise.allSettled([holder, run]);
+      await Promise.allSettled([holder]);
       for (const f of files) {
         for (const job of await previewJobs(f.fileId)) {
           await env.boss.cancel(QUEUE.slicer, job.id);
@@ -951,6 +969,26 @@ describe("files a slicer with its sandbox off refused", () => {
     }
   });
 
+  test("0.1.1's kernel sentence, alone and after the previous-renders sentence, is still queued", async () => {
+    const plain = await refused("scad", LEGACY_SANDBOX_OFF_KERNEL.scad);
+    const led = await refused(
+      "scad",
+      `${PREVIOUS_RENDERS_SENTENCE.scad} ${LEGACY_SANDBOX_OFF_KERNEL.scad}`,
+    );
+    const queued = await derivedReporting(ON).requeueSandboxOff(new Date());
+    expect(queued, `requeueSandboxOff queued ${queued} of the 2 files with the old sentence`).toBe(
+      2,
+    );
+    for (const id of [plain, led]) {
+      const jobs = await jobsOf(id);
+      expect(jobs, `jobs for ${id}: ${JSON.stringify(jobs)}`).toHaveLength(1);
+    }
+    // Leave nothing queued: the next run waits while any job of its last batch is.
+    for (const id of [plain, led]) {
+      for (const j of await jobsOf(id)) await env.boss.cancel(QUEUE.slicer, j.id);
+    }
+  });
+
   test("both stored forms of the message are queued: the sentence alone, and after the previous-renders sentence", async () => {
     const plain = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
     const led = await refused(
@@ -1014,5 +1052,127 @@ describe("files a slicer with its sandbox off refused", () => {
     const other = await refused("scad", `${DERIVED_MESSAGES.previousRendersScad} ERROR: bad file`);
     expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(0);
     expect(await jobsOf(other)).toHaveLength(0);
+  });
+
+  /** A derived on a sandbox that is on, with the queue and the health answer the test hands it. */
+  function derivedWith(
+    queue: DerivedDeps["queue"],
+    current?: NonNullable<DerivedDeps["slicerState"]>["current"],
+  ) {
+    return createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue,
+      retryDelaySeconds: 1,
+      slicerState: {
+        current:
+          current ??
+          (async () => ({
+            timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+            sandbox: ON,
+          })),
+      },
+    });
+  }
+
+  /**
+   * Takes every other failed file out of the requeue's reach, so a run sees
+   * only this test's file: earlier tests in this file, and the other files
+   * of the suite, leave refused files behind in the same database.
+   */
+  async function onlyCandidate(fileId: string) {
+    await env.db
+      .updateTable("files")
+      .set({ derivedMessage: "Left for another test." })
+      .where("derivedStatus", "=", "failed")
+      .where("id", "!=", fileId)
+      .execute();
+  }
+
+  test("a requeue whose job check throws keeps the sandbox message", async () => {
+    // Earlier tests' requeued jobs may still be queued, and a run waits while
+    // any is: let them go first.
+    await until(
+      () => env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { requeue: true }, queued: true }),
+      (jobs) => jobs.length === 0,
+    );
+    const id = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    await onlyCandidate(id);
+    let calls = 0;
+    const queue: DerivedDeps["queue"] = {
+      send: env.boss.send.bind(env.boss),
+      findJobs: (async (...args: Parameters<PgBoss["findJobs"]>) => {
+        calls += 1;
+        // The first call is the run's check for waiting jobs; the second is
+        // the file's own check, inside its transaction.
+        if (calls === 2) throw new Error("the job check failed");
+        return env.boss.findJobs(...args);
+      }) as PgBoss["findJobs"],
+    };
+    const failing = derivedWith(queue);
+    let rejected: unknown = null;
+    let queued = -1;
+    try {
+      queued = await failing.requeueSandboxOff(new Date());
+    } catch (error) {
+      rejected = error;
+    }
+    // A file's error is logged and left for the next run, so the run itself
+    // either queues nothing or rejects; it never rewrites the file.
+    expect(
+      queued === 0 || rejected !== null,
+      `queued ${queued}, rejected ${String(rejected)}`,
+    ).toBe(true);
+    expect(calls, "findJobs calls made by the failing run").toBeGreaterThanOrEqual(2);
+    const file = await env.repos.files.get(id);
+    expect(
+      { status: file?.derivedStatus, message: file?.derivedMessage },
+      "the file after the failed job check",
+    ).toEqual({ status: "failed", message: DERIVED_MESSAGES.sandboxOffKernel });
+    expect(await jobsOf(id), "jobs of the file after the failed job check").toHaveLength(0);
+
+    // A later run with a working queue queues it.
+    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(1);
+    expect(await jobsOf(id), "jobs of the file after the later run").toHaveLength(1);
+  });
+
+  test("a model trashed between the requeue's check and its lock gets nothing queued", async () => {
+    // Earlier tests' requeued jobs may still be queued, and a run waits while
+    // any is: let them go first.
+    await until(
+      () => env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { requeue: true }, queued: true }),
+      (jobs) => jobs.length === 0,
+    );
+    const id = await refused("step", DERIVED_MESSAGES.convertSandboxOffKernel);
+    const file = await env.repos.files.get(id);
+    if (!file) throw new Error("no file");
+    await onlyCandidate(id);
+    // requeueSandboxOff reads the health once; queueJob reads it again for a
+    // STEP file's expiry, before its transaction takes the lock. The model is
+    // trashed there, after the run's own query chose the file.
+    let reads = 0;
+    const trashing = derivedWith(env.boss, async () => {
+      reads += 1;
+      if (reads === 2) {
+        await env.db
+          .updateTable("models")
+          .set({ trashedAt: new Date() })
+          .where("id", "=", file.modelId)
+          .execute();
+      }
+      return {
+        timeouts: { sliceSeconds: 180, scadSeconds: 120, stepSeconds: 120, uploadSeconds: 600 },
+        sandbox: ON,
+      };
+    });
+    expect(await trashing.requeueSandboxOff(new Date()), `health read ${reads} time(s)`).toBe(0);
+    expect(reads, "health reads by the run").toBeGreaterThanOrEqual(2);
+    expect(await jobsOf(id), "jobs of the trashed model's file").toHaveLength(0);
+    const after = await env.repos.files.get(id);
+    expect(
+      { status: after?.derivedStatus, message: after?.derivedMessage },
+      "the trashed model's file",
+    ).toEqual({ status: "failed", message: DERIVED_MESSAGES.convertSandboxOffKernel });
   });
 });
