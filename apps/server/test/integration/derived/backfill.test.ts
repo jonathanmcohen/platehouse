@@ -969,20 +969,6 @@ describe("files a slicer with its sandbox off refused", () => {
     }
   });
 
-  test("both stored forms of the message are queued: the sentence alone, and after the previous-renders sentence", async () => {
-    const plain = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
-    const led = await refused(
-      "scad",
-      `${PREVIOUS_RENDERS_SENTENCE.scad} ${DERIVED_MESSAGES.sandboxOffCheck}`,
-    );
-    const stepLed = await refused(
-      "step",
-      `${PREVIOUS_RENDERS_SENTENCE.step} ${DERIVED_MESSAGES.convertSandboxOffCheck}`,
-    );
-    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(3);
-    for (const id of [plain, led, stepLed]) expect(await jobsOf(id)).toHaveLength(1);
-  });
-
   test("0.1.1's kernel sentence, alone and after the previous-renders sentence, is still queued", async () => {
     const plain = await refused("scad", LEGACY_SANDBOX_OFF_KERNEL.scad);
     const led = await refused(
@@ -997,6 +983,24 @@ describe("files a slicer with its sandbox off refused", () => {
       const jobs = await jobsOf(id);
       expect(jobs, `jobs for ${id}: ${JSON.stringify(jobs)}`).toHaveLength(1);
     }
+    // Leave nothing queued: the next run waits while any job of its last batch is.
+    for (const id of [plain, led]) {
+      for (const j of await jobsOf(id)) await env.boss.cancel(QUEUE.slicer, j.id);
+    }
+  });
+
+  test("both stored forms of the message are queued: the sentence alone, and after the previous-renders sentence", async () => {
+    const plain = await refused("scad", DERIVED_MESSAGES.sandboxOffKernel);
+    const led = await refused(
+      "scad",
+      `${PREVIOUS_RENDERS_SENTENCE.scad} ${DERIVED_MESSAGES.sandboxOffCheck}`,
+    );
+    const stepLed = await refused(
+      "step",
+      `${PREVIOUS_RENDERS_SENTENCE.step} ${DERIVED_MESSAGES.convertSandboxOffCheck}`,
+    );
+    expect(await derivedReporting(ON).requeueSandboxOff(new Date())).toBe(3);
+    for (const id of [plain, led, stepLed]) expect(await jobsOf(id)).toHaveLength(1);
   });
 
   test("a program's message that ends with a sandbox sentence is never queued", async () => {
