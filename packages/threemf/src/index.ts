@@ -14,12 +14,14 @@ export {
   type MeshInstance,
   type MeshPiece,
   PLATE_MESH_LIMITS,
+  type PlateFootprint,
   type PlateMesh,
   type PlateMeshBudgetReport,
   PlateMeshError,
   type PlateMeshLimits,
   type PlateMeshOptions,
   type PlateMeshProblem,
+  readPlateFootprint,
   readPlateMesh,
 } from "./plate-mesh.js";
 export type { Filament, Plate, Project, ReadOptions } from "./types.js";

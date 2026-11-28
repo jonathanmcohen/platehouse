@@ -14,6 +14,7 @@ import {
   PlateMeshError,
   type PlateMeshProblem,
   ReadUnavailable,
+  readPlateFootprint,
   readPlateMesh,
 } from "../src/index.js";
 import { buildZip, writeTmp, type ZipEntry } from "./support/fixture-builder.js";
@@ -869,5 +870,340 @@ describe("readPlateMesh mesh memory", () => {
     expect(2 * (triangles * 12 + vertices * 12) + 4 * BLOCK_BYTES).toBeLessThanOrEqual(
       PLATE_MESH_LIMITS.meshBytes,
     );
+  });
+});
+
+describe("readPlateFootprint", () => {
+  const BED = ["0x0", "256x0", "256x256", "0x256"];
+
+  async function footprintProblem(path: string, plate: number): Promise<PlateMeshProblem> {
+    try {
+      await readPlateFootprint(path, plate);
+    } catch (err) {
+      if (err instanceof PlateMeshError) return err.problem;
+      throw err;
+    }
+    throw new Error("expected a PlateMeshError, got a footprint");
+  }
+
+  it("gives the box of a cube where it sits, its build item, the plate count and the saved bed", async () => {
+    const path = writeTmp(buildSliceable({ plates: 1, filaments: 1, at: { x: 220, y: 220 } }));
+    expect(await readPlateFootprint(path, 1)).toEqual({
+      box: { minX: 210, minY: 210, maxX: 230, maxY: 230 },
+      items: [0],
+      plates: 1,
+      printableArea: BED,
+    });
+  });
+
+  it("spans every object on the plate and lists each one's build item", async () => {
+    const path = writeTmp(buildSliceable({ plates: 1, filaments: 2, footprints: [20, 200] }));
+    const footprint = await readPlateFootprint(path, 1);
+    // A 20 mm cube at (40, 40) and a 200 mm one at (85, 40).
+    expect(footprint.box).toEqual({ minX: 40, minY: 40, maxX: 285, maxY: 240 });
+    expect(footprint.items).toEqual([0, 1]);
+  });
+
+  it("covers both copies of an object made of components, through the component transforms", async () => {
+    const OBJ = "/3D/Objects/object_1.model";
+    const path = split({
+      root: [
+        componentObject(10, [
+          { objectId: 1, path: OBJ, transform: IDENTITY },
+          { objectId: 2, path: OBJ, transform: moved(30, 5, 10) },
+        ]),
+      ],
+      build: [buildItem(10, moved(100, 50, 0)), buildItem(10, moved(-20, 200, 0))],
+      parts: {
+        "3D/Objects/object_1.model": modelXml(
+          [meshObject(1, boxMesh(10)), meshObject(2, boxMesh(4))],
+          null,
+        ),
+      },
+      objects: [{ id: 10 }],
+      plates: [
+        {
+          index: 1,
+          instances: [
+            [10, 0],
+            [10, 1],
+          ],
+        },
+      ],
+    });
+    const footprint = await readPlateFootprint(path, 1);
+    // Copy one spans x 100 to 134, y 50 to 60; copy two x -20 to 14, y 200 to 210.
+    expect(footprint.box).toEqual({ minX: -20, minY: 50, maxX: 134, maxY: 210 });
+    expect(footprint.items).toEqual([0, 1]);
+  });
+
+  it("places a turned object by its whole transform", async () => {
+    const path = file([
+      {
+        name: ROOT,
+        data: modelXml([meshObject(1, boxMesh(10))], [buildItem(1, "0 1 0 -1 0 0 0 0 1 50 60 0")]),
+      },
+      { name: SETTINGS, data: settingsXml([{ id: 1 }], [{ index: 1, instances: [[1, 0]] }]) },
+    ]);
+    // (x, y) goes to (50 - y, 60 + x).
+    expect((await readPlateFootprint(path, 1)).box).toEqual({
+      minX: 40,
+      minY: 60,
+      maxX: 50,
+      maxY: 70,
+    });
+  });
+
+  it("reads plate 2 where it sits in the grid, with only plate 2's build item", async () => {
+    const path = writeTmp(buildSliceable({ plates: 2, filaments: 1 }));
+    const origin = plateOrigin(1, 2);
+    const footprint = await readPlateFootprint(path, 2);
+    expect(footprint.box).toEqual({
+      minX: origin.x + 40,
+      minY: origin.y + 40,
+      maxX: origin.x + 60,
+      maxY: origin.y + 60,
+    });
+    expect(footprint.items).toEqual([1]);
+    expect(footprint.plates).toBe(2);
+  });
+
+  it("frees the mesh arrays before it returns", async () => {
+    const path = writeTmp(buildSliceable({ plates: 1, filaments: 2 }));
+    let report: PlateMeshBudgetReport | undefined;
+    await readPlateFootprint(path, 1, { onBudget: (r) => (report = r) });
+    expect(report?.allocatedBytes).toBeGreaterThan(0);
+    expect(report?.liveBytes).toBe(0);
+  });
+
+  it("says damaged when a build item on the plate has a transform that does not parse", async () => {
+    const path = file([
+      {
+        name: ROOT,
+        data: modelXml(
+          [meshObject(1, boxMesh(10)), meshObject(2, boxMesh(10))],
+          [buildItem(1, moved(10, 10)), buildItem(2, "1 0 0")],
+        ),
+      },
+      {
+        name: SETTINGS,
+        data: settingsXml(
+          [{ id: 1 }, { id: 2 }],
+          [
+            {
+              index: 1,
+              instances: [
+                [1, 0],
+                [2, 0],
+              ],
+            },
+          ],
+        ),
+      },
+    ]);
+    // The view shows what it can read; the footprint must not leave one behind.
+    expect(placed(await readPlateMesh(path, 1))).toHaveLength(1);
+    expect(await footprintProblem(path, 1)).toBe("damaged");
+  });
+
+  it("says damaged when a build item's transform does not parse in a file with no plates", async () => {
+    const path = file([
+      {
+        name: ROOT,
+        data: modelXml(
+          [meshObject(1, boxMesh(10)), meshObject(2, boxMesh(10))],
+          [buildItem(1, moved(10, 10)), buildItem(2, "1 0 0")],
+        ),
+      },
+      { name: SETTINGS, data: settingsXml([{ id: 1 }, { id: 2 }], []) },
+    ]);
+    expect(placed(await readPlateMesh(path, 1))).toHaveLength(1);
+    expect(await footprintProblem(path, 1)).toBe("damaged");
+  });
+
+  it("says no_mesh when one of the plate's build items places no mesh that can be read", async () => {
+    const path = file([
+      {
+        name: ROOT,
+        data: modelXml(
+          [meshObject(1, boxMesh(10)), '<object id="2" type="model"/>'],
+          [buildItem(1), buildItem(2, moved(50, 0))],
+        ),
+      },
+      {
+        name: SETTINGS,
+        data: settingsXml(
+          [{ id: 1 }, { id: 2 }],
+          [
+            {
+              index: 1,
+              instances: [
+                [1, 0],
+                [2, 0],
+              ],
+            },
+          ],
+        ),
+      },
+    ]);
+    expect(placed(await readPlateMesh(path, 1))).toHaveLength(1);
+    expect(await footprintProblem(path, 1)).toBe("no_mesh");
+  });
+
+  it("ignores build items on other plates, readable or not", async () => {
+    const path = file([
+      {
+        name: ROOT,
+        data: modelXml(
+          [meshObject(1, boxMesh(10)), '<object id="2" type="model"/>', meshObject(3, boxMesh(5))],
+          [buildItem(1), buildItem(2), buildItem(3, "1 0 0")],
+        ),
+      },
+      {
+        name: SETTINGS,
+        data: settingsXml(
+          [{ id: 1 }, { id: 2 }, { id: 3 }],
+          [
+            { index: 1, instances: [[1, 0]] },
+            {
+              index: 2,
+              instances: [
+                [2, 0],
+                [3, 0],
+              ],
+            },
+          ],
+        ),
+      },
+    ]);
+    expect((await readPlateFootprint(path, 1)).items).toEqual([0]);
+  });
+
+  it("counts one plate when the settings list no plate blocks", async () => {
+    const path = file([
+      { name: ROOT, data: modelXml([meshObject(1, boxMesh(10))], [buildItem(1)]) },
+      { name: SETTINGS, data: settingsXml([{ id: 1 }], []) },
+    ]);
+    const footprint = await readPlateFootprint(path, 1);
+    expect(footprint.plates).toBe(1);
+    expect(footprint.items).toEqual([0]);
+  });
+
+  it("counts the distinct valid plater_ids, leaving out a repeat and one that is not a number", async () => {
+    const plate = (id: string, instances: string) =>
+      `<plate><metadata key="plater_id" value="${id}"/>${instances}</plate>`;
+    const instance =
+      '<model_instance><metadata key="object_id" value="1"/><metadata key="instance_id" value="0"/></model_instance>';
+    const path = file([
+      { name: ROOT, data: modelXml([meshObject(1, boxMesh(10))], [buildItem(1)]) },
+      {
+        name: SETTINGS,
+        data: `<?xml version="1.0" encoding="UTF-8"?><config><object id="1"/>${plate("1", instance)}${plate("2", "")}${plate("2", "")}${plate("x", "")}</config>`,
+      },
+    ]);
+    expect((await readPlateFootprint(path, 1)).plates).toBe(2);
+  });
+
+  it.each([
+    ["names none", { filament_colour: ["#FFFFFF"] }],
+    ["has a number in its place", { printable_area: 256 }],
+    ["has a number in the list", { printable_area: ["0x0", 256, "256x256", "0x256"] }],
+  ])("has no printable area when the project settings %s", async (_why, project) => {
+    const path = file([
+      { name: ROOT, data: modelXml([meshObject(1, boxMesh(10))], [buildItem(1)]) },
+      { name: SETTINGS, data: settingsXml([{ id: 1 }], [{ index: 1, instances: [[1, 0]] }]) },
+      { name: PROJECT, data: JSON.stringify(project) },
+    ]);
+    expect((await readPlateFootprint(path, 1)).printableArea).toBeNull();
+  });
+
+  it("has no printable area when the file has no project settings", async () => {
+    const path = file([
+      { name: ROOT, data: modelXml([meshObject(1, boxMesh(10))], [buildItem(1)]) },
+      { name: SETTINGS, data: settingsXml([{ id: 1 }], [{ index: 1, instances: [[1, 0]] }]) },
+    ]);
+    expect((await readPlateFootprint(path, 1)).printableArea).toBeNull();
+  });
+
+  it("throws the plate problems readPlateMesh throws", async () => {
+    const path = writeTmp(buildSliceable({ plates: 1, filaments: 1 }));
+    expect(await footprintProblem(path, 2)).toBe("no_plate");
+    expect(await footprintProblem(writeTmp(Buffer.from("not a zip at all")), 1)).toBe("damaged");
+    await expect(readPlateFootprint("/nonexistent/platehouse/plate.3mf", 1)).rejects.toBeInstanceOf(
+      ReadUnavailable,
+    );
+  });
+});
+
+describe("readPlateMesh build item numbers", () => {
+  it("gives each instance the number of the build item that placed it, counting every <item>", async () => {
+    const path = file([
+      {
+        name: ROOT,
+        data: modelXml(
+          [meshObject(1, boxMesh(10)), meshObject(2, boxMesh(4))],
+          [
+            // No objectid: unreadable, but still counted.
+            '<item printable="1"/>',
+            buildItem(1, moved(0, 0, 0)),
+            buildItem(2, moved(100, 0, 0)),
+            `<item objectid="1" transform="${moved(10, 0, 0)}"></item>`,
+            buildItem(2, moved(110, 0, 0)),
+            buildItem(1, moved(20, 0, 0)),
+          ],
+        ),
+      },
+      {
+        name: SETTINGS,
+        data: settingsXml(
+          [{ id: 1 }, { id: 2 }],
+          [
+            {
+              index: 1,
+              instances: [
+                [1, 2],
+                [2, 1],
+                [1, 0],
+                [1, 1],
+              ],
+            },
+          ],
+        ),
+      },
+    ]);
+    const mesh = await readPlateMesh(path, 1);
+    expect(
+      mesh.instances
+        .map((i) => [i.transform[9], i.item])
+        .sort((a, b) => Number(a[0]) - Number(b[0])),
+    ).toEqual([
+      [0, 1],
+      [10, 3],
+      [20, 5],
+      [110, 4],
+    ]);
+  });
+
+  it("gives every component of a build item that item's number", async () => {
+    const OBJ = "/3D/Objects/object_1.model";
+    const path = split({
+      root: [
+        componentObject(10, [
+          { objectId: 1, path: OBJ },
+          { objectId: 2, path: OBJ, transform: moved(3, 3, 0) },
+        ]),
+      ],
+      build: [buildItem(10, moved(100, 0)), buildItem(10, moved(200, 0))],
+      parts: {
+        "3D/Objects/object_1.model": modelXml(
+          [meshObject(1, boxMesh(10)), meshObject(2, boxMesh(4))],
+          null,
+        ),
+      },
+      objects: [{ id: 10 }],
+      plates: [{ index: 1, instances: [[10, 1]] }],
+    });
+    const mesh = await readPlateMesh(path, 1);
+    expect(mesh.instances.map((i) => i.item)).toEqual([1, 1]);
   });
 });
