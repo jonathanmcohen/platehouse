@@ -4,7 +4,7 @@
 // comment or a multi-byte character included.
 import { describe, expect, it } from "vitest";
 import { Damaged } from "../src/errors.js";
-import { attrs, MAX_TAG_CHARS, type Tag, TagScanner } from "../src/xml-scan.js";
+import { attrSpan, attrs, MAX_TAG_CHARS, type Tag, TagScanner } from "../src/xml-scan.js";
 
 function scan(text: string, chunk = Number.POSITIVE_INFINITY): Tag[] {
   const tags: Tag[] = [];
@@ -16,11 +16,25 @@ function scan(text: string, chunk = Number.POSITIVE_INFINITY): Tag[] {
   return tags;
 }
 
+/** The same, given the text already decoded. */
+function scanText(text: string): Tag[] {
+  const tags: Tag[] = [];
+  const scanner = new TagScanner((t) => tags.push(t));
+  scanner.writeText(text);
+  scanner.end();
+  return tags;
+}
+
+/** Each tag's slice of the text it came from, by its offsets. */
+const slices = (text: string, tags: Tag[]) => tags.map((t) => text.slice(t.start, t.end));
+
 const brief = (tags: Tag[]) =>
   tags.map((t) => `${t.closing ? "/" : ""}${t.name}${t.selfClosing ? "/" : ""}`);
 
 /** Non-ASCII from a code point, so this file stays ASCII. */
 const E_ACUTE = String.fromCodePoint(0xe9);
+/** Four bytes in UTF-8 and two units in a JavaScript string. */
+const EMOJI = String.fromCodePoint(0x1f600);
 
 const DOC = [
   '<?xml version="1.0" encoding="UTF-8"?>',
@@ -60,8 +74,52 @@ describe("TagScanner", () => {
     expect(brief(scan(DOC))).toEqual(EXPECTED);
   });
 
-  it.each([1, 2, 3, 7, 64])("gives the same tags when the text comes %i bytes at a time", (n) => {
-    expect(scan(DOC, n)).toEqual(scan(DOC));
+  it.each([1, 2, 3, 7, 64])(
+    "gives the same tags and offsets when the text comes %i bytes at a time",
+    (n) => {
+      const whole = scan(DOC);
+      expect(whole[0]?.start).toBe(DOC.indexOf("<model"));
+      expect(scan(DOC, n)).toEqual(whole);
+    },
+  );
+
+  it("gives each tag the offsets of its < and just past its >, counted in characters", () => {
+    const text = `${E_ACUTE}<!-- <x/> --><a x="${E_ACUTE}"><![CDATA[<y/>]]><b k='>'/>${EMOJI}</a>`;
+    expect(slices(text, scanText(text))).toEqual([`<a x="${E_ACUTE}">`, "<b k='>'/>", "</a>"]);
+  });
+
+  it("slices every tag of the document exactly from its offsets", () => {
+    const tags = scan(DOC);
+    expect(slices(DOC, tags)).toEqual(
+      tags.map((t) =>
+        t.closing ? DOC.slice(t.start, t.end) : `<${t.raw}${t.selfClosing ? "/" : ""}>`,
+      ),
+    );
+    for (const t of tags.filter((t) => t.closing)) {
+      expect(DOC.slice(t.start, t.end)).toMatch(new RegExp(`^</(?:[^:>]+:)?${t.name}>$`));
+    }
+  });
+
+  it.each([1, 7, 64])(
+    "gives from writeText the tags and offsets write gives for the UTF-8 bytes, cut every %i bytes",
+    (n) => {
+      const text = `<model><object id="1" name="caf${E_ACUTE} ${EMOJI}"/><item objectid="1"/></model>`;
+      const tags = scanText(text);
+      expect(tags).toEqual(scan(text, n));
+      expect(slices(text, tags)[2]).toBe('<item objectid="1"/>');
+    },
+  );
+
+  it("is settled up to the start of a tag still open at the end of a write", () => {
+    const tags: Tag[] = [];
+    const scanner = new TagScanner((t) => tags.push(t));
+    scanner.writeText(`<a/>${E_ACUTE}<b x="1`);
+    const settled = scanner.settled;
+    expect(settled).toBe(5);
+    scanner.writeText('"/>text');
+    expect(tags[1]?.start).toBe(settled);
+    expect(scanner.settled).toBe(5 + '<b x="1"/>text'.length);
+    scanner.end();
   });
 
   it("does not end a tag at a > inside a quoted value", () => {
@@ -148,6 +206,27 @@ describe("attrs", () => {
     }
   });
 
+  it("finds the same value attrSpan finds, on every shape of short tag", () => {
+    // The same seeded tags as above. No entities, so the span's text is the value.
+    const alphabet = ["a", "b", ":", "=", '"', "'", " ", "\t", "\n", "/", "\u00a0", "x="];
+    let seed = 12345;
+    const next = (n: number) => {
+      seed = (seed * 1103515245 + 12345) >>> 0;
+      return (seed >>> 8) % n;
+    };
+    for (let k = 0; k < 20_000; k++) {
+      let raw = "";
+      const length = next(24);
+      for (let i = 0; i < length; i++) raw += alphabet[next(alphabet.length)];
+      const read = attrs(raw);
+      for (const name of new Set([...read.keys(), "a", "b", "x", "ab", ""])) {
+        const span = attrSpan(raw, name);
+        const found = span === null ? undefined : raw.slice(span.start, span.end);
+        expect(found, `${JSON.stringify(raw)} ${JSON.stringify(name)}`).toBe(read.get(name));
+      }
+    }
+  });
+
   // Each shape below is a tag the size MAX_TAG_CHARS lets through. Read in
   // time that grows with the square of its length, as the old regex did,
   // one such tag took minutes; in one pass it takes milliseconds.
@@ -178,5 +257,44 @@ describe("named entities", () => {
     for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
       expect(value(`&${name};`)).toBe(`&${name};`);
     }
+  });
+});
+
+describe("attrSpan", () => {
+  const value = (raw: string, name: string) => {
+    const span = attrSpan(raw, name);
+    return span === null ? null : raw.slice(span.start, span.end);
+  };
+
+  it("gives the range of a value in double quotes, undecoded", () => {
+    const raw = 'item objectid="1" transform="1 0 0 0 1 0 0 0 1 5 &amp; 0" printable="1"';
+    expect(value(raw, "transform")).toBe("1 0 0 0 1 0 0 0 1 5 &amp; 0");
+    expect(attrSpan(raw, "transform")).toEqual({ start: 29, end: 56 });
+  });
+
+  it("gives the range of a value in single quotes", () => {
+    expect(value("item transform='1 0 0 0 1 0 0 0 1 2 3 4'", "transform")).toBe(
+      "1 0 0 0 1 0 0 0 1 2 3 4",
+    );
+  });
+
+  it("finds an attribute by its local name", () => {
+    expect(value('item p:transform = "9 8"', "transform")).toBe("9 8");
+  });
+
+  it("gives the first of a repeated name, as attrs does", () => {
+    const raw = 'item transform="first" p:transform="second" transform="third"';
+    expect(value(raw, "transform")).toBe("first");
+    expect(attrs(raw).get("transform")).toBe("first");
+  });
+
+  it("gives null for a value whose quote is never closed, as attrs skips it", () => {
+    const raw = 'item transform="1 0 0';
+    expect(attrSpan(raw, "transform")).toBeNull();
+    expect(attrs(raw).has("transform")).toBe(false);
+  });
+
+  it("gives null for a name the tag does not have", () => {
+    expect(attrSpan('item objectid="1"', "transform")).toBeNull();
   });
 });

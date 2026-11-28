@@ -29,6 +29,13 @@ export interface Tag {
   selfClosing: boolean;
   /** The text inside the angle brackets, for attrs(); empty for a closing tag. */
   raw: string;
+  /**
+   * The offset of its <, and the offset just past its >, in characters
+   * (UTF-16 units) from the start of everything written to the scanner.
+   * However the text is cut into chunks, they are the same.
+   */
+  start: number;
+  end: number;
 }
 
 /**
@@ -38,10 +45,15 @@ export interface Tag {
  * over from the last chunk, which is looked at again. A caller that counts
  * these has counted every character the scanner ever handles, so a file of
  * very long tags split over many chunks costs what it really costs.
+ *
+ * Give it bytes with write, which decodes them as UTF-8, or text already
+ * decoded with writeText; a caller uses one or the other.
  */
 export class TagScanner {
   private readonly decoder = new StringDecoder("utf8");
   private pending = "";
+  /** The offset of pending's first character in everything written. */
+  private consumed = 0;
   private readonly onTag: (tag: Tag) => void;
   private readonly onScan: ((chars: number) => void) | undefined;
 
@@ -52,6 +64,19 @@ export class TagScanner {
 
   write(chunk: Buffer): void {
     this.scan(this.decoder.write(chunk));
+  }
+
+  /** Scans text that is already decoded. */
+  writeText(text: string): void {
+    this.scan(text);
+  }
+
+  /**
+   * The offset before which no tag can still start: everything written so
+   * far, less the unfinished markup carried over to the next write.
+   */
+  get settled(): number {
+    return this.consumed;
   }
 
   /** The end of the text; a tag still open is damage. */
@@ -69,11 +94,13 @@ export class TagScanner {
       const lt = s.indexOf("<", i);
       if (lt < 0) {
         this.pending = "";
+        this.consumed += n;
         return;
       }
       const end = this.markupEnd(s, lt);
       if (end < 0) {
         this.pending = s.slice(lt);
+        this.consumed += lt;
         if (this.pending.length > MAX_TAG_CHARS) throw new Damaged("model part tag too long");
         return;
       }
@@ -103,20 +130,22 @@ export class TagScanner {
       } else if (c === 0x22 || c === 0x27) {
         quote = c;
       } else if (c === 0x3e /* > */) {
-        this.emit(s.slice(lt + 1, j));
+        this.emit(s.slice(lt + 1, j), this.consumed + lt, this.consumed + j + 1);
         return j;
       }
     }
     return -1;
   }
 
-  private emit(inner: string): void {
+  private emit(inner: string, start: number, end: number): void {
     if (inner.startsWith("/")) {
       this.onTag({
         name: localName(inner.slice(1).trim()),
         closing: true,
         selfClosing: false,
         raw: "",
+        start,
+        end,
       });
       return;
     }
@@ -124,7 +153,7 @@ export class TagScanner {
     const body = selfClosing ? inner.slice(0, -1) : inner;
     const m = /^[^\s/>]+/.exec(body);
     if (m === null) return;
-    this.onTag({ name: localName(m[0]), closing: false, selfClosing, raw: body });
+    this.onTag({ name: localName(m[0]), closing: false, selfClosing, raw: body, start, end });
   }
 }
 
@@ -161,8 +190,10 @@ function isNameChar(c: number): boolean {
 }
 
 /**
- * A tag's attributes by local name (p:path is "path"). The first of a
- * repeated name wins. Values are decoded for the XML entities.
+ * Walks a tag's attributes in order, handing visit each one's qualified name
+ * and the range of its value inside raw (between the quotes, undecoded);
+ * visit returns true to stop. attrs and attrSpan both read through it, so
+ * they always agree on which attributes a tag has.
  *
  * Each attribute is a name (a run of anything but spaces, = and /), spaces,
  * =, spaces and a value in double or single quotes; anything else between
@@ -175,8 +206,10 @@ function isNameChar(c: number): boolean {
  * - Once a quote has no closing quote after it, no later value in that quote
  *   can close either, so the tag is not searched for one again.
  */
-export function attrs(raw: string): Map<string, string> {
-  const out = new Map<string, string>();
+function walkAttributes(
+  raw: string,
+  visit: (qualified: string, valueStart: number, valueEnd: number) => boolean,
+): void {
   const n = raw.length;
   let unclosedDouble = false;
   let unclosedSingle = false;
@@ -204,11 +237,38 @@ export function attrs(raw: string): Map<string, string> {
       else unclosedSingle = true;
       continue;
     }
-    const name = localName(raw.slice(start, nameEnd));
-    if (!out.has(name)) out.set(name, decodeEntities(raw.slice(j + 1, close)));
+    if (visit(raw.slice(start, nameEnd), j + 1, close)) return;
     i = close + 1;
   }
+}
+
+/**
+ * A tag's attributes by local name (p:path is "path"). The first of a
+ * repeated name wins. Values are decoded for the XML entities.
+ */
+export function attrs(raw: string): Map<string, string> {
+  const out = new Map<string, string>();
+  walkAttributes(raw, (qualified, valueStart, valueEnd) => {
+    const name = localName(qualified);
+    if (!out.has(name)) out.set(name, decodeEntities(raw.slice(valueStart, valueEnd)));
+    return false;
+  });
   return out;
+}
+
+/**
+ * The range inside raw of the value of the first attribute whose local name
+ * is name, between its quotes and undecoded: the value attrs would give for
+ * that name. Null when attrs would give none.
+ */
+export function attrSpan(raw: string, name: string): { start: number; end: number } | null {
+  let span: { start: number; end: number } | null = null;
+  walkAttributes(raw, (qualified, valueStart, valueEnd) => {
+    if (localName(qualified) !== name) return false;
+    span = { start: valueStart, end: valueEnd };
+    return true;
+  });
+  return span;
 }
 
 const NAMED: Readonly<Record<string, string>> = {

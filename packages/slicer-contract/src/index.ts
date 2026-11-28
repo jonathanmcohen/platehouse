@@ -48,7 +48,10 @@
 // contract 1 health, and an older app refuses this one. /v1/stl/png was
 // added without a new number, so an app that calls it on a slicer image
 // without it gets 404 not_found, which the app treats as a slicer that
-// cannot render yet, not as a fault of the file.
+// cannot render yet, not as a fault of the file. move=1 on the slice request
+// and moved on the answer were added without a new number too: an app built
+// for contract 2 that never sends move=1 never sees moved, and a slicer that
+// does not know move ignores it (it reads only printer and plate).
 //
 // 413 too_large comes before the body is read when its Content-Length is
 // over the route's limit (LIMITS), and as soon as it passes the limit when
@@ -222,6 +225,7 @@ export const sliceQuery = z.strictObject({
     .regex(/^[1-9]\d{0,2}$/, "plate must be a whole number from 1 to 128")
     .transform(Number)
     .pipe(z.number().int().min(1).max(LIMITS.maxPlate)),
+  move: z.literal("1").optional(),
 });
 
 /** One filament's numbers on a sliced plate. */
@@ -245,6 +249,7 @@ export const sliceOk = z.strictObject({
   filaments: z.array(sliceFilament),
   wallMs: z.number().int().nonnegative(),
   peakRssBytes: z.number().int().nonnegative(),
+  moved: z.literal(true).optional(),
 });
 
 export const sliceFailed = z.strictObject({

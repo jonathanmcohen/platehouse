@@ -352,6 +352,59 @@ describe("slicer contract v2", () => {
     expect(q.safeParse({ plate: "1" }).success).toBe(false);
   });
 
+  test("the slice query takes move=1 and nothing else for move", () => {
+    const q = slicerContract.sliceQuery;
+    expect(q.parse({ printer: "x", plate: "2", move: "1" })).toEqual({
+      printer: "x",
+      plate: 2,
+      move: "1",
+    });
+    const without = q.parse({ printer: "x", plate: "2" });
+    expect(without).toEqual({ printer: "x", plate: 2 });
+    expect("move" in without).toBe(false);
+    for (const move of ["0", "true", ""]) {
+      expect(
+        q.safeParse({ printer: "x", plate: "2", move }).success,
+        `move ${JSON.stringify(move)}`,
+      ).toBe(false);
+    }
+  });
+
+  test("only an ok slice can say it moved, and only with true", () => {
+    const ok = {
+      contract: 2,
+      orca: "2.5.0",
+      plate: 1,
+      status: "ok",
+      printer: "Bambu Lab P1S 0.4 nozzle",
+      process: null,
+      filamentProfiles: [],
+      timeSeconds: 60,
+      weightGrams: 1,
+      filaments: [],
+      wallMs: 10,
+      peakRssBytes: 10,
+    };
+    expect(slicerContract.sliceResult.parse({ ...ok, moved: true })).toEqual({
+      ...ok,
+      moved: true,
+    });
+    expect(slicerContract.sliceResult.safeParse(ok).success).toBe(true);
+    expect(slicerContract.sliceResult.safeParse({ ...ok, moved: false }).success).toBe(false);
+    expect(
+      slicerContract.sliceResult.safeParse({
+        contract: 2,
+        orca: "2.5.0",
+        plate: 1,
+        status: "failed",
+        code: -50,
+        reason: "bed_too_small",
+        detail: "",
+        moved: true,
+      }).success,
+    ).toBe(false);
+  });
+
   test("error bodies are the contract's, plus bad_request and not_found", () => {
     for (const error of ["busy", "too_large", "not_3mf"]) {
       expect(slicerContract.error.parse({ error })).toEqual({ error });

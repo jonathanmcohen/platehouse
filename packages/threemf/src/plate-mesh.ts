@@ -166,6 +166,12 @@ export interface MeshInstance {
    * (x, y, z) goes to x*m00 + y*m10 + z*m20 + m30, and so on.
    */
   transform: number[];
+  /**
+   * The root part's build item that placed it: its index among every <item>
+   * start tag in the <build>, from 0 in file order, readable or not.
+   * readPlateMesh always sets it; validatePlateMesh and the GLB ignore it.
+   */
+  item?: number;
 }
 
 export interface PlateMesh {
@@ -199,6 +205,107 @@ export async function readPlateMesh(
   plate: number,
   opts: PlateMeshOptions = {},
 ): Promise<PlateMesh> {
+  return readWithBudget(path, opts, async (reader, size, budget) => {
+    const { mesh } = await readFromArchive(reader, size, plate, budget, false);
+    budget.keepOnly(mesh);
+    return mesh;
+  });
+}
+
+/** Where plate N's objects sit, for moving them onto another printer's bed. */
+export interface PlateFootprint {
+  /** The X/Y box of every placed vertex, in the file's world coordinates, mm. */
+  box: { minX: number; minY: number; maxX: number; maxY: number };
+  /** The build items that place plate N's objects, as MeshInstance.item, sorted, distinct. */
+  items: number[];
+  /** Distinct valid plater_ids in model_settings.config; 1 when it lists none. */
+  plates: number;
+  /** project_settings.config's printable_area when it is an array of strings, else null. */
+  printableArea: string[] | null;
+}
+
+/**
+ * The footprint of plate `plate`: the box its objects cover and the build
+ * items that place them. It reads the plate as readPlateMesh does, under the
+ * same limits, and throws the same errors, but strictly: a plate model
+ * instance whose build item's transform does not parse is damaged, and a
+ * build item of the plate that places no readable mesh is no_mesh (with no
+ * plate blocks, every build item is plate 1's). Either would leave an object
+ * that was not read where it was, outside the box. The mesh arrays are freed
+ * before it returns; only the box is kept.
+ */
+export async function readPlateFootprint(
+  path: string,
+  plate: number,
+  opts: PlateMeshOptions = {},
+): Promise<PlateFootprint> {
+  return readWithBudget(path, opts, async (reader, size, budget) => {
+    const { mesh, plates, printableArea } = await readFromArchive(
+      reader,
+      size,
+      plate,
+      budget,
+      true,
+    );
+    const box = boxOf(mesh);
+    const items = [...new Set(mesh.instances.map((i) => i.item as number))].sort((a, b) => a - b);
+    budget.freeAll();
+    return { box, items, plates, printableArea };
+  });
+}
+
+/**
+ * The X/Y box of every vertex of every instance, placed by its transform in
+ * float64. The vertices walked are bounded by the triangle limit: each
+ * placed piece's triangles were charged, and a piece has at most three
+ * vertices a triangle.
+ */
+function boxOf(mesh: PlateMesh): PlateFootprint["box"] {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const inst of mesh.instances) {
+    const p = (mesh.pieces[inst.piece] as MeshPiece).positions;
+    const [m00, m01, , m10, m11, , m20, m21, , m30, m31] = inst.transform as [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ];
+    for (let i = 0; i < p.length; i += 3) {
+      const x = p[i] as number;
+      const y = p[i + 1] as number;
+      const z = p[i + 2] as number;
+      const wx = x * m00 + y * m10 + z * m20 + m30;
+      const wy = x * m01 + y * m11 + z * m21 + m31;
+      if (wx < minX) minX = wx;
+      if (wx > maxX) maxX = wx;
+      if (wy < minY) minY = wy;
+      if (wy > maxY) maxY = wy;
+    }
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+/**
+ * Opens the file and runs read on it with a fresh budget: a filesystem error
+ * is ReadUnavailable, damage is PlateMeshError("damaged"), and everything
+ * the budget holds is freed when read fails.
+ */
+async function readWithBudget<T>(
+  path: string,
+  opts: PlateMeshOptions,
+  read: (reader: yauzl.RandomAccessReader, size: number, budget: Budget) => Promise<T>,
+): Promise<T> {
   let handle: Awaited<ReturnType<typeof open>>;
   try {
     handle = await open(path, "r");
@@ -214,9 +321,7 @@ export async function readPlateMesh(
       throw unavailableOr(err);
     }
     try {
-      const mesh = await readFromArchive(new HandleReader(handle), size, plate, budget);
-      budget.keepOnly(mesh);
-      return mesh;
+      return await read(new HandleReader(handle), size, budget);
     } catch (err) {
       budget.freeAll();
       // Damaged comes only from the zip reader, inflate, the config caps and
@@ -405,7 +510,7 @@ function finiteTransform(t: Transform): boolean {
  * A transform attribute: identity when absent, null when it is not 12
  * numbers each finite as a float32.
  */
-function transformOf(v: string | undefined): Transform | null {
+export function transformOf(v: string | undefined): Transform | null {
   if (v === undefined) return IDENTITY;
   const parts = v.trim().split(/\s+/);
   if (parts.length !== 12) return null;
@@ -535,20 +640,33 @@ function readSettings(text: string | null): Settings {
   return { plates, objects };
 }
 
-function readColours(text: string | null): Array<string | null> {
-  if (text === null) return [];
+interface ProjectSettings {
+  /** The filament colours, by filament number from 1. */
+  colours: Array<string | null>;
+  /** printable_area when it is an array of strings, else null. */
+  printableArea: string[] | null;
+}
+
+function readProjectSettings(text: string | null): ProjectSettings {
+  const none: ProjectSettings = { colours: [], printableArea: null };
+  if (text === null) return none;
   let data: unknown;
   try {
     data = JSON.parse(text);
   } catch {
-    return [];
+    return none;
   }
-  if (!isNode(data) || !Array.isArray(data.filament_colour)) return [];
+  if (!isNode(data)) return none;
+  const area = data.printable_area;
+  const printableArea =
+    Array.isArray(area) && area.every((p) => typeof p === "string") ? (area as string[]) : null;
+  if (!Array.isArray(data.filament_colour)) return { colours: [], printableArea };
   if (data.filament_colour.length > LIMITS.filaments)
     throw new Damaged("too many project filaments");
-  return data.filament_colour.map((c) =>
+  const colours = data.filament_colour.map((c) =>
     typeof c === "string" && COLOUR.test(c) ? c.slice(0, 7) : null,
   );
+  return { colours, printableArea };
 }
 
 // --- Model parts ------------------------------------------------------------------
@@ -558,6 +676,8 @@ interface Component {
   /** The entry name of the part holding the object; null for the same part. */
   path: string | null;
   transform: Transform | null;
+  /** A build item's index among every <item> start tag of the <build>; null for a <component>. */
+  item: number | null;
 }
 
 interface Mesh {
@@ -779,13 +899,16 @@ async function readPart(
   let triangles = 0;
   let inMesh = false;
   let inBuild = false;
-  const component = (a: Map<string, string>): Component | null => {
+  /** Every <item> start tag seen in a <build>, readable or not. */
+  let itemTags = 0;
+  const component = (a: Map<string, string>, item: number | null): Component | null => {
     const id = whole(a.get("objectid"));
     if (id === null) return null;
     return {
       objectId: id,
       path: entryName(a.get("path")),
       transform: transformOf(a.get("transform")),
+      item,
     };
   };
   const endObject = (): void => {
@@ -845,7 +968,7 @@ async function readPart(
           return;
         case "component":
           if (components !== null && !tag.closing) {
-            const c = component(attrs(tag.raw));
+            const c = component(attrs(tag.raw), null);
             if (c !== null) {
               budget.component();
               components.push(c);
@@ -857,7 +980,7 @@ async function readPart(
           return;
         case "item":
           if (first && inBuild && !tag.closing) {
-            const c = component(attrs(tag.raw));
+            const c = component(attrs(tag.raw), itemTags++);
             if (c !== null) {
               budget.component();
               data.items.push(c);
@@ -892,6 +1015,8 @@ interface Request {
   top: number;
   /** The part of the plate object it is in (its first-level component), if any. */
   part: number | null;
+  /** The build item the request came from (Component.item); its children keep it. */
+  item: number;
 }
 
 interface Placed {
@@ -899,6 +1024,14 @@ interface Placed {
   objectId: number;
   transform: Transform;
   colour: string | null;
+  item: number;
+}
+
+interface ArchiveRead {
+  mesh: PlateMesh;
+  /** Distinct valid plater_ids, or 1 when the file lists none. */
+  plates: number;
+  printableArea: string[] | null;
 }
 
 /** How many plates the entry names' pictures list. */
@@ -911,17 +1044,25 @@ function plateCount(entries: ReadonlyMap<string, unknown>): number {
   return indexes.size;
 }
 
+/**
+ * Reads plate `plate`. When strict (the footprint), a plate build item whose
+ * transform does not parse is damaged, and one that places no readable mesh
+ * is no_mesh, where readPlateMesh leaves either out and shows the rest.
+ */
 async function readFromArchive(
   reader: yauzl.RandomAccessReader,
   size: number,
   plate: number,
   budget: Budget,
-): Promise<PlateMesh> {
+  strict: boolean,
+): Promise<ArchiveRead> {
   const zip = await openArchive(reader, size);
   try {
     const entries = await ownRead(() => listEntries(zip));
     const settings = readSettings(await configText(zip, entries.get(MODEL_SETTINGS), budget));
-    const colours = readColours(await configText(zip, entries.get(PROJECT_SETTINGS), budget));
+    const { colours, printableArea } = readProjectSettings(
+      await configText(zip, entries.get(PROJECT_SETTINGS), budget),
+    );
     const parts = new Map<string, PartData>();
 
     // The plate's own objects are known from the settings, so the root's
@@ -945,22 +1086,35 @@ async function readFromArchive(
     // The plate's requests: its model instances matched to build items, or
     // every build item when the file lists no plates and plate 1 is asked for.
     let requests: Request[] = [];
+    /** The build items the plate's requests came from, for the strict check. */
+    const plateItems = new Set<number>();
     const request = (r: Request): void => {
       budget.walk();
       if (requests.length >= budget.limits.instances) {
         throw new PlateMeshError("too_large", "placed meshes over the limit");
       }
       requests.push(r);
+      plateItems.add(r.item);
+    };
+    const unparsed = (item: Component): never => {
+      throw new PlateMeshError(
+        "damaged",
+        `build item ${item.item} on plate ${plate} has a transform that cannot be read`,
+      );
     };
     if (instances === null || instances === undefined) {
       for (const i of root.items) {
-        if (i.transform === null) continue;
+        if (i.transform === null) {
+          if (strict) unparsed(i);
+          continue;
+        }
         request({
           path: i.path ?? ROOT,
           objectId: i.objectId,
           transform: i.transform,
           top: i.objectId,
           part: null,
+          item: i.item as number,
         });
       }
     } else {
@@ -974,13 +1128,18 @@ async function readFromArchive(
       }
       for (const { objectId, instance } of instances) {
         const item = itemsOf.get(objectId)?.[instance];
-        if (item === undefined || item.transform === null) continue;
+        if (item === undefined) continue;
+        if (item.transform === null) {
+          if (strict) unparsed(item);
+          continue;
+        }
         request({
           path: item.path ?? ROOT,
           objectId,
           transform: item.transform,
           top: objectId,
           part: null,
+          item: item.item as number,
         });
       }
     }
@@ -1052,6 +1211,7 @@ async function readFromArchive(
               transform,
               top: r.top,
               part: r.part ?? c.objectId,
+              item: r.item,
             });
           }
           continue;
@@ -1067,6 +1227,7 @@ async function readFromArchive(
           objectId: r.objectId,
           transform: r.transform,
           colour: colourOf(settings, colours, r.top, r.part),
+          item: r.item,
         });
         if (!data.meshes.has(r.objectId)) {
           let ids = unread.get(r.path);
@@ -1088,7 +1249,19 @@ async function readFromArchive(
       if (missing.size > 0) await readPart(zip, entries.get(path), data, missing, budget);
     }
 
-    return assemble(plate, placed, parts, budget);
+    const mesh = assemble(plate, placed, parts, budget);
+    if (strict) {
+      const placing = new Set(mesh.instances.map((i) => i.item));
+      for (const item of plateItems) {
+        if (!placing.has(item)) {
+          throw new PlateMeshError(
+            "no_mesh",
+            `build item ${item} on plate ${plate} places no mesh that can be read`,
+          );
+        }
+      }
+    }
+    return { mesh, plates: settings.plates?.size ?? 1, printableArea };
   } finally {
     zip.close();
   }
@@ -1134,7 +1307,7 @@ function assemble(
       pieces.push({ positions: mesh.positions, indices: mesh.indices, colour: p.colour });
       pieceOf.set(key, piece);
     }
-    instances.push({ piece, transform: p.transform });
+    instances.push({ piece, transform: p.transform, item: p.item });
   }
   if (instances.length === 0) {
     throw new PlateMeshError("no_mesh", `nothing on plate ${plate} has a mesh that can be read`);
